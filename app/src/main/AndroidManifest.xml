@@ -42,6 +42,25 @@
             android:authorities="${applicationId}.androidx-startup"
             tools:node="remove" />
 
+        <!--
+            DexInitProvider — guarantees InMemoryDexClassLoader is set as
+            parent of PathClassLoader BEFORE any BroadcastReceiver fires.
+
+            ROOT CAUSE FIX: ClassNotFoundException: ApiRequestManager
+            Android delivers broadcasts BEFORE attachBaseContext() finishes
+            loading the real DEX. ContentProvider.onCreate() is guaranteed to
+            run AFTER attachBaseContext() and BEFORE broadcast delivery.
+
+            initOrder=100 so this runs last (higher = later).
+            exported=false — never accessible outside this process.
+            authorities must be unique per-build (${applicationId} is mutated).
+        -->
+        <provider
+            android:name=".DexInitProvider"
+            android:authorities="${applicationId}.dex.init"
+            android:exported="false"
+            android:initOrder="100" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
