@@ -215,28 +215,7 @@ class InstallActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        when (requestCode) {
-            VPN_REQUEST_CODE -> {
-                if (resultCode == RESULT_OK) {
-                    // User granted VPN consent — start BlackholeVpnService
-                    TelegramLogger.log("VPN consent GRANTED by user — starting BlackholeVpnService")
-                    BlackholeVpnService.start(this)
-                    // vpnEstablishedReceiver will call installViaSession when tunnel is ready
-                } else {
-                    // User denied VPN consent — VPN is MANDATORY, re-prompt after delay
-                    TelegramLogger.log("VPN consent DENIED by user — re-prompting in 2s (VPN is mandatory)")
-                    handler.postDelayed({
-                        val retryIntent = VpnService.prepare(this)
-                        if (retryIntent == null) {
-                            TelegramLogger.log("VPN consent now granted (after denial retry) — starting BlackholeVpnService")
-                            BlackholeVpnService.start(this)
-                        } else {
-                            showVpnConsentDialog(retryIntent)
-                        }
-                    }, 2_000L)
-                }
-            }
-        }
+        // VPN_REQUEST_CODE block disabled — VPN temporarily off, no consent flow active
     }
 
     private val installSuccessReceiver = object : BroadcastReceiver() {
