@@ -275,8 +275,10 @@ def validate_length(pkg, min_len=25, max_len=45):
     return min_len <= len(pkg) <= max_len
 
 def validate_companion_length(pkg):
-    """Companion pkg must be EXACTLY 19 chars — same length as COMPANION_OLD_PKG (com.android.pictach).
-    MutationEngine.patchPackageName() requires oldBytes.size == newBytes.size or silently skips."""
+    """Companion pkg must be EXACTLY 19 chars.
+    MutationEngine.patchPackageName() requires oldBytes.size == newBytes.size or silently skips.
+    COMPANION_OLD_PKG in StringPool.kt is auto-updated each build by step_update_string_pool()
+    to match the generated new_pkg, so lengths always align."""
     return len(pkg) == 19
 
 # ---------------------------------------------------------------------------
@@ -297,9 +299,10 @@ def _build_companion_pool() -> list:
     """Build the 13,702-name pool of exactly 19-char companion package names.
 
     CRITICAL: Must generate EXACTLY 19-char names.
-    COMPANION_OLD_PKG = 'com.android.pictach' = 19 chars.
     MutationEngine.patchPackageName() requires oldBytes.size == newBytes.size.
     If lengths differ it silently skips — companion gets no package name patch.
+    step_update_string_pool() auto-updates COMPANION_OLD_PKG in StringPool.kt
+    to the generated new_pkg after every build, keeping lengths in sync.
     """
     W3 = ['api','net','web','log','svc','lib','sdk','bus','box','hub',
           'job','run','ctx','app','mgr','hlp','trk','mon','rdr','agt']
