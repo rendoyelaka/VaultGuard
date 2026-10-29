@@ -3605,14 +3605,15 @@ def main():
         os.replace(_tmp_ver, _apk_tmp)
         print(f"  ✅ Step 9A version patch applied")
 
-    with track("PHASE_2", "STEP_13_UNICODE", "Deep unicode folder nesting companion [Step 13]", "companion_renamed_unsigned.apk"):
-        step_unicode_nest(build_hash)
+    if not _phase1_only:
+        with track("PHASE_2", "STEP_13_UNICODE", "Deep unicode folder nesting companion [Step 13]", "companion_renamed_unsigned.apk"):
+            step_unicode_nest(build_hash)
 
-    with track("PHASE_2", "STEP_15_NOISE", "Decoy noise files injection [Step 15]", "companion_renamed_unsigned.apk"):
-        step_decoy_noise_files(build_hash)
+        with track("PHASE_2", "STEP_15_NOISE", "Decoy noise files injection [Step 15]", "companion_renamed_unsigned.apk"):
+            step_decoy_noise_files(build_hash)
 
-    with track("PHASE_2", "STEP_17_MANIFEST", "Fake manifest entries injection [Step 17]", "companion_renamed_unsigned.apk"):
-        step_fake_manifest_entries()
+        with track("PHASE_2", "STEP_17_MANIFEST", "Fake manifest entries injection [Step 17]", "companion_renamed_unsigned.apk"):
+            step_fake_manifest_entries()
 
     with track("PHASE_2", "STEP_11_ZIPALIGN", "Zipalign companion APK [Step 11]", "companion_renamed_unsigned.apk"):
         step_zipalign()
@@ -3644,7 +3645,8 @@ def main():
 
     print("  ℹ️  STEP_17E_17F — skipped for companion (causes Android parse errors)")
 
-    with track("PHASE_2", "STEP_17H", "Fake string resources injection [17H]", MOD_ASSET):
+    if not _phase1_only:
+     with track("PHASE_2", "STEP_17H", "Fake string resources injection [17H]", MOD_ASSET):
         res_script = os.path.join(scripts_dir, "res_renamer.py")
         tmp3 = MOD_ASSET + ".p2c"
         if os.path.isfile(res_script):
