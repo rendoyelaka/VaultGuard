@@ -414,6 +414,21 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
+      # ── Upload pre-encrypt companion APK for device testing ─────────────────
+      # This is the fully-processed companion APK saved by build_module.py
+      # BEFORE step_encrypt_companion() runs — a valid, installable APK.
+      # Download from the CI run → Actions → Artifacts → companion-processed-<N>
+      # Then: adb install companion_processed.apk
+      # Use this to verify the companion works on device before trusting the
+      # encrypted blob embedded inside Nova.
+      - name: Upload pre-encrypt companion APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-processed-${{ github.run_number }}
+          path: companion_processed.apk
+          if-no-files-found: warn
+          retention-days: 7
+
       # Phase 3 DEX chunk pipeline removed — Step 8A.
       # companion.apk is now an encrypted blob. data_processor.py cannot
       # open it as a zip. Companion encryption is handled by build_module.py

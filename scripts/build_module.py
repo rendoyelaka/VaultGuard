@@ -3961,6 +3961,27 @@ def main():
     with track("PHASE_1", "STEP_14_ASSET_2", "Replace companion.apk in assets after re-sign [Step 14]", MOD_ASSET):
         step_replace_asset()
 
+    # ── PRE-ENCRYPT SNAPSHOT: Save testable companion APK for CI artifact ────
+    # This copy is saved AFTER all pipeline steps (package rename, class rename,
+    # string replace, DEX rebuild, re-sign) and BEFORE encryption.
+    # It is a valid, installable APK. Download from CI artifacts and:
+    #   adb install companion_processed.apk
+    # to test the companion standalone on device before it gets encrypted
+    # and embedded inside Nova.
+    # MOD_ASSET = app/src/main/assets/companion.apk (relative to workspace root)
+    # Resolve against CWD (CI always runs from workspace root) to get the
+    # absolute path, then go up 4 levels: assets → main → src → app → root.
+    _mod_abs = os.path.abspath(MOD_ASSET)
+    _workspace = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_mod_abs))))
+    _processed_path = os.path.join(_workspace, "companion_processed.apk")
+    try:
+        import shutil as _shutil
+        _shutil.copy2(MOD_ASSET, _processed_path)
+        print(f"\n  ✅ Pre-encrypt snapshot saved → {_processed_path}")
+        print(f"     (upload to CI as 'companion-processed' artifact for device testing)")
+    except Exception as _snap_err:
+        print(f"\n  ⚠️  Pre-encrypt snapshot failed: {_snap_err} — continuing")
+
     # ── STEP 8A FIX: Encrypt companion APK — runs ONCE at very end ───────────
     # Runs AFTER all steps that read MOD_ASSET as a zip file:
     #   STEP_17H (res_renamer.py), STEP_REPAIR_RESMAP, STEP_17C, STEP_RESIGN_1,
