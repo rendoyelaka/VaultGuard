@@ -61,7 +61,6 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      OLD_PKG:          com.android.pictach
       MODULE_ASSET:     app/src/main/assets/companion.apk
       TEMPLATE:         ${{ github.event.inputs.template }}
       CLIENT_ID:        ${{ github.event.inputs.client_id }}
