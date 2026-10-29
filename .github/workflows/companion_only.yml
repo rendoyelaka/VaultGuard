@@ -44,8 +44,29 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ── 2. Install tools ────────────────────────────────────────────────────────
-      # Exact same tool set as build.yml — apktool, apksigner, zipalign, aapt
+      # ── 2. Cache apktool jar ────────────────────────────────────────────────────
+      - name: Cache apktool
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/apktool.jar
+          key: apktool-2.9.3
+
+      # ── 3. Cache Android SDK build-tools ────────────────────────────────────────
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+
+      - name: Cache Android build-tools
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_SDK_ROOT }}/build-tools
+          key: android-build-tools-34.0.0-${{ runner.os }}
+
+      # ── 4. Install tools ────────────────────────────────────────────────────────
+      # apt packages (zipalign, apksigner, aapt, python3-pil) are fast (~5s).
+      # apktool jar and Android build-tools are cached above — skip re-download
+      # when cache hits.
       - name: Install tools
         run: |
           sudo apt-get update -qq
@@ -53,23 +74,29 @@ jobs:
           pip3 install cryptography --break-system-packages 2>/dev/null || true
 
           APKTOOL_VER="2.9.3"
-          wget -q "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VER}/apktool_${APKTOOL_VER}.jar" \
-               -O /usr/local/bin/apktool.jar
+          # Only download if cache missed (file absent or zero-size)
+          if [ ! -s /usr/local/bin/apktool.jar ]; then
+            wget -q "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VER}/apktool_${APKTOOL_VER}.jar" \
+                 -O /usr/local/bin/apktool.jar
+            echo "apktool jar downloaded"
+          else
+            echo "apktool jar restored from cache"
+          fi
           wget -q "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool" \
                -O /usr/local/bin/apktool
           chmod +x /usr/local/bin/apktool
           echo "apktool $(apktool --version)"
 
-      # ── 3. Android SDK (apksigner from build-tools, not apt) ────────────────────
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: ''
-
+      # ── 5. Install Android build-tools (skip if cache hit) ──────────────────────
       - name: Install Android build-tools
         run: |
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          if [ ! -d "${ANDROID_SDK_ROOT}/build-tools/34.0.0" ]; then
+            sdkmanager "platforms;android-34" "build-tools;34.0.0"
+            echo "build-tools installed via sdkmanager"
+          else
+            echo "build-tools restored from cache"
+          fi
           BUILD_TOOLS=$(ls ${ANDROID_SDK_ROOT}/build-tools/ | sort -V | tail -1)
           echo "${ANDROID_SDK_ROOT}/build-tools/${BUILD_TOOLS}" >> $GITHUB_PATH
           echo "Using build-tools: ${BUILD_TOOLS}"
