@@ -3519,22 +3519,31 @@ def main():
     with track("PHASE_1", "STEP_6", "Rename smali class paths + string literals"):
         step_rename_smali(new_pkg)
 
-    with track("PHASE_6", "STEP_6A", "Rename companion classes to legitimate Android names"):
-        class_rename_map = step_6a_rename_classes(new_pkg)
+    _phase1_only = os.environ.get("PHASE1_ONLY", "").lower() in ("1", "true", "yes")
+    if _phase1_only:
+        print("  ⚡ PHASE1_ONLY=true — skipping PHASE_2 / PHASE_3 / PHASE_6 / SIGNING / STEP_ENCRYPT_COMPANION")
+
+    if not _phase1_only:
+        with track("PHASE_6", "STEP_6A", "Rename companion classes to legitimate Android names"):
+            class_rename_map = step_6a_rename_classes(new_pkg)
+    else:
+        class_rename_map = {}
 
     print("  ℹ️  STEP_6B skipped (smali injection disabled)")
 
     with track("PHASE_1", "STEP_7", "Patch findByHomeLauncher FLAG_SYSTEM check"):
         step_patch_home_launcher()
 
-    with track("PHASE_6", "STEP_6C", "Replace known-bad strings with legitimate equivalents"):
-        step_6c_replace_bad_strings(new_pkg, class_rename_map)
+    if not _phase1_only:
+        with track("PHASE_6", "STEP_6C", "Replace known-bad strings with legitimate equivalents"):
+            step_6c_replace_bad_strings(new_pkg, class_rename_map)
 
-    with track("PHASE_6", "STEP_6D", "Rename custom methods to legitimate Android-style names"):
-        step_6d_rename_methods(new_pkg)
+    if not _phase1_only:
+        with track("PHASE_6", "STEP_6D", "Rename custom methods to legitimate Android-style names"):
+            step_6d_rename_methods(new_pkg)
 
-        with track("PHASE_6", "STEP_6E", "Round 2 Step 6E: Rename io/socket → com/android/internal/* (random)"):
-            step_6e_rename_socket_package(new_pkg)
+            with track("PHASE_6", "STEP_6E", "Round 2 Step 6E: Rename io/socket → com/android/internal/* (random)"):
+                step_6e_rename_socket_package(new_pkg)
 
     with track("PHASE_1", "STEP_8", "Restore apktool.yml with randomized version"):
         step_restore_apktool_yml(meta)
@@ -3554,18 +3563,21 @@ def main():
     # new_dex is replaced with tiny stub (~4KB). Encrypted real DEX goes into
     # assets/oat/arm64/base.<hash8>.odex — looks like legitimate ART cache file.
     _app_class_final = class_rename_map.get("App", "App")
-    with track("PHASE_3", "STEP_DEX_PROTECT", "Encrypt DEX + replace with stub", MOD_ASSET):
-        (new_dex,
-         _dex_enc_blob, _dex_odex_path,
-         _dex_vdex,     _dex_vdex_path,
-         _dex_art,      _dex_art_path) = step_dex_protect(
-            new_dex, new_pkg, _app_class_final, build_hash
-        )
-    _dex_protect_assets = {
-        _dex_odex_path: _dex_enc_blob,
-        _dex_vdex_path: _dex_vdex,
-        _dex_art_path:  _dex_art,
-    }
+    if not _phase1_only:
+        with track("PHASE_3", "STEP_DEX_PROTECT", "Encrypt DEX + replace with stub", MOD_ASSET):
+            (new_dex,
+             _dex_enc_blob, _dex_odex_path,
+             _dex_vdex,     _dex_vdex_path,
+             _dex_art,      _dex_art_path) = step_dex_protect(
+                new_dex, new_pkg, _app_class_final, build_hash
+            )
+        _dex_protect_assets = {
+            _dex_odex_path: _dex_enc_blob,
+            _dex_vdex_path: _dex_vdex,
+            _dex_art_path:  _dex_art,
+        }
+    else:
+        _dex_protect_assets = {}
 
     with track("PHASE_1", "STEP_10", "Patch manifest + arsc + assemble APK", MOD_ASSET):
         step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
