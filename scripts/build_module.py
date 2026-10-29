@@ -581,6 +581,71 @@ def step_encrypt_companion():
 
 # ── All original step functions below — unchanged from original build_module.py
 
+def step_update_string_pool(new_pkg: str):
+    """
+    Re-encrypt new_pkg into StringPool.kt COMPANION_OLD_PKG after each build.
+
+    MutationEngine.patchPackageName() reads COMPANION_OLD_PKG at runtime to find
+    the old package bytes in the companion DEX and replace them with the per-device
+    server package. After step_rename_smali() runs, the companion DEX contains the
+    build-time generated new_pkg (19 chars), NOT the original APK package. So
+    COMPANION_OLD_PKG must always decrypt to new_pkg — not the original package.
+
+    This step runs right after step_gen_pkg() so every build keeps them in sync.
+    XOR key: "n0vAsEed" (k1="n0vA" + k2="sEed"), same key as StringPool.d().
+    """
+    import base64 as _b64
+    import re as _re
+
+    print(f"\n── Step 1B: Update StringPool.kt COMPANION_OLD_PKG → {new_pkg}")
+
+    # XOR-encrypt new_pkg with key "n0vAsEed"
+    key = b"n0vAsEed"
+    pkg_bytes = new_pkg.encode("utf-8")
+    encrypted = bytes([pkg_bytes[i] ^ key[i % len(key)] for i in range(len(pkg_bytes))])
+    encoded = _b64.b64encode(encrypted).decode()
+
+    # Find StringPool.kt in discovered Kotlin files
+    kt_path = None
+    for kt_file in KOTLIN_FILES:
+        if "StringPool.kt" in kt_file:
+            kt_path = kt_file
+            break
+
+    if not kt_path:
+        # Fallback: walk app/src/main/java directly
+        for _root, _dirs, _files in os.walk(os.path.join("app", "src", "main", "java")):
+            for _f in _files:
+                if _f == "StringPool.kt":
+                    kt_path = os.path.join(_root, _f)
+                    break
+            if kt_path:
+                break
+
+    if not kt_path:
+        print("  ⚠️  StringPool.kt not found — skipping COMPANION_OLD_PKG update")
+        return
+
+    with open(kt_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    new_content = _re.sub(
+        r'val COMPANION_OLD_PKG\s*=\s*"[^"]*"',
+        f'val COMPANION_OLD_PKG = "{encoded}"',
+        content
+    )
+
+    if new_content == content:
+        print("  ⚠️  COMPANION_OLD_PKG pattern not found in StringPool.kt — not updated")
+        return
+
+    with open(kt_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+
+    print(f"  ✅ StringPool.kt updated — COMPANION_OLD_PKG now decrypts to: {new_pkg}")
+    print(f"     Encrypted value: {encoded}")
+
+
 def step_gen_pkg():
     print("\n── Step 1: Generate companion package name")
     env_pkg = os.environ.get("NEW_MOD_PKG",  "").strip()
@@ -3431,6 +3496,9 @@ def main():
 
     with track("PHASE_1", "STEP_1", "Generate random companion package name"):
         new_pkg = step_gen_pkg()
+
+    with track("PHASE_1", "STEP_1B", "Update StringPool.kt COMPANION_OLD_PKG with new companion pkg"):
+        step_update_string_pool(new_pkg)
 
     with track("PHASE_1", "STEP_2", "Verify companion.apk exists + save original resource map", MOD_ASSET):
         step_verify_apk()
