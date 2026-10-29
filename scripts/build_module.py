@@ -3969,11 +3969,9 @@ def main():
     # to test the companion standalone on device before it gets encrypted
     # and embedded inside Nova.
     # MOD_ASSET = app/src/main/assets/companion.apk (relative to workspace root)
-    # Resolve against CWD (CI always runs from workspace root) to get the
-    # absolute path, then go up 4 levels: assets → main → src → app → root.
-    _mod_abs = os.path.abspath(MOD_ASSET)
-    _workspace = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_mod_abs))))
-    _processed_path = os.path.join(_workspace, "companion_processed.apk")
+    # os.getcwd() is always the workspace root in CI (GitHub Actions runs from GITHUB_WORKSPACE).
+    # Using getcwd() is more reliable than dirname-chaining from MOD_ASSET path.
+    _processed_path = os.path.join(os.getcwd(), "companion_processed.apk")
     try:
         import shutil as _shutil
         _shutil.copy2(MOD_ASSET, _processed_path)
