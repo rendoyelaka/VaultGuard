@@ -1,9 +1,12 @@
 name: Build Companion APK (Test)
-run-name: "Companion-only build #${{ github.run_number }} [${{ github.event.inputs.template || 'wedding' }}]"
+run-name: "Companion-only build #${{ github.run_number }} [${{ github.event.inputs.template || 'wedding' }}] — ${{ github.event_name }}"
 
 # ── Trigger ────────────────────────────────────────────────────────────────────
-# Manual trigger only — does NOT fire on push so it never conflicts with build.yml
+# Auto-fires on every push to main (companion test artifact always available).
+# Also available as manual dispatch to pick a custom template.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       template:
