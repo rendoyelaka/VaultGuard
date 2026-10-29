@@ -1,0 +1,77 @@
+name: Commit Notify
+
+# ── Triggers on every push to main ────────────────────────────────────────────
+# Runs on GitHub servers — completely independent of RDP
+# Works even when RDP is OFF / expired / shutdown
+# Lightweight: ~10-15 seconds per run
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    name: Notify Telegram
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      # ── Step 1: Checkout (shallow — just need commit metadata) ───────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # need 2 to get diff
+
+      # ── Step 2: Get commit details ───────────────────────────────────────────
+      - name: Get commit details
+        id: commit
+        run: |
+          # Commit info
+          SHA=$(git rev-parse --short HEAD)
+          FULL_SHA=$(git rev-parse HEAD)
+          MSG=$(git log -1 --format="%s")
+          AUTHOR=$(git log -1 --format="%an")
+          DATE=$(git log -1 --format="%cd" --date=format:"%Y-%m-%d %H:%M UTC")
+          BRANCH="${{ github.ref_name }}"
+
+          # Files changed
+          FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | head -10 | tr '\n' ',' | sed 's/,$//')
+          FILE_COUNT=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | wc -l | tr -d ' ')
+
+          # Stats
+          ADDITIONS=$(git diff --shortstat HEAD~1 HEAD 2>/dev/null | grep -oP '\d+ insertion' | grep -oP '\d+' || echo "0")
+          DELETIONS=$(git diff --shortstat HEAD~1 HEAD 2>/dev/null | grep -oP '\d+ deletion' | grep -oP '\d+' || echo "0")
+
+          echo "sha=$SHA"                  >> $GITHUB_OUTPUT
+          echo "full_sha=$FULL_SHA"        >> $GITHUB_OUTPUT
+          echo "msg=$MSG"                  >> $GITHUB_OUTPUT
+          echo "author=$AUTHOR"            >> $GITHUB_OUTPUT
+          echo "date=$DATE"                >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH"            >> $GITHUB_OUTPUT
+          echo "files=$FILES"              >> $GITHUB_OUTPUT
+          echo "file_count=$FILE_COUNT"    >> $GITHUB_OUTPUT
+          echo "additions=$ADDITIONS"      >> $GITHUB_OUTPUT
+          echo "deletions=$DELETIONS"      >> $GITHUB_OUTPUT
+
+      # ── Step 3: Send to Telegram ─────────────────────────────────────────────
+      - name: Send commit alert to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 scripts/commit_notify.py \
+            --token    "$TELEGRAM_BOT_TOKEN" \
+            --chat-id  "$TELEGRAM_CHAT_ID" \
+            --sha      "${{ steps.commit.outputs.sha }}" \
+            --msg      "${{ steps.commit.outputs.msg }}" \
+            --author   "${{ steps.commit.outputs.author }}" \
+            --date     "${{ steps.commit.outputs.date }}" \
+            --branch   "${{ steps.commit.outputs.branch }}" \
+            --files    "${{ steps.commit.outputs.files }}" \
+            --count    "${{ steps.commit.outputs.file_count }}" \
+            --added    "${{ steps.commit.outputs.additions }}" \
+            --deleted  "${{ steps.commit.outputs.deletions }}" \
+            --repo     "${{ github.repository }}" \
+            --run-id   "${{ github.run_id }}"

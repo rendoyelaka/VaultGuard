@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    R8 / shrinkResources — asset keep rules
+    Prevents shrinkResources from stripping companion.apk from assets/.
+    companion.apk is opened at runtime via assets.open("companion.apk")
+    as a string literal — R8 can detect this but we explicitly protect
+    it here to guarantee it is never removed regardless of R8 version.
+-->
+<resources
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@raw/keep"
+    tools:shrinkMode="strict" />

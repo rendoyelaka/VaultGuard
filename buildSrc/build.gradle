@@ -1,0 +1,15 @@
+plugins {
+    id 'groovy'
+}
+
+repositories {
+    mavenCentral()
+    google()
+}
+
+dependencies {
+    implementation gradleApi()
+    implementation localGroovy()
+    // Removed: com.android.tools.build:gradle — conflicts with root build.gradle
+    // Our plugins only need gradleApi() + localGroovy()
+}

