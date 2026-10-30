@@ -1226,123 +1226,6 @@ doNotCompress:
     print("  ✅ apktool.yml restored (dexVersion: 035)")
 
 
-def step_fix_smali_flow_through():
-    """
-    Fix: smali files where normal code can fall through into a move-exception handler.
-    Android 17 strict dex2oat verifier rejects:
-      - [0xD8] Can flow through to move-exception
-      - invalid use of move-exception as branch target
-
-    Pattern: a block of one or more consecutive .catch lines, followed (no goto/return/throw
-    between them and the label) directly by a catch label whose first instruction is
-    move-exception. Normal execution falls through the .catch block into the handler.
-
-    Fix: insert 'goto :goto_skip_<label>' immediately after the last .catch line of the
-    block, and insert ':goto_skip_<label>' after the catch handler body ends.
-
-    Verified against RecyclerView.smali and SystemStateReceiver.smali from Build #41/#42.
-    """
-    import glob as _glob
-    import re
-
-    print("\n── Fix: Smali flow-through to move-exception (Android 17 VerifyError)")
-    smali_files = _glob.glob("companion_decompiled/smali/**/*.smali", recursive=True)
-    fixed_count = 0
-    goto_counter = [0]  # mutable counter for unique goto labels per file
-
-    def next_goto(label_name):
-        goto_counter[0] += 1
-        return f":goto_skip_{label_name}_{goto_counter[0]}"
-
-    for fpath in smali_files:
-        try:
-            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-        except Exception as e:
-            print(f"  [warn] Cannot read {fpath}: {e}")
-            continue
-
-        goto_counter[0] = 0
-        new_lines = []
-        i = 0
-        changed = False
-
-        while i < len(lines):
-            stripped = lines[i].strip()
-
-            # Detect start of a .catch block (one or more consecutive .catch lines)
-            if stripped.startswith(".catch "):
-                # Collect all consecutive .catch lines
-                catch_block_start = i
-                catch_block_lines = []
-                j = i
-                while j < len(lines) and lines[j].strip().startswith(".catch "):
-                    catch_block_lines.append(lines[j])
-                    j += 1
-
-                # j now points to first non-.catch line
-                # Skip blank lines after the .catch block
-                k = j
-                while k < len(lines) and lines[k].strip() == "":
-                    k += 1
-
-                # Check: is the next non-blank line a catch label?
-                if k < len(lines):
-                    next_stripped = lines[k].strip()
-                    label_match = re.match(r'^:(\w+)$', next_stripped)
-                    if label_match:
-                        label_name = label_match.group(1)
-                        # Check if first instruction after label is move-exception
-                        m = k + 1
-                        while m < len(lines) and lines[m].strip() == "":
-                            m += 1
-                        if m < len(lines) and lines[m].strip().startswith("move-exception"):
-                            # BUG CONFIRMED: fall-through from .catch block to move-exception
-                            goto_lbl = next_goto(label_name)
-                            indent = "    "
-
-                            # Write all .catch lines unchanged
-                            for cl in catch_block_lines:
-                                new_lines.append(cl)
-                            # Write blank lines between catch block and label
-                            for bi in range(j, k):
-                                new_lines.append(lines[bi])
-                            # Insert goto to skip over catch handler
-                            new_lines.append(f"{indent}goto {goto_lbl}\n")
-
-                            # Now copy catch label + handler body
-                            new_lines.append(lines[k])  # :catch_N label
-                            # Copy handler body until next label/directive/.end method
-                            p = k + 1
-                            while p < len(lines):
-                                ps = lines[p].strip()
-                                if ps.startswith(":") or ps.startswith(".end method") or ps.startswith(".method"):
-                                    break
-                                new_lines.append(lines[p])
-                                p += 1
-                            # Insert skip label after handler body
-                            new_lines.append(f"{indent}{goto_lbl}\n")
-
-                            i = p
-                            changed = True
-                            continue
-
-                # No fall-through bug: write .catch block as-is and continue
-                for cl in catch_block_lines:
-                    new_lines.append(cl)
-                i = j
-                continue
-
-            new_lines.append(lines[i])
-            i += 1
-
-        if changed:
-            with open(fpath, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-            print(f"  ✅ Fixed flow-through in: {fpath}")
-            fixed_count += 1
-
-    print(f"  ✅ step_fix_smali_flow_through done. Files fixed: {fixed_count}")
 
 
 def step_debug_smali_verify():
@@ -1376,7 +1259,7 @@ def step_debug_smali_verify():
             if stripped.startswith("move-exception"):
                 has_move_exception = True
                 move_exception_lines.append((i + 1, line))
-            if stripped.startswith(":try_start") or stripped.startswith(":p3_try_start"):
+            if stripped.startswith(":try_start"):
                 has_try_block = True
             if stripped.startswith(".catch"):
                 has_catch = True
@@ -1872,8 +1755,8 @@ def _inject_axml_app_name(manifest_raw: bytes, new_pkg: str) -> bytes:
     START_ELEMENT in a binary AXML manifest.
 
     The raw companion APK has NO android:name on <application> — the App class
-    is never called by Android as an Application subclass.  Our PHASE_3 stub
-    lives in App.attachBaseContext(), so Android must know to instantiate App.
+    is never called by Android as an Application subclass.  Adding android:name
+    ensures App is instantiated by Android.
 
     Strategy (safe, no string-pool surgery):
       1. Build string value ".<pkg>.App" (simple-name form: ".<SimpleName>")
@@ -2991,76 +2874,6 @@ def step_replace_asset():
     print(f"  ✅ {MOD_ASSET} replaced")
 
 
-def step_inject_app_stub_smali(new_pkg: str):
-    """
-    PHASE_3 STEP_1B: Inject stub log into MainActivity.smali onCreate().
-
-    Hook point: MainActivity.onCreate() — IS instantiated by Android (LAUNCHER).
-    No AXML change needed.
-
-    What is injected (STEP_1B stub log only):
-      1. Log PHASE3_STUB tag to confirm smali injection is working
-
-    Timing: AFTER step_rename_smali (pkg path valid),
-            BEFORE step_6a_rename_classes (MainActivity.smali present).
-    """
-    print("\n── PHASE_3 STEP_1B: Inject stub log into MainActivity.smali")
-
-    pkg_path   = new_pkg.replace(".", "/")
-    smali_path = os.path.join("companion_decompiled", "smali", pkg_path, "MainActivity.smali")
-
-    if not os.path.isfile(smali_path):
-        found = []
-        for root, dirs, files in os.walk("companion_decompiled"):
-            for fn in files:
-                if fn == "MainActivity.smali":
-                    found.append(os.path.join(root, fn))
-        if not found:
-            print(f"  [inject_stub] ❌ MainActivity.smali not found — aborting")
-            sys.exit(1)
-        smali_path = found[0]
-        print(f"  [inject_stub] ℹ️  Found MainActivity.smali at: {smali_path}")
-
-    with open(smali_path, "r") as f:
-        content = f.read()
-
-    if "PHASE3_STUB" in content:
-        print("  [inject_stub] ⚠️  PHASE3_STUB already present — skipping")
-        return
-
-    # ── STEP_1B: inject stub log only ────────────────────────────────────────
-    loader_smali = """
-
-    # PHASE3_STUB: STEP_1B — stub log only
-    const-string v0, "PHASE3_STUB"
-    const-string v1, "STEP_1B: smali injection active"
-    invoke-static {v0, v1}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-"""
-
-    super_call_bundle = "invoke-super {p0, p1}, Landroid/app/Activity;->onCreate(Landroid/os/Bundle;)V"
-    method_marker = ".method public final onCreate(Landroid/os/Bundle;)V"
-
-    injected = False
-
-    if method_marker in content:
-        idx = content.index(method_marker)
-        locals_idx = content.index("    .locals", idx)
-        locals_eol = content.index("\n", locals_idx)
-        content = content[:locals_idx] + "    .locals 2" + content[locals_eol:]
-
-        if super_call_bundle in content:
-            super_end = content.index(super_call_bundle) + len(super_call_bundle)
-            content = content[:super_end] + "\n" + loader_smali + content[super_end:]
-            injected = True
-
-    if not injected:
-        print("  [inject_stub] ❌ Could not find onCreate method marker — aborting")
-        sys.exit(1)
-
-    with open(smali_path, "w") as f:
-        f.write(content)
-
-    print(f"  [inject_stub] ✅ PHASE_3 STEP_1B stub log injected into: {smali_path}")
 
 
 def step_inject_kotlin(new_pkg):
@@ -3145,12 +2958,6 @@ def main():
     elif _phase12_only:
         print("  ⚡ PHASE12_ONLY=true — running PHASE_1 + PHASE_2 + PHASE_6, skipping ENCRYPT_COMPANION")
 
-    # ── PHASE_3 STEP_1B: Inject PHASE3_STUB log into MainActivity.smali ─────
-    # Must run AFTER step_rename_smali (STEP_6) so pkg path is final,
-    # and BEFORE STEP_6A which renames MainActivity.smali to a random name.
-    with track("PHASE_3", "STEP_P3_1B", "Inject PHASE3_STUB log into MainActivity.smali"):
-        step_inject_app_stub_smali(new_pkg)
-
     if not _phase1_only:
         with track("PHASE_6", "STEP_6A", "Rename companion classes to legitimate Android names"):
             class_rename_map = step_6a_rename_classes(new_pkg)
@@ -3175,9 +2982,6 @@ def main():
 
     with track("PHASE_1", "STEP_8", "Restore apktool.yml with randomized version"):
         step_restore_apktool_yml(meta)
-
-    with track("PHASE_1", "STEP_9_FIX", "Fix smali flow-through to move-exception (Android 17 VerifyError)"):
-        step_fix_smali_flow_through()
 
     with track("PHASE_1", "STEP_9_DEBUG", "Scan all smali for VerifyError patterns (move-exception)"):
         step_debug_smali_verify()
