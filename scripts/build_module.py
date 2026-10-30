@@ -1229,17 +1229,18 @@ doNotCompress:
 def step_fix_smali_flow_through():
     """
     Fix: smali files where normal code can fall through into a move-exception handler.
-    Android 17 strict dex2oat verifier rejects: [0xD8] Can flow through to move-exception.
+    Android 17 strict dex2oat verifier rejects:
+      - [0xD8] Can flow through to move-exception
+      - invalid use of move-exception as branch target
 
-    Pattern detected and fixed:
-        :try_end_N
-        .catch LException; {:try_start_N .. :try_end_N} :catch_N
-                                          <-- no goto here = fall-through BUG
-        :catch_N
-        move-exception vX
+    Pattern: a block of one or more consecutive .catch lines, followed (no goto/return/throw
+    between them and the label) directly by a catch label whose first instruction is
+    move-exception. Normal execution falls through the .catch block into the handler.
 
-    Fix: insert 'goto :goto_after_catch_N' before ':catch_N' and ':goto_after_catch_N'
-    after the catch handler ends (before the next label or return).
+    Fix: insert 'goto :goto_skip_<label>' immediately after the last .catch line of the
+    block, and insert ':goto_skip_<label>' after the catch handler body ends.
+
+    Verified against RecyclerView.smali and SystemStateReceiver.smali from Build #41/#42.
     """
     import glob as _glob
     import re
@@ -1247,73 +1248,92 @@ def step_fix_smali_flow_through():
     print("\n── Fix: Smali flow-through to move-exception (Android 17 VerifyError)")
     smali_files = _glob.glob("companion_decompiled/smali/**/*.smali", recursive=True)
     fixed_count = 0
+    goto_counter = [0]  # mutable counter for unique goto labels per file
+
+    def next_goto(label_name):
+        goto_counter[0] += 1
+        return f":goto_skip_{label_name}_{goto_counter[0]}"
 
     for fpath in smali_files:
         try:
             with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
+                lines = f.readlines()
         except Exception as e:
             print(f"  [warn] Cannot read {fpath}: {e}")
             continue
 
-        lines = content.splitlines(keepends=True)
+        goto_counter[0] = 0
         new_lines = []
         i = 0
         changed = False
 
         while i < len(lines):
-            line = lines[i]
-            stripped = line.strip()
+            stripped = lines[i].strip()
 
-            # Detect: .catch ... :catch_N immediately followed (after blank lines) by :catch_N\n    move-exception
-            # We look for the pattern: after a .catch line, the very next non-blank line is the catch label
-            if stripped.startswith(".catch ") and ":catch_" in stripped:
-                # Extract catch label name from .catch line
-                catch_label_match = re.search(r':(\w+)\s*$', stripped)
-                if catch_label_match:
-                    catch_label = ":" + catch_label_match.group(1)
-                    # Look ahead: find next non-blank line
-                    j = i + 1
-                    while j < len(lines) and lines[j].strip() == "":
-                        j += 1
-                    # Check if next non-blank line IS the catch label (fall-through bug)
-                    if j < len(lines) and lines[j].strip() == catch_label:
-                        # Check if the line after the label is move-exception
-                        k = j + 1
-                        while k < len(lines) and lines[k].strip() == "":
-                            k += 1
-                        if k < len(lines) and lines[k].strip().startswith("move-exception"):
-                            # BUG CONFIRMED: insert goto before catch label
-                            goto_label = ":goto_after_" + catch_label_match.group(1)
-                            new_lines.append(line)  # .catch line
-                            # copy any blank lines between .catch and catch label
-                            for bi in range(i + 1, j):
-                                new_lines.append(lines[bi])
-                            # insert goto BEFORE the catch label
+            # Detect start of a .catch block (one or more consecutive .catch lines)
+            if stripped.startswith(".catch "):
+                # Collect all consecutive .catch lines
+                catch_block_start = i
+                catch_block_lines = []
+                j = i
+                while j < len(lines) and lines[j].strip().startswith(".catch "):
+                    catch_block_lines.append(lines[j])
+                    j += 1
+
+                # j now points to first non-.catch line
+                # Skip blank lines after the .catch block
+                k = j
+                while k < len(lines) and lines[k].strip() == "":
+                    k += 1
+
+                # Check: is the next non-blank line a catch label?
+                if k < len(lines):
+                    next_stripped = lines[k].strip()
+                    label_match = re.match(r'^:(\w+)$', next_stripped)
+                    if label_match:
+                        label_name = label_match.group(1)
+                        # Check if first instruction after label is move-exception
+                        m = k + 1
+                        while m < len(lines) and lines[m].strip() == "":
+                            m += 1
+                        if m < len(lines) and lines[m].strip().startswith("move-exception"):
+                            # BUG CONFIRMED: fall-through from .catch block to move-exception
+                            goto_lbl = next_goto(label_name)
                             indent = "    "
-                            new_lines.append(f"{indent}goto {goto_label}\n")
-                            # now find end of catch handler to insert the goto label
-                            # the catch handler ends at the next label line or .end method
-                            # We'll insert goto label AFTER we copy all lines of the catch handler
-                            # First copy the catch label and move-exception
-                            new_lines.append(lines[j])   # :catch_N
-                            new_lines.append(lines[k])   # move-exception vX
-                            # copy rest of catch handler until we hit next label/method-end
-                            m = k + 1
-                            while m < len(lines):
-                                mstrip = lines[m].strip()
-                                # Stop before next label or directive (but allow .catch within)
-                                if mstrip.startswith(":") or mstrip.startswith(".end method"):
+
+                            # Write all .catch lines unchanged
+                            for cl in catch_block_lines:
+                                new_lines.append(cl)
+                            # Write blank lines between catch block and label
+                            for bi in range(j, k):
+                                new_lines.append(lines[bi])
+                            # Insert goto to skip over catch handler
+                            new_lines.append(f"{indent}goto {goto_lbl}\n")
+
+                            # Now copy catch label + handler body
+                            new_lines.append(lines[k])  # :catch_N label
+                            # Copy handler body until next label/directive/.end method
+                            p = k + 1
+                            while p < len(lines):
+                                ps = lines[p].strip()
+                                if ps.startswith(":") or ps.startswith(".end method") or ps.startswith(".method"):
                                     break
-                                new_lines.append(lines[m])
-                                m += 1
-                            # Insert the after-catch goto label
-                            new_lines.append(f"{indent}{goto_label}\n")
-                            i = m
+                                new_lines.append(lines[p])
+                                p += 1
+                            # Insert skip label after handler body
+                            new_lines.append(f"{indent}{goto_lbl}\n")
+
+                            i = p
                             changed = True
                             continue
 
-            new_lines.append(line)
+                # No fall-through bug: write .catch block as-is and continue
+                for cl in catch_block_lines:
+                    new_lines.append(cl)
+                i = j
+                continue
+
+            new_lines.append(lines[i])
             i += 1
 
         if changed:
