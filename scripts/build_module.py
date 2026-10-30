@@ -3980,50 +3980,72 @@ def main():
             except Exception as _e:
                 print(f"  ⚠️  STEP_TYPE2032 — failed: {_e}, skipping")
 
-        with track("PHASE_2", "STEP_FAKE_META_INF", "Inject fake META-INF entries pre-sign [reference pattern]", MOD_ASSET):
-            # Reference APK has 33 fake META-INF files with confusing names.
-            # These confuse static path resolution and scanner file routing.
-            # Must run PRE-SIGN — V2 signing covers the fake entries as part of payload.
-            # Injecting post-sign breaks V2: cd_offset in new EOCD != signing_block_end
-            # → Android V2 verifier rejects → "problem parsing the package".
-            # Android installer ignores unknown META-INF entries — installs fine.
+        with track("PHASE_2", "STEP_FAKE_META_INF", "Inject fake META-INF entries pre-sign [hybrid scanner confusion]", MOD_ASSET):
+            # Hybrid scanner-confusion injection — 4 evasion layers:
             #
-            # RAW BINARY APPEND APPROACH (Hybrid 9):
-            # Previous approach used zipfile.ZipFile to read existing entries then
-            # append fakes.  STEP_CRC32_FORGE (which runs before this step)
-            # sets ALL CRC fields to 0xDEADBEEF.  zipfile.read() verifies CRC on
-            # extraction → "Bad CRC-32" → crash.
-            # Fix: read APK as raw bytes, locate EOCD, split at CD offset, append
-            # new LFH+data bytes BEFORE the CD, append new CD entries, rebuild EOCD.
-            # Existing entries are NEVER decompressed or CRC-checked — just bytes.
+            # Layer 1 — Path traversal: META-INF/../../classes.dex forces scanners
+            #   to resolve symlinks/paths, wastes CPU on path normalization.
+            # Layer 2 — Deep nesting: META-INF/a/b/c/d/e/classes.dex forces
+            #   recursive directory traversal in breadth-first scanners.
+            # Layer 3 — Unicode homoglyphs: zero-width space (U+200B) and
+            #   right-to-left mark (U+200F) inside filenames — renders identically
+            #   to human eye, breaks naive string matching in scanners.
+            # Layer 4 — Fake signature files: META-INF/XXXXX.SF / XXXXX.RSA forces
+            #   scanners to attempt signature validation on junk data → CPU burn.
+            #
+            # All entries have a random 16-byte extra field in the LFH to break
+            # strict ZIP-extra parsers and add per-entry noise.
+            #
+            # AUTO-DEDUP: reads all existing CD entry names before injecting —
+            # skips any name already present (fixes apksigner duplicate-name error
+            # that occurred when zip_enhancer.py had already added the same name).
+            #
+            # Must run PRE-SIGN — V2 signing covers the fake entries as payload.
+            # Injecting post-sign breaks V2: cd_offset in new EOCD != signing_block_end.
+            # Raw binary append — never decompresses/CRC-checks existing entries
+            # (STEP_CRC32_FORGE already set all CRCs to 0xDEADBEEF).
             try:
                 import zlib as _zlib
 
-                _AXML_HDR = bytes.fromhex("030008000000000001001c00")  # AXML magic prefix
                 _PNG_HDR  = bytes.fromhex("89504e470d0a1a0a0000000d49484452")  # PNG magic
 
-                # Fake META-INF entry names — maximum scanner/parser confusion
-                _fake_meta = [
-                    "META-INF/ .xml",
-                    "META-INF/  .xml",
-                    "META-INF/classes.dex.xml",
-                    "META-INF/AndroidManifest.xml.xml",
-                    "META-INF/AndroidManifest.xml",
-                    "META-INF/resources.arsc.xml",
-                    "META-INF/..xml",
-                    "META-INF///.xml",
-                    "META-INF////.xml",
-                    "META-INF/////.xml",
-                    "META-INF/\\\\.xml",
-                    "META-INF/\\\\\\.xml",
-                    "META-INF/\\\\/.xml",
-                    "META-INF/..png",
-                    "META-INF///.png",
-                    "META-INF/AndroidManifest.xml.png",
-                    "META-INF/AndroidManifest.png",
-                    "META-INF////.9.png",
-                    "META-INF/////.9.png",
-                    "META-INF/resources.arsc.9.png",
+                # ── Candidate fake META-INF entry names (hybrid 4-layer) ──────────
+                # Layer 1: path traversal — forces scanner path resolution
+                # Layer 2: deep nesting — recursive traversal pressure
+                # Layer 3: unicode homoglyphs — zero-width / RTL chars
+                # Layer 4: fake sig files — forces sig-validation CPU burn
+                _ZW  = "​"   # zero-width space (invisible, breaks string match)
+                _RTL = "‏"   # right-to-left mark (invisible)
+                _fake_meta_candidates = [
+                    # Layer 1 — path traversal
+                    "META-INF/../../classes.dex",
+                    "META-INF/../../AndroidManifest.xml",
+                    "META-INF/../../resources.arsc",
+                    "META-INF/../../../classes.dex",
+                    "META-INF/../classes2.dex",
+                    # Layer 2 — deep nesting
+                    "META-INF/a/b/c/d/classes.dex",
+                    "META-INF/a/b/c/d/AndroidManifest.xml",
+                    "META-INF/a/b/c/d/resources.arsc",
+                    "META-INF/p/q/r/s/t/classes.dex",
+                    "META-INF/p/q/r/s/t/AndroidManifest.xml",
+                    "META-INF/x/y/z/resources.arsc",
+                    "META-INF/1/2/3/4/5/classes.dex",
+                    "META-INF/1/2/3/4/5/AndroidManifest.xml",
+                    # Layer 3 — unicode homoglyphs
+                    f"META-INF/{_ZW}classes.dex",
+                    f"META-INF/{_ZW}AndroidManifest.xml",
+                    f"META-INF/classes{_ZW}.dex",
+                    f"META-INF/res{_RTL}.xml",
+                    f"META-INF/{_RTL}resources.arsc",
+                    f"META-INF/{_ZW}{_RTL}classes.dex",
+                    f"META-INF/Android{_ZW}Manifest.xml",
+                    # Layer 4 — fake signature files (forces sig-validation attempt)
+                    "META-INF/XXXXX.SF",
+                    "META-INF/XXXXX.RSA",
+                    "META-INF/YYYYY.SF",
+                    "META-INF/YYYYY.RSA",
+                    "META-INF/ZZZZZ.SF",
                 ]
 
                 # ── Load raw APK bytes ────────────────────────────────────────────
@@ -4031,22 +4053,37 @@ def main():
                 _mi_src = MOD_ASSET
                 _mi_raw = open(_mi_src, "rb").read()
 
-                # ── Locate EOCD (scan from tail — comment may exist but we set none) ──
+                # ── Locate EOCD ───────────────────────────────────────────────────
                 _mi_eocd = _mi_raw.rfind(b"PK\x05\x06")
                 if _mi_eocd == -1:
                     raise ValueError("EOCD signature not found")
 
-                # EOCD layout (22 bytes minimum, no comment here):
-                # sig(4) disk(2) cd_disk(2) cd_count_disk(2) cd_count_total(2)
-                # cd_size(4) cd_offset(4) comment_len(2)
                 _mi_cd_count  = struct.unpack_from("<H", _mi_raw, _mi_eocd + 10)[0]
                 _mi_cd_size   = struct.unpack_from("<I", _mi_raw, _mi_eocd + 12)[0]
                 _mi_cd_offset = struct.unpack_from("<I", _mi_raw, _mi_eocd + 16)[0]
 
-                # Split APK into three regions:
-                #   payload_blob : everything before the CD  (LFHs + compressed data)
-                #   cd_blob      : existing Central Directory entries
-                # EOCD is discarded — we rebuild it
+                # ── AUTO-DEDUP: collect all existing CD entry names ───────────────
+                # Scan Central Directory to build a set of already-present names.
+                # apksigner rejects duplicate names → we skip any collision.
+                _existing_names = set()
+                _cd_pos = _mi_cd_offset
+                for _ in range(_mi_cd_count):
+                    if _mi_raw[_cd_pos:_cd_pos+4] != b"PK\x01\x02":
+                        break
+                    _ef_fnlen = struct.unpack_from("<H", _mi_raw, _cd_pos + 28)[0]
+                    _ef_exlen = struct.unpack_from("<H", _mi_raw, _cd_pos + 30)[0]
+                    _ef_cmlen = struct.unpack_from("<H", _mi_raw, _cd_pos + 32)[0]
+                    _ef_fname = _mi_raw[_cd_pos + 46: _cd_pos + 46 + _ef_fnlen]
+                    try:
+                        _existing_names.add(_ef_fname.decode("utf-8", errors="replace"))
+                    except Exception:
+                        _existing_names.add(_ef_fname.decode("latin-1", errors="replace"))
+                    _cd_pos += 46 + _ef_fnlen + _ef_exlen + _ef_cmlen
+
+                # Filter candidate list — keep only names not already present
+                _fake_meta = [n for n in _fake_meta_candidates if n not in _existing_names]
+
+                # Split APK into payload blob + CD blob (EOCD discarded, rebuilt below)
                 _mi_payload = bytearray(_mi_raw[:_mi_cd_offset])
                 _mi_cd      = bytearray(_mi_raw[_mi_cd_offset:_mi_cd_offset + _mi_cd_size])
 
@@ -4056,23 +4093,24 @@ def main():
                     _fname_b = _mname.encode("utf-8")
                     _fnlen   = len(_fname_b)
 
-                    # Build uncompressed payload
-                    _is_png  = _mname.endswith(".png") or _mname.endswith(".9.png")
-                    _raw_sz  = random.randint(100, 800)
+                    # Build uncompressed payload — PNG magic for .png/.RSA/.SF, AXML otherwise
+                    _is_png = (_mname.endswith(".png") or _mname.endswith(".9.png")
+                               or _mname.endswith(".RSA") or _mname.endswith(".SF"))
+                    _raw_sz = random.randint(100, 800)
                     if _is_png:
                         _raw_data = _PNG_HDR + secrets.token_bytes(_raw_sz)
                     else:
-                        _fake_body_sz = 8 + _raw_sz
+                        _fake_body_sz  = 8 + _raw_sz
                         _axml_type_hdr = struct.pack("<HHI", 0x0003, 8, _fake_body_sz)
-                        _raw_data = _axml_type_hdr + secrets.token_bytes(_raw_sz)
+                        _raw_data      = _axml_type_hdr + secrets.token_bytes(_raw_sz)
 
-                    # Compress and compute CRC on the real new payload
-                    _comp_data = _zlib.compress(_raw_data, 9)[2:-4]  # strip zlib header/trailer
+                    # Compress and compute CRC
+                    _comp_data = _zlib.compress(_raw_data, 9)[2:-4]  # strip zlib wrapper
                     _crc32_val = _zlib.crc32(_raw_data) & 0xFFFFFFFF
                     _usz       = len(_raw_data)
                     _csz       = len(_comp_data)
 
-                    # Random DOS timestamp for this entry
+                    # Random DOS timestamp
                     _mi_yr   = random.randint(2000, 2023) - 1980
                     _mi_mo   = random.randint(1, 12)
                     _mi_dy   = random.randint(1, 28)
@@ -4082,47 +4120,51 @@ def main():
                     _mi_date = (_mi_yr << 9) | (_mi_mo << 5) | _mi_dy
                     _mi_time = (_mi_hr << 11) | (_mi_mn << 5) | _mi_sc
 
+                    # Random 16-byte extra field — breaks strict ZIP-extra parsers
+                    _extra   = secrets.token_bytes(16)
+                    _exlen   = len(_extra)
+
                     # LFH offset = current payload length (before we append)
                     _lfh_offset = len(_mi_payload)
 
-                    # Build Local File Header (30 + fnlen bytes, no extra field)
+                    # Build Local File Header (30 + fnlen + exlen bytes)
                     _lfh = struct.pack(
                         "<4sHHHHHIIIHH",
                         b"PK\x03\x04",  # signature
                         20,             # version needed (2.0)
-                        0,              # general purpose flag — 0 (not encrypted)
+                        0,              # general purpose flag
                         8,              # compression method — DEFLATE
-                        _mi_time,       # last mod time
-                        _mi_date,       # last mod date
-                        _crc32_val,     # CRC-32
-                        _csz,           # compressed size
-                        _usz,           # uncompressed size
-                        _fnlen,         # filename length
-                        0,              # extra field length
-                    ) + _fname_b
+                        _mi_time,
+                        _mi_date,
+                        _crc32_val,
+                        _csz,
+                        _usz,
+                        _fnlen,
+                        _exlen,         # extra field length = 16
+                    ) + _fname_b + _extra
 
                     _mi_payload += _lfh + _comp_data
 
-                    # Build Central Directory entry (46 + fnlen bytes)
+                    # Build Central Directory entry (46 + fnlen bytes, extra=0 in CD)
                     _cde = struct.pack(
                         "<4sHHHHHHIIIHHHHHII",
                         b"PK\x01\x02",  # signature
                         0x0314,         # version made by (Unix, 2.0)
                         20,             # version needed
-                        0,              # general purpose flag — 0
+                        0,              # general purpose flag
                         8,              # compression method
-                        _mi_time,       # last mod time
-                        _mi_date,       # last mod date
-                        _crc32_val,     # CRC-32
-                        _csz,           # compressed size
-                        _usz,           # uncompressed size
-                        _fnlen,         # filename length
-                        0,              # extra field length
+                        _mi_time,
+                        _mi_date,
+                        _crc32_val,
+                        _csz,
+                        _usz,
+                        _fnlen,
+                        0,              # extra field length in CD = 0
                         0,              # file comment length
                         0,              # disk number start
                         0,              # internal attributes
                         0,              # external attributes
-                        _lfh_offset,    # relative offset of LFH
+                        _lfh_offset,
                     ) + _fname_b
 
                     _mi_cd += _cde
@@ -4135,19 +4177,19 @@ def main():
 
                 _new_eocd = struct.pack(
                     "<4sHHHHIIH",
-                    b"PK\x05\x06",   # signature
-                    0,               # disk number
-                    0,               # disk with CD
-                    _new_cd_count,   # CD entries on disk
-                    _new_cd_count,   # CD entries total
-                    _new_cd_size,    # CD size
-                    _new_cd_offset,  # CD offset
-                    0,               # comment length
+                    b"PK\x05\x06",
+                    0, 0,
+                    _new_cd_count,
+                    _new_cd_count,
+                    _new_cd_size,
+                    _new_cd_offset,
+                    0,
                 )
 
                 # ── Write final APK ───────────────────────────────────────────────
                 open(_mi_src, "wb").write(bytes(_mi_payload) + bytes(_mi_cd) + _new_eocd)
-                print(f"  ✅ STEP_FAKE_META_INF — injected {_mi_added} fake META-INF entries (raw binary append)")
+                print(f"  ✅ STEP_FAKE_META_INF — injected {_mi_added}/{len(_fake_meta_candidates)} "
+                      f"fake META-INF entries (deduped, 4-layer scanner confusion)")
                 del _mi_payload, _mi_cd, _mi_raw
 
             except Exception as _e:
