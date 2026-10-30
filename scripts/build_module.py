@@ -2226,14 +2226,6 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
     # using the stub classloader which doesn't have the class → crash.
     new_manifest = _strip_axml_app_component_factory(new_manifest)
 
-    # ── PHASE_3 STEP_1: Inject android:name=".App" into <application> ─────────
-    # The raw companion APK has NO android:name — App class is never called by
-    # Android as an Application subclass.  Our PHASE_3 stub lives in
-    # App.attachBaseContext(), so Android must instantiate App first.
-    # We inject android:name="<new_pkg>.App" here after package rename so the
-    # class reference matches the already-renamed smali.
-    new_manifest = _inject_axml_app_name(new_manifest, new_pkg)
-
     if meta:
         new_manifest = _patch_axml_version(
             new_manifest,
@@ -2824,84 +2816,102 @@ def step_replace_asset():
 
 def step_inject_app_stub_smali(new_pkg: str):
     """
-    PHASE_3 STEP_1B: Inject attachBaseContext stub into App.smali.
+    PHASE_3 STEP_1B: Inject PHASE3_STUB log into MainActivity.smali onCreate().
 
-    The raw companion App.smali has no attachBaseContext() method.
-    We add a minimal stub that:
-      - calls super.attachBaseContext(base)  ← MUST do this first
-      - logs "PHASE3_STUB: attachBaseContext called" via android.util.Log
-    This is Step 1 (proof of life) — no decryption yet.
-    Decryption logic added in Step 2.
+    Hook point: MainActivity is the LAUNCHER activity (android.intent.action.MAIN).
+    It IS declared in the manifest and IS instantiated by Android — correct hook.
+    No android:name change needed. No AXML change needed.
 
-    The smali file is in the decompile output directory.
-    step_decompile() puts it at: companion_smali/<pkg_path>/App.smali
-    After step_rename_smali(new_pkg) it lives at the renamed path.
+    Injection: prepend Log.d("PHASE3_STUB", ...) at the top of onCreate(),
+    after super.onCreate() which must remain first.
+
+    Timing: runs AFTER step_rename_smali (new_pkg path is valid),
+            BEFORE step_6a_rename_classes (MainActivity.smali still exists).
+
+    Fresh pkg per build: new_pkg passed in, path built dynamically.
     """
-    print("\n── PHASE_3 STEP_1B: Inject attachBaseContext stub into App.smali")
+    print("\n── PHASE_3 STEP_1B: Inject PHASE3_STUB log into MainActivity.smali")
 
-    # Build smali file path — after step_rename_smali the pkg path is already new_pkg
+    # Build path — after step_rename_smali(new_pkg), pkg dir is already new_pkg
     pkg_path   = new_pkg.replace(".", "/")
-    smali_path = os.path.join("companion_decompiled", "smali", pkg_path, "App.smali")
+    smali_path = os.path.join("companion_decompiled", "smali", pkg_path, "MainActivity.smali")
 
     if not os.path.isfile(smali_path):
-        # Fallback: search for App.smali
+        # Fallback: walk and find MainActivity.smali
         found = []
         for root, dirs, files in os.walk("companion_decompiled"):
             for fn in files:
-                if fn == "App.smali":
+                if fn == "MainActivity.smali":
                     found.append(os.path.join(root, fn))
         if not found:
-            print(f"  [inject_stub] ❌ App.smali not found under companion_smali/ — aborting")
+            print(f"  [inject_stub] ❌ MainActivity.smali not found — aborting")
             sys.exit(1)
         smali_path = found[0]
-        print(f"  [inject_stub] ℹ️  Found App.smali at: {smali_path}")
+        print(f"  [inject_stub] ℹ️  Found MainActivity.smali at: {smali_path}")
 
     with open(smali_path, "r") as f:
         content = f.read()
 
-    # Check if already injected
+    # Already injected?
     if "PHASE3_STUB" in content:
-        print("  [inject_stub] ⚠️  attachBaseContext stub already present — skipping")
+        print("  [inject_stub] ⚠️  PHASE3_STUB already present in MainActivity.smali — skipping")
         return
 
-    # Check if attachBaseContext already exists
-    if "attachBaseContext" in content:
-        print("  [inject_stub] ⚠️  attachBaseContext already defined in App.smali — skipping injection")
-        return
+    # We inject a Log.d call immediately after the super.onCreate() call
+    # inside the existing onCreate() method.
+    # Pattern: find the super invoke line, insert log after it.
+    super_call = "invoke-virtual {p0}, Landroid/app/Activity;->onCreate()V"
+    # Smali super call for onCreate with Bundle param (most common form):
+    super_call_bundle = "invoke-super {p0, p1}, Landroid/app/Activity;->onCreate(Landroid/os/Bundle;)V"
 
-    stub = f"""
-.method public attachBaseContext(Landroid/content/Context;)V
-    .locals 2
+    log_inject = (
+        "\n\n    # PHASE3_STUB: Step 1 — proof of life (no decryption yet)\n"
+        f"    const-string v0, \"PHASE3_STUB\"\n"
+        f"    const-string v1, \"MainActivity.onCreate called pkg={new_pkg}\"\n"
+        "    invoke-static {v0, v1}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I\n"
+    )
 
-    # PHASE3_STUB: Step 1 — proof of life (no decryption yet)
-    # super call MUST be first — Android requires it
-    invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
+    injected = False
 
-    const-string v0, "{new_pkg}"
-    const-string v1, "PHASE3_STUB: attachBaseContext called"
-    invoke-static {{v0, v1}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    if super_call_bundle in content:
+        content = content.replace(super_call_bundle, super_call_bundle + log_inject, 1)
+        injected = True
+    elif super_call in content:
+        content = content.replace(super_call, super_call + log_inject, 1)
+        injected = True
 
-    return-void
-.end method
+    if not injected:
+        # Last resort: find .method public onCreate and inject after .locals line
+        marker = ".method public onCreate(Landroid/os/Bundle;)V"
+        if marker in content:
+            # Insert log_inject after the first .locals line in this method
+            idx = content.index(marker)
+            locals_idx = content.index(".locals", idx)
+            eol = content.index("\n", locals_idx)
+            # We need a register that's available — bump .locals count if needed
+            # Read current .locals value
+            locals_line = content[locals_idx:eol]
+            try:
+                n_locals = int(locals_line.strip().split()[1])
+            except Exception:
+                n_locals = 2
+            # Ensure at least 2 locals for v0, v1
+            if n_locals < 2:
+                content = content[:locals_idx] + f"    .locals 2" + content[eol:]
+                # recalculate eol after replacement
+                eol = content.index("\n", locals_idx)
+            insert_at = eol + 1
+            content = content[:insert_at] + log_inject + content[insert_at:]
+            injected = True
 
-"""
-
-    # Insert before the first "# virtual methods" or "# direct methods" section
-    # or just before the last .end class equivalent by inserting before .method public onCreate
-    if ".method public onCreate()V" in content:
-        content = content.replace(
-            ".method public onCreate()V",
-            stub + ".method public onCreate()V",
-            1
-        )
-    else:
-        # Append before the end of the file
-        content = content.rstrip() + "\n" + stub
+    if not injected:
+        print("  [inject_stub] ❌ Could not find injection point in MainActivity.smali — aborting")
+        sys.exit(1)
 
     with open(smali_path, "w") as f:
         f.write(content)
 
-    print(f"  [inject_stub] ✅ attachBaseContext stub injected into: {smali_path}")
+    print(f"  [inject_stub] ✅ PHASE3_STUB injected into MainActivity.smali: {smali_path}")
 
 
 def step_inject_kotlin(new_pkg):
@@ -2986,10 +2996,10 @@ def main():
     elif _phase12_only:
         print("  ⚡ PHASE12_ONLY=true — running PHASE_1 + PHASE_2 + PHASE_6, skipping ENCRYPT_COMPANION")
 
-    # ── PHASE_3 STEP_1B: Inject attachBaseContext stub into App.smali ────────
+    # ── PHASE_3 STEP_1B: Inject PHASE3_STUB log into MainActivity.smali ─────
     # Must run AFTER step_rename_smali (STEP_6) so pkg path is final,
-    # and BEFORE STEP_6A which renames App.smali to a random new filename.
-    with track("PHASE_3", "STEP_P3_1B", "Inject attachBaseContext stub into App.smali"):
+    # and BEFORE STEP_6A which renames MainActivity.smali to a random name.
+    with track("PHASE_3", "STEP_P3_1B", "Inject PHASE3_STUB log into MainActivity.smali"):
         step_inject_app_stub_smali(new_pkg)
 
     if not _phase1_only:
