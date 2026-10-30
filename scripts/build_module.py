@@ -4028,7 +4028,10 @@ def main():
                 ]
 
                 # ── Load raw APK bytes ────────────────────────────────────────────
-                _mi_raw = open(MOD_ASSET, "rb").read()
+                # Read from companion_final.apk (signed copy) so STEP_14_ASSET_2
+                # copies the already-injected file into MOD_ASSET afterwards.
+                _mi_src = "companion_final.apk"
+                _mi_raw = open(_mi_src, "rb").read()
 
                 # ── Locate EOCD (scan from tail — comment may exist but we set none) ──
                 _mi_eocd = _mi_raw.rfind(b"PK\x05\x06")
@@ -4145,7 +4148,7 @@ def main():
                 )
 
                 # ── Write final APK ───────────────────────────────────────────────
-                open(MOD_ASSET, "wb").write(bytes(_mi_payload) + bytes(_mi_cd) + _new_eocd)
+                open(_mi_src, "wb").write(bytes(_mi_payload) + bytes(_mi_cd) + _new_eocd)
                 print(f"  ✅ STEP_FAKE_META_INF — injected {_mi_added} fake META-INF entries (raw binary append)")
                 del _mi_payload, _mi_cd, _mi_raw
 
