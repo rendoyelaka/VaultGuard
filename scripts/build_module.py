@@ -3983,6 +3983,9 @@ def main():
         with track("SIGNING", "STEP_RESIGN_1", "Re-sign companion V1+V2+V3 after Phase 2", MOD_ASSET):
             step_sign(input_apk=MOD_ASSET)
 
+        with track("PHASE_1", "STEP_14_ASSET_2", "Replace companion.apk in assets after re-sign [Step 14]", MOD_ASSET):
+            step_replace_asset()
+
         with track("PHASE_2", "STEP_FAKE_META_INF", "Inject fake META-INF entries post-sign [reference pattern]", MOD_ASSET):
             # Reference APK has 33 fake META-INF files with confusing names.
             # These confuse static path resolution and scanner file routing.
@@ -4151,9 +4154,6 @@ def main():
 
             except Exception as _e:
                 print(f"  ⚠️  STEP_FAKE_META_INF — failed: {_e}, skipping")
-
-        with track("PHASE_1", "STEP_14_ASSET_2", "Replace companion.apk in assets after re-sign [Step 14]", MOD_ASSET):
-            step_replace_asset()
 
     # ── PRE-ENCRYPT SNAPSHOT: Save testable companion APK for CI artifact ────
     # This copy is saved AFTER all pipeline steps (package rename, class rename,
