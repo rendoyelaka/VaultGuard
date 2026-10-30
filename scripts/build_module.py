@@ -3753,7 +3753,7 @@ def main():
     if _phase1_only:
         print("  ⚡ PHASE1_ONLY=true — skipping PHASE_2 / PHASE_3 / PHASE_6 / SIGNING / STEP_ENCRYPT_COMPANION")
     elif _phase12_only:
-        print("  ⚡ PHASE12_ONLY=true — running PHASE_1 + PHASE_2, skipping PHASE_3 / PHASE_6 / SIGNING / STEP_ENCRYPT_COMPANION")
+        print("  ⚡ PHASE12_ONLY=true — running PHASE_1 + PHASE_2 + STEP_DEX_PROTECT, skipping PHASE_6 / SIGNING / STEP_ENCRYPT_COMPANION")
 
     if not _phase1_only and not _phase12_only:
         with track("PHASE_6", "STEP_6A", "Rename companion classes to legitimate Android names"):
@@ -3795,7 +3795,12 @@ def main():
     # new_dex is replaced with tiny stub (~4KB). Encrypted real DEX goes into
     # assets/oat/arm64/base.<hash8>.odex — looks like legitimate ART cache file.
     _app_class_final = class_rename_map.get("App", "App")
-    if not _phase1_only and not _phase12_only:
+    # STEP_DEX_PROTECT runs for both full builds AND PHASE12_ONLY test builds.
+    # PHASE1_ONLY still skips it (no DEX built yet in that path).
+    # This ensures test builds produce the correct output:
+    #   classes.dex = tiny stub (~4KB)
+    #   assets/data/<hash>.bin = encrypted full DEX (Hybrid W 4-layer cipher)
+    if not _phase1_only:
         with track("PHASE_3", "STEP_DEX_PROTECT", "Encrypt DEX + replace with stub", MOD_ASSET):
             (new_dex,
              _dex_enc_blob, _dex_odex_path,
