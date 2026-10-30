@@ -1272,14 +1272,7 @@ def step_debug_smali_verify():
     else:
         print(f"\n  [debug] ⚠️  Found {len(suspicious)} smali file(s) with move-exception:")
         for fpath, me_lines, all_lines in suspicious:
-            print(f"\n{'='*70}")
-            print(f"  FILE: {fpath}")
-            print(f"  move-exception at lines: {[l for l,_ in me_lines]}")
-            print(f"{'='*70}")
-            # Print full file content so we can see the try/catch structure
-            for i, line in enumerate(all_lines):
-                print(f"  {i+1:4d} | {line}")
-            print(f"{'='*70}")
+            print(f"  FILE: {fpath} — move-exception at lines: {[l for l,_ in me_lines]}")
 
     print(f"\n  [debug] Smali VerifyError scan complete. Suspicious files: {len(suspicious)}")
 
