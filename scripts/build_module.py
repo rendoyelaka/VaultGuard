@@ -3035,7 +3035,6 @@ def step_inject_app_stub_smali(new_pkg: str):
     invoke-virtual {v7, v6, v4, v5}, Ljava/nio/ByteBuffer;->put([BII)Ljava/nio/ByteBuffer;
     move-result-object v7
     invoke-virtual {v7}, Ljava/nio/ByteBuffer;->rewind()Ljava/nio/Buffer;
-    move-result-object v7
 
     invoke-virtual {p0}, Landroid/app/Activity;->getClassLoader()Ljava/lang/ClassLoader;
     move-result-object v8
