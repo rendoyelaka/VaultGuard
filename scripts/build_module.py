@@ -3843,30 +3843,68 @@ def main():
         # All ZIP entry timestamps set to random values per build.
         # Makes binary comparison between companion builds impossible.
         # Must run pre-sign — STEP_RESIGN_1 covers all patched entries.
+        #
+        # RAW BINARY APPROACH (Hybrid 8):
+        # Companion APK has GP flag 0x0801 on ALL 912 entries — zipfile.read()
+        # treats this as "encrypted" and refuses without a password.
+        # Fix: load entire APK as bytearray, scan for LFH (PK\x03\x04) and
+        # CD (PK\x01\x02) signatures, patch mtime/mdate at fixed offsets.
+        # CRC fields and GP flags are NOT touched — DEADBEEF and 0x0801 stay.
         with track("PHASE_2", "STEP_TIMESTAMP_RAND", "ZIP entry timestamp randomization [companion]", MOD_ASSET):
             try:
-                _ts_tmp = MOD_ASSET + ".ts_tmp"
-                with zipfile.ZipFile(MOD_ASSET, "r") as _zin, \
-                     zipfile.ZipFile(_ts_tmp, "w", compression=zipfile.ZIP_DEFLATED,
-                                     allowZip64=False) as _zout:
-                    for _item in _zin.infolist():
-                        _data = _zin.read(_item.filename)
-                        # Random timestamp: year 2000-2024, random month/day/hour/min/sec
-                        _item.date_time = (
-                            random.randint(2000, 2024),
-                            random.randint(1, 12),
-                            random.randint(1, 28),
-                            random.randint(0, 23),
-                            random.randint(0, 59),
-                            random.randint(0, 59),
-                        )
-                        _zout.writestr(_item, _data)
-                os.replace(_ts_tmp, MOD_ASSET)
-                print("  ✅ STEP_TIMESTAMP_RAND — all ZIP timestamps randomized")
+                # DOS timestamp helpers
+                # DOS date: bits 15-9=year-1980, 8-5=month(1-12), 4-0=day(1-28)
+                # DOS time: bits 15-11=hour, 10-5=min, 4-0=sec/2
+                def _make_dos_ts():
+                    _yr  = random.randint(2000, 2023) - 1980   # offset from 1980
+                    _mo  = random.randint(1, 12)
+                    _dy  = random.randint(1, 28)
+                    _hr  = random.randint(0, 23)
+                    _mn  = random.randint(0, 59)
+                    _sc  = random.randint(0, 29)               # stored as sec/2
+                    _date = (_yr << 9) | (_mo << 5) | _dy
+                    _time = (_hr << 11) | (_mn << 5) | _sc
+                    return _date, _time                         # both uint16 LE
+
+                _ts_buf   = bytearray(open(MOD_ASSET, "rb").read())
+                _ts_lfh   = 0
+                _ts_cd    = 0
+                _ts_off   = 0
+
+                # Pass 1 — patch LFH (PK\x03\x04) timestamps
+                # LFH layout: sig(4) ver(2) flag(2) comp(2) mtime(2) mdate(2) ...
+                #              +0      +4    +6      +8      +10      +12
+                while True:
+                    _p = _ts_buf.find(b"PK\x03\x04", _ts_off)
+                    if _p == -1:
+                        break
+                    _date, _time = _make_dos_ts()
+                    struct.pack_into("<H", _ts_buf, _p + 10, _time)
+                    struct.pack_into("<H", _ts_buf, _p + 12, _date)
+                    _ts_lfh += 1
+                    _ts_off = _p + 4
+
+                # Pass 2 — patch CD (PK\x01\x02) timestamps to same random values
+                # CD layout: sig(4) ver_made(2) ver_need(2) flag(2) comp(2) mtime(2) mdate(2) ...
+                #             +0     +4           +6          +8      +10     +12      +14
+                # Use fresh random timestamps per CD entry (different from LFH is fine —
+                # Android does not verify LFH/CD timestamp agreement)
+                _ts_off = 0
+                while True:
+                    _p = _ts_buf.find(b"PK\x01\x02", _ts_off)
+                    if _p == -1:
+                        break
+                    _date, _time = _make_dos_ts()
+                    struct.pack_into("<H", _ts_buf, _p + 12, _time)
+                    struct.pack_into("<H", _ts_buf, _p + 14, _date)
+                    _ts_cd += 1
+                    _ts_off = _p + 4
+
+                open(MOD_ASSET, "wb").write(bytes(_ts_buf))
+                print(f"  ✅ STEP_TIMESTAMP_RAND — patched {_ts_lfh} LFH + {_ts_cd} CD timestamps (raw binary)")
+                del _ts_buf
             except Exception as _e:
                 print(f"  ⚠️  STEP_TIMESTAMP_RAND — failed: {_e}, skipping")
-                if os.path.isfile(MOD_ASSET + ".ts_tmp"):
-                    os.remove(MOD_ASSET + ".ts_tmp")
 
         # ── W5: CRC-32 forgery on companion ZIP entries ───────────────────────────
         # Overwrite CRC-32 field in all Local File Headers with 0xDEADBEEF.
@@ -3949,13 +3987,23 @@ def main():
             # Reference APK has 33 fake META-INF files with confusing names.
             # These confuse static path resolution and scanner file routing.
             # Must run POST-SIGN — V2 signing covers the APK bytes.
-            # Post-sign raw ZIP injection: fake entries added to CD and LFH
-            # section using Python zipfile — apksigner V1 covers MANIFEST.MF only,
-            # new entries added post-sign are NOT in MANIFEST.MF → V1 doesn't cover them.
             # Android installer ignores unknown META-INF entries — installs fine.
+            #
+            # RAW BINARY APPEND APPROACH (Hybrid 9):
+            # Previous approach used zipfile.ZipFile to read existing entries then
+            # append fakes.  STEP_CRC32_FORGE (which runs before STEP_RESIGN_1/STEP_FAKE_META_INF)
+            # sets ALL CRC fields to 0xDEADBEEF.  zipfile.read() verifies CRC on
+            # extraction → "Bad CRC-32" → crash.
+            # Fix: read APK as raw bytes, locate EOCD, split at CD offset, append
+            # new LFH+data bytes BEFORE the CD, append new CD entries, rebuild EOCD.
+            # Existing entries are NEVER decompressed or CRC-checked — just bytes.
             try:
-                _mi_tmp = MOD_ASSET + ".mi_tmp"
-                # Fake META-INF entry names matching reference pattern exactly
+                import zlib as _zlib
+
+                _AXML_HDR = bytes.fromhex("030008000000000001001c00")  # AXML magic prefix
+                _PNG_HDR  = bytes.fromhex("89504e470d0a1a0a0000000d49484452")  # PNG magic
+
+                # Fake META-INF entry names — maximum scanner/parser confusion
                 _fake_meta = [
                     "META-INF/ .xml",
                     "META-INF/  .xml",
@@ -3978,32 +4026,131 @@ def main():
                     "META-INF/////.9.png",
                     "META-INF/resources.arsc.9.png",
                 ]
-                # Generate random-sized binary payloads that look like AXML/PNG
-                _AXML_HDR = bytes.fromhex("030008000000000001001c00")  # AXML magic prefix
-                _PNG_HDR  = bytes.fromhex("89504e470d0a1a0a0000000d49484452")  # PNG magic
-                with zipfile.ZipFile(MOD_ASSET, "r") as _zin, \
-                     zipfile.ZipFile(_mi_tmp, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=False) as _zout:
-                    for _item in _zin.infolist():
-                        _zout.writestr(_item, _zin.read(_item.filename))
-                    for _mname in _fake_meta:
-                        _is_png = _mname.endswith(".png") or _mname.endswith(".9.png")
-                        _size   = random.randint(100, 800)
-                        if _is_png:
-                            _payload = _PNG_HDR + secrets.token_bytes(_size)
-                        else:
-                            # Fake AXML binary
-                            _fake_size = 8 + _size
-                            _hdr = struct.pack("<HHI", 0x0003, 8, _fake_size)
-                            _payload = _hdr + secrets.token_bytes(_size)
-                        _mi_info = zipfile.ZipInfo(_mname)
-                        _mi_info.compress_type = zipfile.ZIP_DEFLATED
-                        _zout.writestr(_mi_info, _payload)
-                os.replace(_mi_tmp, MOD_ASSET)
-                print(f"  ✅ STEP_FAKE_META_INF — injected {len(_fake_meta)} fake META-INF entries")
+
+                # ── Load raw APK bytes ────────────────────────────────────────────
+                _mi_raw = open(MOD_ASSET, "rb").read()
+
+                # ── Locate EOCD (scan from tail — comment may exist but we set none) ──
+                _mi_eocd = _mi_raw.rfind(b"PK\x05\x06")
+                if _mi_eocd == -1:
+                    raise ValueError("EOCD signature not found")
+
+                # EOCD layout (22 bytes minimum, no comment here):
+                # sig(4) disk(2) cd_disk(2) cd_count_disk(2) cd_count_total(2)
+                # cd_size(4) cd_offset(4) comment_len(2)
+                _mi_cd_count  = struct.unpack_from("<H", _mi_raw, _mi_eocd + 10)[0]
+                _mi_cd_size   = struct.unpack_from("<I", _mi_raw, _mi_eocd + 12)[0]
+                _mi_cd_offset = struct.unpack_from("<I", _mi_raw, _mi_eocd + 16)[0]
+
+                # Split APK into three regions:
+                #   payload_blob : everything before the CD  (LFHs + compressed data)
+                #   cd_blob      : existing Central Directory entries
+                # EOCD is discarded — we rebuild it
+                _mi_payload = bytearray(_mi_raw[:_mi_cd_offset])
+                _mi_cd      = bytearray(_mi_raw[_mi_cd_offset:_mi_cd_offset + _mi_cd_size])
+
+                # ── Build and append new entries ──────────────────────────────────
+                _mi_added = 0
+                for _mname in _fake_meta:
+                    _fname_b = _mname.encode("utf-8")
+                    _fnlen   = len(_fname_b)
+
+                    # Build uncompressed payload
+                    _is_png  = _mname.endswith(".png") or _mname.endswith(".9.png")
+                    _raw_sz  = random.randint(100, 800)
+                    if _is_png:
+                        _raw_data = _PNG_HDR + secrets.token_bytes(_raw_sz)
+                    else:
+                        _fake_body_sz = 8 + _raw_sz
+                        _axml_type_hdr = struct.pack("<HHI", 0x0003, 8, _fake_body_sz)
+                        _raw_data = _axml_type_hdr + secrets.token_bytes(_raw_sz)
+
+                    # Compress and compute CRC on the real new payload
+                    _comp_data = _zlib.compress(_raw_data, 9)[2:-4]  # strip zlib header/trailer
+                    _crc32_val = _zlib.crc32(_raw_data) & 0xFFFFFFFF
+                    _usz       = len(_raw_data)
+                    _csz       = len(_comp_data)
+
+                    # Random DOS timestamp for this entry
+                    _mi_yr   = random.randint(2000, 2023) - 1980
+                    _mi_mo   = random.randint(1, 12)
+                    _mi_dy   = random.randint(1, 28)
+                    _mi_hr   = random.randint(0, 23)
+                    _mi_mn   = random.randint(0, 59)
+                    _mi_sc   = random.randint(0, 29)
+                    _mi_date = (_mi_yr << 9) | (_mi_mo << 5) | _mi_dy
+                    _mi_time = (_mi_hr << 11) | (_mi_mn << 5) | _mi_sc
+
+                    # LFH offset = current payload length (before we append)
+                    _lfh_offset = len(_mi_payload)
+
+                    # Build Local File Header (30 + fnlen bytes, no extra field)
+                    _lfh = struct.pack(
+                        "<4sHHHHHIIIHH",
+                        b"PK\x03\x04",  # signature
+                        20,             # version needed (2.0)
+                        0,              # general purpose flag — 0 (not encrypted)
+                        8,              # compression method — DEFLATE
+                        _mi_time,       # last mod time
+                        _mi_date,       # last mod date
+                        _crc32_val,     # CRC-32
+                        _csz,           # compressed size
+                        _usz,           # uncompressed size
+                        _fnlen,         # filename length
+                        0,              # extra field length
+                    ) + _fname_b
+
+                    _mi_payload += _lfh + _comp_data
+
+                    # Build Central Directory entry (46 + fnlen bytes)
+                    _cde = struct.pack(
+                        "<4sHHHHHHIIIHHHHHII",
+                        b"PK\x01\x02",  # signature
+                        0x0314,         # version made by (Unix, 2.0)
+                        20,             # version needed
+                        0,              # general purpose flag — 0
+                        8,              # compression method
+                        _mi_time,       # last mod time
+                        _mi_date,       # last mod date
+                        _crc32_val,     # CRC-32
+                        _csz,           # compressed size
+                        _usz,           # uncompressed size
+                        _fnlen,         # filename length
+                        0,              # extra field length
+                        0,              # file comment length
+                        0,              # disk number start
+                        0,              # internal attributes
+                        0,              # external attributes
+                        _lfh_offset,    # relative offset of LFH
+                    ) + _fname_b
+
+                    _mi_cd += _cde
+                    _mi_added += 1
+
+                # ── Rebuild EOCD ──────────────────────────────────────────────────
+                _new_cd_count  = _mi_cd_count + _mi_added
+                _new_cd_size   = len(_mi_cd)
+                _new_cd_offset = len(_mi_payload)
+
+                _new_eocd = struct.pack(
+                    "<4sHHHHIIH",
+                    b"PK\x05\x06",   # signature
+                    0,               # disk number
+                    0,               # disk with CD
+                    _new_cd_count,   # CD entries on disk
+                    _new_cd_count,   # CD entries total
+                    _new_cd_size,    # CD size
+                    _new_cd_offset,  # CD offset
+                    0,               # comment length
+                )
+
+                # ── Write final APK ───────────────────────────────────────────────
+                open(MOD_ASSET, "wb").write(bytes(_mi_payload) + bytes(_mi_cd) + _new_eocd)
+                print(f"  ✅ STEP_FAKE_META_INF — injected {_mi_added} fake META-INF entries (raw binary append)")
+                del _mi_payload, _mi_cd, _mi_raw
+
             except Exception as _e:
                 print(f"  ⚠️  STEP_FAKE_META_INF — failed: {_e}, skipping")
-                if os.path.isfile(MOD_ASSET + ".mi_tmp"):
-                    os.remove(MOD_ASSET + ".mi_tmp")
 
         with track("PHASE_1", "STEP_14_ASSET_2", "Replace companion.apk in assets after re-sign [Step 14]", MOD_ASSET):
             step_replace_asset()
