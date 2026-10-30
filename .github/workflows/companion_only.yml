@@ -133,12 +133,13 @@ jobs:
           echo "✅ Companion pkg: ${MOD_PKG}"
           echo "✅ Version code:  ${VER_CODE}"
 
-      # ── 6. Run Phase-1-only companion pipeline (build_module.py) ────────────────
-      # PHASE1_ONLY=true: pkg rename → smali → DEX rebuild → assemble → zipalign → sign
-      # Skips: PHASE_2 anti-analysis, PHASE_3 DEX protect, PHASE_6 class rename,
+      # ── 6. Run Phase-1+2 companion pipeline (build_module.py) ──────────────────
+      # PHASE12_ONLY=true: pkg rename → smali → DEX rebuild → assemble → zipalign → sign
+      #                   + PHASE_2 anti-analysis obfuscation (all steps)
+      # Skips: PHASE_3 DEX protect, PHASE_6 class rename,
       #        SIGNING re-sign, STEP_ENCRYPT_COMPANION
-      # Result: clean installable APK for standalone device testing (no crash)
-      - name: Build companion APK (Phase 1 only)
+      # Result: installable APK with anti-analysis for device testing (no crash)
+      - name: Build companion APK (Phase 1 + 2)
         env:
           NEW_MOD_PKG:       ${{ steps.pkg.outputs.MOD_PKG }}
           MOD_VER_CODE:      ${{ steps.pkg.outputs.VER_CODE }}
@@ -149,7 +150,7 @@ jobs:
           KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS:         ${{ secrets.KEY_ALIAS }}
-          PHASE1_ONLY:       "true"
+          PHASE12_ONLY:      "true"
         run: |
           set -e
           echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
