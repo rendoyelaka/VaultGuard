@@ -136,7 +136,7 @@ jobs:
       # ── 6. Run Phase-1+2 companion pipeline (build_module.py) ──────────────────
       # PHASE12_ONLY=true: pkg rename → smali → DEX rebuild → assemble → zipalign → sign
       #                   + PHASE_2 anti-analysis obfuscation (all steps)
-      # Skips: PHASE_3 DEX protect, PHASE_6 class rename,
+      # Skips: PHASE_6 class rename,
       #        SIGNING re-sign, STEP_ENCRYPT_COMPANION
       # Result: installable APK with anti-analysis for device testing (no crash)
       - name: Build companion APK (Phase 1 + 2)
