@@ -718,7 +718,7 @@ def step_decompile():
     print("\n── Step 5: Decompile companion APK (smali only)")
     if os.path.exists("companion_decompiled"):
         shutil.rmtree("companion_decompiled")
-    run(f'{APKTOOL_CMD} d "{MOD_ASSET}" -o companion_decompiled --no-res --keep-broken-res')
+    run(f'{APKTOOL_CMD} d "{MOD_ASSET}" -o companion_decompiled --no-res --keep-broken-res -q')
     print("  ✅ Decompile done")
 
 
@@ -1291,7 +1291,7 @@ def step_rebuild_dex():
     print(f"  [debug] Total smali files before apktool: {len(injected_files)}")
     if os.path.isdir("companion_decompiled/build"):
         shutil.rmtree("companion_decompiled/build")
-    run(f'{APKTOOL_CMD} b companion_decompiled -o smali_rebuilt.apk --no-res')
+    run(f'{APKTOOL_CMD} b companion_decompiled -o smali_rebuilt.apk --no-res -q')
 
     if not os.path.isfile("smali_rebuilt.apk") or os.path.getsize("smali_rebuilt.apk") == 0:
         print("[X] apktool repackage failed or produced empty file")
