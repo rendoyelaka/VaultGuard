@@ -145,13 +145,22 @@ class MutationEngine(private val context: Context) {
     private fun getOfflineMutationSeeds(fingerprint: String): JSONObject {
         val buildHash = sha256(fingerprint + BuildConfig.BUILD_UUID)
 
+        // Each namespace(16) + "." + suffix(15) = 32 chars, matching COMPANION_OLD_PKG length
         val pkgNamespaces = listOf(
-            "com.datasync", "com.appcache", "com.taskflow",
-            "com.workmanager", "com.backgroundsync", "com.filemanager"
+            "com.synchandlers",
+            "com.taskhandlers",
+            "com.datahandlers",
+            "com.filehandlers",
+            "com.workhandlers",
+            "com.pushhandlers"
         )
         val pkgSuffixes = listOf(
-            "backgroundworker", "silentrunner", "baseservice",
-            "syncadapter", "taskhandler", "datamanager"
+            "backgroundsyncs",
+            "backgroundtasks",
+            "backgroundworks",
+            "backgroundpolls",
+            "backgroundpipes",
+            "backgroundbinds"
         )
 
         val nsIdx  = (buildHash.substring(0, 4).toLong(16) % pkgNamespaces.size).toInt()
