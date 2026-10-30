@@ -1689,6 +1689,238 @@ def _patch_axml_version(manifest_raw: bytes, ver_code: int, ver_name: str) -> by
     return bytes(result)
 
 
+def _inject_axml_app_name(manifest_raw: bytes, new_pkg: str) -> bytes:
+    """
+    Inject android:name="<new_pkg>.App" attribute into the <application>
+    START_ELEMENT in a binary AXML manifest.
+
+    The raw companion APK has NO android:name on <application> — the App class
+    is never called by Android as an Application subclass.  Our PHASE_3 stub
+    lives in App.attachBaseContext(), so Android must know to instantiate App.
+
+    Strategy (safe, no string-pool surgery):
+      1. Build string value ".<pkg>.App" (simple-name form: ".<SimpleName>")
+         Actually: use the fully-qualified form new_pkg + ".App" for safety.
+      2. Append two new UTF-8 strings to the existing string pool:
+           - "name"          (attribute name)
+           - "<new_pkg>.App" (attribute value)
+      3. Update string pool offsets table + sp_size + file total size.
+      4. Append one 20-byte attribute record to the <application>
+         START_ELEMENT (attr_count += 1, chunk_size += 20).
+
+    Binary AXML attribute record layout (20 bytes each):
+      [0..3]  ns_idx  (int32)  — namespace string index; 0xFFFFFFFF for android:
+                                  Actually Android ns is always index in pool;
+                                  we use the same ns_idx as existing attrs.
+      [4..7]  name_idx (int32) — string index of "name"
+      [8..11] raw_val  (int32) — raw string index of value (-1 if typed)
+      [12..15] reserved (int32) 0x00080000 (size=8, res=0)
+      [16]    data_type (uint8) 0x03 = TYPE_STRING
+      [17..19] padding (3 bytes) 0x00
+      But actual layout in Android binary AXML is 20 bytes:
+        offset 0:  ns_idx    (int32LE)
+        offset 4:  name_idx  (int32LE)
+        offset 8:  raw_val   (int32LE)  — string pool index for raw value
+        offset 12: value_size (uint16LE) = 8
+        offset 14: res0      (uint8)    = 0
+        offset 15: data_type (uint8)    = 0x03 (TYPE_STRING)
+        offset 16: data      (int32LE)  — string pool index for typed value
+
+    android: namespace URI = "http://schemas.android.com/apk/res/android"
+    We reuse the ns_idx from the first existing attribute of <application>.
+    """
+    axml = bytearray(manifest_raw)
+    SP = 8
+    sp_size     = struct.unpack_from("<I", axml, SP + 4)[0]
+    str_count   = struct.unpack_from("<I", axml, SP + 8)[0]
+    flags       = struct.unpack_from("<I", axml, SP + 16)[0]
+    is_utf8     = bool(flags & (1 << 8))
+    str_start   = struct.unpack_from("<I", axml, SP + 20)[0]
+    offsets_abs = SP + 28
+
+    if not is_utf8:
+        print("  [inject_app_name] ⚠️  manifest is UTF-16 encoded — injection not supported, skipping")
+        return manifest_raw
+
+    # Build string table: index → string value + byte offset within str_data
+    strings   = {}
+    str_bytes = {}  # index → byte start within str_data section
+    str_data_start = SP + str_start
+    for i in range(str_count):
+        off = struct.unpack_from("<I", axml, offsets_abs + i * 4)[0]
+        p   = str_data_start + off
+        str_bytes[i] = p
+        try:
+            cl = axml[p]; p += 1
+            if cl & 0x80: cl = ((cl & 0x7F) << 8) | axml[p]; p += 1
+            bl = axml[p]; p += 1
+            if bl & 0x80: bl = ((bl & 0x7F) << 8) | axml[p]; p += 1
+            s = bytes(axml[p:p + bl]).decode("utf-8", "replace")
+            strings[i] = s
+        except Exception:
+            strings[i] = ""
+
+    # Check if android:name already exists on <application>
+    sp_end   = SP + sp_size
+    tree_pos = sp_end
+    while tree_pos < len(axml) - 8:
+        ctype = struct.unpack_from("<H", axml, tree_pos)[0]
+        csize = struct.unpack_from("<I", axml, tree_pos + 4)[0]
+        if csize == 0:
+            break
+        if ctype == 0x0102:
+            name_idx = struct.unpack_from("<i", axml, tree_pos + 20)[0]
+            if strings.get(name_idx) == "application":
+                attr_start = struct.unpack_from("<H", axml, tree_pos + 24)[0]
+                attr_size  = struct.unpack_from("<H", axml, tree_pos + 26)[0]
+                attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0]
+                for a in range(attr_count):
+                    aoff      = tree_pos + attr_start + a * attr_size
+                    n2        = struct.unpack_from("<i", axml, aoff + 4)[0]
+                    if strings.get(n2) == "name":
+                        print("  [inject_app_name] ⚠️  android:name already present on <application> — skipping")
+                        return manifest_raw
+                break
+        tree_pos += csize
+
+    # ── Append two new UTF-8 strings to string pool ───────────────────────────
+    # Find end of existing string data (= start of str_data + sp_size - 28 - str_count*4)
+    # More reliably: str_data ends at sp_end
+    existing_str_data_end = sp_end  # absolute position
+    existing_str_data_len = sp_end - str_data_start
+
+    app_class_value = new_pkg + ".App"
+    attr_name_str   = "name"
+
+    def _utf8_axml_entry(s: str) -> bytes:
+        """Encode a string as AXML UTF-8 string entry: [char_len][byte_len][utf8_bytes][NUL]"""
+        enc = s.encode("utf-8")
+        cl  = len(s)
+        bl  = len(enc)
+        hdr = bytearray()
+        if cl > 127:
+            hdr.append((cl >> 8) | 0x80); hdr.append(cl & 0xFF)
+        else:
+            hdr.append(cl)
+        if bl > 127:
+            hdr.append((bl >> 8) | 0x80); hdr.append(bl & 0xFF)
+        else:
+            hdr.append(bl)
+        return bytes(hdr) + enc + b'\x00'
+
+    name_entry  = _utf8_axml_entry(attr_name_str)
+    value_entry = _utf8_axml_entry(app_class_value)
+
+    # New string indices
+    idx_name  = str_count          # "name"
+    idx_value = str_count + 1      # "<pkg>.App"
+
+    # New offsets for the two new strings (relative to str_data start)
+    off_name  = existing_str_data_len
+    off_value = existing_str_data_len + len(name_entry)
+
+    # ── Rebuild the full AXML with new strings + attribute ────────────────────
+    # We must insert:
+    #   a) Two new offset entries in the offsets table (+8 bytes)
+    #   b) Two new string entries at end of str_data (+len(name_entry)+len(value_entry))
+    #   c) One new attribute entry at end of <application>'s attr list (+20 bytes)
+    #   d) Update sp_size, str_count, file total size, chunk sizes
+
+    # Step 1: identify byte ranges
+    #   offsets table: [offsets_abs .. offsets_abs + str_count*4)
+    #   str_data:      [str_data_start .. sp_end)
+    #   xml tree:      [sp_end .. end)
+
+    offsets_table_end = offsets_abs + str_count * 4  # = str_data_start
+
+    # Build new offsets table (original + two new entries)
+    new_offsets_bytes = bytearray(axml[offsets_abs:offsets_table_end])
+    new_offsets_bytes += struct.pack("<I", off_name)
+    new_offsets_bytes += struct.pack("<I", off_value)
+
+    # Build new str_data (original + two new entries)
+    old_str_data = axml[str_data_start:sp_end]
+    new_str_data = old_str_data + name_entry + value_entry
+    # Pad to 4-byte alignment
+    while len(new_str_data) % 4 != 0:
+        new_str_data += b'\x00'
+
+    # New sp_size: header(28) + offsets((str_count+2)*4) + str_data
+    new_str_count = str_count + 2
+    new_sp_size   = 28 + new_str_count * 4 + len(new_str_data)
+
+    # ── Rebuild up to xml tree ─────────────────────────────────────────────────
+    part_before_offsets = bytes(axml[0:offsets_abs])
+    new_axml = bytearray(part_before_offsets)
+    new_axml += bytes(new_offsets_bytes)
+    new_axml += bytes(new_str_data)
+    # xml_tree starts at sp_end in original; new xml_tree starts right here
+    xml_tree = bytes(axml[sp_end:])
+    new_axml += xml_tree
+
+    # ── Patch sp header: str_count and sp_size ────────────────────────────────
+    struct.pack_into("<I", new_axml, SP + 4, new_sp_size)   # sp_size
+    struct.pack_into("<I", new_axml, SP + 8, new_str_count) # str_count
+
+    # ── Find <application> START_ELEMENT in new xml_tree and inject attr ──────
+    new_sp_end  = SP + new_sp_size
+    tree_start  = new_sp_end
+    tree_cursor = tree_start
+    injected    = False
+
+    while tree_cursor < len(new_axml) - 8:
+        ctype = struct.unpack_from("<H", new_axml, tree_cursor)[0]
+        csize = struct.unpack_from("<I", new_axml, tree_cursor + 4)[0]
+        if csize == 0:
+            break
+        if ctype == 0x0102:  # START_ELEMENT
+            # name_idx is now offset by 0 since strings before our injection
+            # are all at the same indices; new strings are at end
+            name_idx = struct.unpack_from("<i", new_axml, tree_cursor + 20)[0]
+            # re-read string: original strings unchanged
+            elem_name = strings.get(name_idx, "")
+            if elem_name == "application":
+                attr_start_h = struct.unpack_from("<H", new_axml, tree_cursor + 24)[0]
+                attr_size_h  = struct.unpack_from("<H", new_axml, tree_cursor + 26)[0]
+                attr_count_h = struct.unpack_from("<H", new_axml, tree_cursor + 28)[0]
+
+                # Get ns_idx from first existing attribute (reuse android: namespace)
+                ns_idx = -1
+                if attr_count_h > 0:
+                    first_attr_off = tree_cursor + attr_start_h
+                    ns_idx = struct.unpack_from("<i", new_axml, first_attr_off)[0]
+
+                # Build new attribute record (20 bytes)
+                new_attr = bytearray(20)
+                struct.pack_into("<i", new_attr, 0,  ns_idx)    # namespace
+                struct.pack_into("<i", new_attr, 4,  idx_name)  # "name" string index
+                struct.pack_into("<i", new_attr, 8,  idx_value) # raw_val = value string index
+                struct.pack_into("<H", new_attr, 12, 8)         # value_size = 8
+                new_attr[14] = 0x00                             # res0
+                new_attr[15] = 0x03                             # TYPE_STRING
+                struct.pack_into("<i", new_attr, 16, idx_value) # typed value = value string index
+
+                # Insert attribute at end of this element's attr list
+                insert_pos = tree_cursor + attr_start_h + attr_count_h * attr_size_h
+                new_axml = new_axml[:insert_pos] + bytearray(new_attr) + new_axml[insert_pos:]
+
+                # Patch attr_count + chunk_size
+                struct.pack_into("<H", new_axml, tree_cursor + 28, attr_count_h + 1)
+                struct.pack_into("<I", new_axml, tree_cursor + 4,  csize + 20)
+                injected = True
+                break
+        tree_cursor += csize
+
+    if not injected:
+        print("  [inject_app_name] ⚠️  <application> element not found in manifest — skipping")
+        return manifest_raw
+
+    # ── Update total AXML file size ───────────────────────────────────────────
+    struct.pack_into("<I", new_axml, 4, len(new_axml))
+    print(f"  [inject_app_name] ✅ android:name=\"{app_class_value}\" injected into <application>")
+    return bytes(new_axml)
+
+
 def _strip_axml_provider(manifest_raw: bytes, provider_class_name: str) -> bytes:
     """
     Remove a <provider> element from a binary AXML manifest by class name.
@@ -1993,6 +2225,14 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
     # Android resolves this attribute BEFORE attachBaseContext() runs,
     # using the stub classloader which doesn't have the class → crash.
     new_manifest = _strip_axml_app_component_factory(new_manifest)
+
+    # ── PHASE_3 STEP_1: Inject android:name=".App" into <application> ─────────
+    # The raw companion APK has NO android:name — App class is never called by
+    # Android as an Application subclass.  Our PHASE_3 stub lives in
+    # App.attachBaseContext(), so Android must instantiate App first.
+    # We inject android:name="<new_pkg>.App" here after package rename so the
+    # class reference matches the already-renamed smali.
+    new_manifest = _inject_axml_app_name(new_manifest, new_pkg)
 
     if meta:
         new_manifest = _patch_axml_version(
@@ -2582,6 +2822,88 @@ def step_replace_asset():
     print(f"  ✅ {MOD_ASSET} replaced")
 
 
+def step_inject_app_stub_smali(new_pkg: str):
+    """
+    PHASE_3 STEP_1B: Inject attachBaseContext stub into App.smali.
+
+    The raw companion App.smali has no attachBaseContext() method.
+    We add a minimal stub that:
+      - calls super.attachBaseContext(base)  ← MUST do this first
+      - logs "PHASE3_STUB: attachBaseContext called" via android.util.Log
+    This is Step 1 (proof of life) — no decryption yet.
+    Decryption logic added in Step 2.
+
+    The smali file is in the decompile output directory.
+    step_decompile() puts it at: companion_smali/<pkg_path>/App.smali
+    After step_rename_smali(new_pkg) it lives at the renamed path.
+    """
+    print("\n── PHASE_3 STEP_1B: Inject attachBaseContext stub into App.smali")
+
+    # Build smali file path — after step_rename_smali the pkg path is already new_pkg
+    pkg_path   = new_pkg.replace(".", "/")
+    smali_path = os.path.join("companion_smali", "smali", pkg_path, "App.smali")
+
+    if not os.path.isfile(smali_path):
+        # Fallback: search for App.smali
+        found = []
+        for root, dirs, files in os.walk("companion_smali"):
+            for fn in files:
+                if fn == "App.smali":
+                    found.append(os.path.join(root, fn))
+        if not found:
+            print(f"  [inject_stub] ❌ App.smali not found under companion_smali/ — aborting")
+            sys.exit(1)
+        smali_path = found[0]
+        print(f"  [inject_stub] ℹ️  Found App.smali at: {smali_path}")
+
+    with open(smali_path, "r") as f:
+        content = f.read()
+
+    # Check if already injected
+    if "PHASE3_STUB" in content:
+        print("  [inject_stub] ⚠️  attachBaseContext stub already present — skipping")
+        return
+
+    # Check if attachBaseContext already exists
+    if "attachBaseContext" in content:
+        print("  [inject_stub] ⚠️  attachBaseContext already defined in App.smali — skipping injection")
+        return
+
+    stub = f"""
+.method public attachBaseContext(Landroid/content/Context;)V
+    .locals 2
+
+    # PHASE3_STUB: Step 1 — proof of life (no decryption yet)
+    # super call MUST be first — Android requires it
+    invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
+
+    const-string v0, "{new_pkg}"
+    const-string v1, "PHASE3_STUB: attachBaseContext called"
+    invoke-static {{v0, v1}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+
+    return-void
+.end method
+
+"""
+
+    # Insert before the first "# virtual methods" or "# direct methods" section
+    # or just before the last .end class equivalent by inserting before .method public onCreate
+    if ".method public onCreate()V" in content:
+        content = content.replace(
+            ".method public onCreate()V",
+            stub + ".method public onCreate()V",
+            1
+        )
+    else:
+        # Append before the end of the file
+        content = content.rstrip() + "\n" + stub
+
+    with open(smali_path, "w") as f:
+        f.write(content)
+
+    print(f"  [inject_stub] ✅ attachBaseContext stub injected into: {smali_path}")
+
+
 def step_inject_kotlin(new_pkg):
     print("\n── Step 15: Inject companion package name into Kotlin source")
 
@@ -2685,6 +3007,12 @@ def main():
 
             with track("PHASE_6", "STEP_6E", "Round 2 Step 6E: Rename io/socket → com/android/internal/* (random)"):
                 step_6e_rename_socket_package(new_pkg)
+
+    # ── PHASE_3 STEP_1B: Inject attachBaseContext stub into App.smali ────────
+    # Must run AFTER all smali renames (STEP_6/6A/6C/6D/6E) so pkg path is
+    # final, and BEFORE STEP_9 (DEX rebuild) so stub is compiled into classes.dex.
+    with track("PHASE_3", "STEP_P3_1B", "Inject attachBaseContext stub into App.smali"):
+        step_inject_app_stub_smali(new_pkg)
 
     with track("PHASE_1", "STEP_8", "Restore apktool.yml with randomized version"):
         step_restore_apktool_yml(meta)
