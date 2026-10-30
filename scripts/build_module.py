@@ -691,7 +691,12 @@ def step_randomize_res():
         _suffix = random.choice(_confusion_patterns)
         res_rename[name] = f"{dir_part}/{new_base}{ext}{_suffix}"
 
-    MUST_STORE_RES = {"AndroidManifest.xml", "classes.dex", "resources.arsc"}
+    # classes.dex   → MUST be ZIP_STORED: ART uses mmap() for dex2oat (Android 6+/API 23+)
+    # AndroidManifest.xml → MUST be ZIP_STORED: libziparchive parses it before full extraction
+    # resources.arsc → NOT required STORED for sideloaded APKs; AssetManager handles DEFLATE
+    #                  fine on Android 9–17. Only Play-distributed APKs need it STORED (API 30+).
+    #                  Removing it saves ~658 KB on companion_processed.apk.
+    MUST_STORE_RES = {"AndroidManifest.xml", "classes.dex"}
 
     tmp = MOD_ASSET + ".res_tmp"
     with zipfile.ZipFile(MOD_ASSET, "r") as zin:
