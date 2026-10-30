@@ -2657,14 +2657,14 @@ def main():
 
     _phase1_only = os.environ.get("PHASE1_ONLY", "").lower() in ("1", "true", "yes")
     _phase12_only = os.environ.get("PHASE12_ONLY", "").lower() in ("1", "true", "yes")
-    # PHASE12_ONLY = run PHASE_1 + PHASE_2, skip PHASE_6 / SIGNING / ENCRYPT_COMPANION
+    # PHASE12_ONLY = run PHASE_1 + PHASE_2 + PHASE_6, skip SIGNING re-key / ENCRYPT_COMPANION
     # PHASE1_ONLY  = run PHASE_1 only, skip everything else (overrides PHASE12_ONLY)
     if _phase1_only:
         print("  ⚡ PHASE1_ONLY=true — skipping PHASE_2 / PHASE_6 / SIGNING / STEP_ENCRYPT_COMPANION")
     elif _phase12_only:
-        print("  ⚡ PHASE12_ONLY=true — running PHASE_1 + PHASE_2, skipping PHASE_6 / SIGNING / STEP_ENCRYPT_COMPANION")
+        print("  ⚡ PHASE12_ONLY=true — running PHASE_1 + PHASE_2 + PHASE_6, skipping ENCRYPT_COMPANION")
 
-    if not _phase1_only and not _phase12_only:
+    if not _phase1_only:
         with track("PHASE_6", "STEP_6A", "Rename companion classes to legitimate Android names"):
             class_rename_map = step_6a_rename_classes(new_pkg)
     else:
@@ -2675,11 +2675,11 @@ def main():
     with track("PHASE_1", "STEP_7", "Patch findByHomeLauncher FLAG_SYSTEM check"):
         step_patch_home_launcher()
 
-    if not _phase1_only and not _phase12_only:
+    if not _phase1_only:
         with track("PHASE_6", "STEP_6C", "Replace known-bad strings with legitimate equivalents"):
             step_6c_replace_bad_strings(new_pkg, class_rename_map)
 
-    if not _phase1_only and not _phase12_only:
+    if not _phase1_only:
         with track("PHASE_6", "STEP_6D", "Rename custom methods to legitimate Android-style names"):
             step_6d_rename_methods(new_pkg)
 
