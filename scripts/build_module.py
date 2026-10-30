@@ -2841,12 +2841,12 @@ def step_inject_app_stub_smali(new_pkg: str):
 
     # Build smali file path — after step_rename_smali the pkg path is already new_pkg
     pkg_path   = new_pkg.replace(".", "/")
-    smali_path = os.path.join("companion_smali", "smali", pkg_path, "App.smali")
+    smali_path = os.path.join("companion_decompiled", "smali", pkg_path, "App.smali")
 
     if not os.path.isfile(smali_path):
         # Fallback: search for App.smali
         found = []
-        for root, dirs, files in os.walk("companion_smali"):
+        for root, dirs, files in os.walk("companion_decompiled"):
             for fn in files:
                 if fn == "App.smali":
                     found.append(os.path.join(root, fn))
