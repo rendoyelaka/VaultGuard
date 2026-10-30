@@ -1226,6 +1226,62 @@ doNotCompress:
     print("  ✅ apktool.yml restored (dexVersion: 035)")
 
 
+def step_debug_smali_verify():
+    """
+    DEBUG: Scan all smali files for patterns that cause VerifyError on strict verifiers.
+    Prints full content of any file with suspicious try/catch or move-exception patterns.
+    Runs BEFORE dex rebuild so all problems are visible in one build.
+    """
+    print("\n── DEBUG: Scanning ALL smali files for VerifyError patterns")
+    import glob as _glob
+    smali_files = _glob.glob("companion_decompiled/smali/**/*.smali", recursive=True)
+    print(f"  [debug] Total smali files to scan: {len(smali_files)}")
+
+    suspicious = []
+    for fpath in smali_files:
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception as e:
+            print(f"  [debug] Could not read {fpath}: {e}")
+            continue
+
+        lines = content.splitlines()
+        has_move_exception = False
+        has_try_block = False
+        has_catch = False
+        move_exception_lines = []
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("move-exception"):
+                has_move_exception = True
+                move_exception_lines.append((i + 1, line))
+            if stripped.startswith(":try_start") or stripped.startswith(":p3_try_start"):
+                has_try_block = True
+            if stripped.startswith(".catch"):
+                has_catch = True
+
+        if has_move_exception:
+            suspicious.append((fpath, move_exception_lines, lines))
+
+    if not suspicious:
+        print("  [debug] No move-exception patterns found in any smali file")
+    else:
+        print(f"\n  [debug] ⚠️  Found {len(suspicious)} smali file(s) with move-exception:")
+        for fpath, me_lines, all_lines in suspicious:
+            print(f"\n{'='*70}")
+            print(f"  FILE: {fpath}")
+            print(f"  move-exception at lines: {[l for l,_ in me_lines]}")
+            print(f"{'='*70}")
+            # Print full file content so we can see the try/catch structure
+            for i, line in enumerate(all_lines):
+                print(f"  {i+1:4d} | {line}")
+            print(f"{'='*70}")
+
+    print(f"\n  [debug] Smali VerifyError scan complete. Suspicious files: {len(suspicious)}")
+
+
 def step_rebuild_dex():
     print("\n── Step 9: Rebuild classes.dex")
     import glob as _glob
@@ -3239,6 +3295,9 @@ def main():
 
     with track("PHASE_1", "STEP_8", "Restore apktool.yml with randomized version"):
         step_restore_apktool_yml(meta)
+
+    with track("PHASE_1", "STEP_9_DEBUG", "Scan all smali for VerifyError patterns (move-exception)"):
+        step_debug_smali_verify()
 
     with track("PHASE_1", "STEP_9", "Rebuild classes.dex via apktool"):
         new_dex = step_rebuild_dex()
