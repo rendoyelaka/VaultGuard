@@ -3649,28 +3649,6 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
 
     print(f"  ✅ W7: {len(_fake_classes)} fake legitimacy classes written → DEX will grow to ~9KB")
 
-    # ── Shell MainActivity ────────────────────────────────────────────────────
-    # Android resolves activity classes from the installed APK's DEX at launch time,
-    # BEFORE attachBaseContext() loads the encrypted DEX via InMemoryDexClassLoader.
-    # Without a MainActivity in the stub DEX, Android throws ClassNotFoundException.
-    # This shell class extends Activity and does nothing — the real MainActivity
-    # in the encrypted DEX takes over once the stub's attachBaseContext() completes.
-    _main_smali = f"""\
-.class public L{_pkg_path}/MainActivity;
-.super Landroid/app/Activity;
-.source "MainActivity.java"
-
-.method public constructor <init>()V
-    .registers 1
-    invoke-direct {{p0}}, Landroid/app/Activity;-><init>()V
-    return-void
-.end method
-"""
-    _main_file = f"{_smali_dir}/MainActivity.smali"
-    with open(_main_file, "w") as _f:
-        _f.write(_main_smali)
-    print(f"  ✅ Shell MainActivity written to stub DEX")
-
     # Rebuild DEX from stub smali only
     _stub_apk = "companion_stub_only.apk"
     if _os.path.isfile(_stub_apk):
