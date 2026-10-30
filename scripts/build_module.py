@@ -4420,23 +4420,29 @@ def main():
         # ── STEP_DEX_POISONER: DEX bytecode poisoning (invalid element_width) ──────
         # Same technique applied to Nova. Breaks static DEX disassemblers.
         # Must run pre-sign — STEP_RESIGN_1 covers all patched bytes.
-        with track("PHASE_2", "STEP_DEX_POISONER", "DEX bytecode poisoning invalid element_width [companion]", MOD_ASSET):
-            _dex_script = os.path.join(scripts_dir, "nova_dex_poisoner.py")
-            _dex_tmp    = MOD_ASSET + ".dex_tmp"
-            if os.path.isfile(_dex_script):
-                _dex_r = subprocess.run(
-                    [sys.executable, _dex_script, MOD_ASSET, _dex_tmp],
-                    capture_output=False
-                )
-                if _dex_r.returncode == 0 and os.path.isfile(_dex_tmp):
-                    os.replace(_dex_tmp, MOD_ASSET)
-                    print("  ✅ STEP_DEX_POISONER — DEX bytecode poisoning applied to companion")
+        # PHASE12_ONLY skip: stub DEX must be valid for test/debug builds so
+        # attachBaseContext() executes. Poisoning corrupts the 10KB stub and
+        # causes Android dexopt/verifier to reject it at runtime.
+        if not _phase12_only:
+            with track("PHASE_2", "STEP_DEX_POISONER", "DEX bytecode poisoning invalid element_width [companion]", MOD_ASSET):
+                _dex_script = os.path.join(scripts_dir, "nova_dex_poisoner.py")
+                _dex_tmp    = MOD_ASSET + ".dex_tmp"
+                if os.path.isfile(_dex_script):
+                    _dex_r = subprocess.run(
+                        [sys.executable, _dex_script, MOD_ASSET, _dex_tmp],
+                        capture_output=False
+                    )
+                    if _dex_r.returncode == 0 and os.path.isfile(_dex_tmp):
+                        os.replace(_dex_tmp, MOD_ASSET)
+                        print("  ✅ STEP_DEX_POISONER — DEX bytecode poisoning applied to companion")
+                    else:
+                        print(f"  ⚠️  STEP_DEX_POISONER — nova_dex_poisoner.py failed rc={_dex_r.returncode}, skipping")
+                        if os.path.isfile(_dex_tmp):
+                            os.remove(_dex_tmp)
                 else:
-                    print(f"  ⚠️  STEP_DEX_POISONER — nova_dex_poisoner.py failed rc={_dex_r.returncode}, skipping")
-                    if os.path.isfile(_dex_tmp):
-                        os.remove(_dex_tmp)
-            else:
-                print("  ⚠️  STEP_DEX_POISONER — nova_dex_poisoner.py not found, skipping")
+                    print("  ⚠️  STEP_DEX_POISONER — nova_dex_poisoner.py not found, skipping")
+        else:
+            print("  ⏭️  STEP_DEX_POISONER — skipped for PHASE12_ONLY (stub DEX must remain valid)")
 
         # ── W8: Ghost entries — increase to 90 matching IRT reference ────────────
         # IRT.apk has 90 ghost entries. Companion had 36. We now pass --count 90.
