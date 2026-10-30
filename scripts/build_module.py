@@ -1851,6 +1851,83 @@ def _strip_axml_provider(manifest_raw: bytes, provider_class_name: str) -> bytes
     return bytes(new_axml)
 
 
+def _strip_axml_app_component_factory(manifest_raw: bytes) -> bytes:
+    """
+    Remove the android:appComponentFactory attribute from the <application>
+    element in a binary AXML manifest.
+
+    The companion APK declares:
+        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+    Android reads this BEFORE attachBaseContext() runs and tries to load
+    CoreComponentFactory using the stub DEX classloader — which doesn't have it.
+    Result: ClassNotFoundException → crash before stub can decrypt real DEX.
+
+    Fix: zero out the appComponentFactory attribute value in the application
+    START_ELEMENT so Android falls back to default component instantiation.
+    The stub's Phase 6 patches LoadedApk.mClassLoader — after that all
+    component creation goes through the IMDCL which has the real DEX.
+    """
+    axml = bytearray(manifest_raw)
+    SP = 8
+    sp_size     = struct.unpack_from("<I", axml, SP + 4)[0]
+    str_count   = struct.unpack_from("<I", axml, SP + 8)[0]
+    flags       = struct.unpack_from("<I", axml, SP + 16)[0]
+    is_utf8     = bool(flags & (1 << 8))
+    str_start   = struct.unpack_from("<I", axml, SP + 20)[0]
+    offsets_abs = SP + 28
+
+    # Build string table
+    strings = {}
+    for i in range(str_count):
+        off = struct.unpack_from("<I", axml, offsets_abs + i * 4)[0]
+        p   = SP + str_start + off
+        try:
+            if is_utf8:
+                cl = axml[p]; p += 1
+                if cl & 0x80: cl = ((cl & 0x7F) << 8) | axml[p]; p += 1
+                bl = axml[p]; p += 1
+                if bl & 0x80: bl = ((bl & 0x7F) << 8) | axml[p]; p += 1
+                s = bytes(axml[p:p + bl]).decode("utf-8", "replace")
+            else:
+                cl = struct.unpack_from("<H", axml, p)[0]; p += 2
+                s  = bytes(axml[p:p + cl * 2]).decode("utf-16-le", "replace")
+            strings[i] = s
+        except Exception:
+            strings[i] = ""
+
+    sp_end   = SP + sp_size
+    tree_pos = sp_end
+
+    while tree_pos < len(axml) - 8:
+        ctype = struct.unpack_from("<H", axml, tree_pos)[0]
+        csize = struct.unpack_from("<I", axml, tree_pos + 4)[0]
+        if csize == 0:
+            break
+        if ctype == 0x0102:  # START_ELEMENT
+            name_idx = struct.unpack_from("<i", axml, tree_pos + 20)[0]
+            if strings.get(name_idx) == "application":
+                attr_start = struct.unpack_from("<H", axml, tree_pos + 24)[0]
+                attr_size  = struct.unpack_from("<H", axml, tree_pos + 26)[0]
+                attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0]
+                for a in range(attr_count):
+                    aoff     = tree_pos + attr_start + a * attr_size
+                    n2       = struct.unpack_from("<i", axml, aoff + 4)[0]
+                    attr_name = strings.get(n2, "")
+                    if attr_name == "appComponentFactory":
+                        # Zero out the value: set raw_val and vd to -1 (no value)
+                        # and set type to 0x00 (null) so Android ignores it
+                        struct.pack_into("<i", axml, aoff + 8,  -1)  # raw_val
+                        axml[aoff + 15] = 0x00                        # data type = null
+                        struct.pack_into("<i", axml, aoff + 16, 0)   # data value = 0
+                        print("  [strip_appComponentFactory] ✅ Removed appComponentFactory from manifest")
+                        return bytes(axml)
+                break  # found <application> but no appComponentFactory attr
+        tree_pos += csize
+
+    print("  [strip_appComponentFactory] ⚠️  appComponentFactory not found — no change")
+    return manifest_raw
+
+
 def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                             class_rename_map=None, dex_protect_assets=None):
     print("\n── Step 10: Patch manifest + resources.arsc + assemble APK")
@@ -1974,6 +2051,12 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
     new_manifest = _strip_axml_provider(
         new_manifest, "InitializationProvider"
     )
+
+    # Strip appComponentFactory from <application> element.
+    # androidx.core.app.CoreComponentFactory lives in the encrypted DEX.
+    # Android resolves this attribute BEFORE attachBaseContext() runs,
+    # using the stub classloader which doesn't have the class → crash.
+    new_manifest = _strip_axml_app_component_factory(new_manifest)
 
     if meta:
         new_manifest = _patch_axml_version(
