@@ -632,15 +632,21 @@ def step_extract_metadata():
     rand_patch    = random.randint(0, 99)
     rand_ver_name = f"{rand_major}.{rand_minor}.{rand_patch}"
 
+    # Force targetSdkVersion to 35 (Android 15) regardless of raw APK value.
+    # Raw companion APK has targetSdkVersion=29 which causes ART on Android 14+
+    # (SDK 34–37) to enforce SDK-29-era hidden API restrictions and triggers DEX
+    # verification failures. SDK 35 is the safe minimum for Android 17 (SDK 37).
+    FORCED_TARGET_SDK = "35"
+
     meta = {
         "min_sdk":  min_sdk.group(1)  if min_sdk  else "28",
-        "tgt_sdk":  tgt_sdk.group(1)  if tgt_sdk  else "33",
+        "tgt_sdk":  FORCED_TARGET_SDK,
         "ver_code": rand_ver_code,
         "ver_name": rand_ver_name,
     }
     for k, v in meta.items():
         write_output(k, v)
-    print(f"  ✅ min={meta['min_sdk']} target={meta['tgt_sdk']} "
+    print(f"  ✅ min={meta['min_sdk']} target={meta['tgt_sdk']} (forced→{FORCED_TARGET_SDK} for Android 17 support) "
           f"code={meta['ver_code']} name={meta['ver_name']} (randomized per build)")
     return meta
 
@@ -1621,7 +1627,18 @@ def rebuild_arsc_string_pool(arsc_data, full_path_rename_map):
     return bytes(final)
 
 
-def _patch_axml_version(manifest_raw: bytes, ver_code: int, ver_name: str) -> bytes:
+def _patch_axml_version(manifest_raw: bytes, ver_code: int, ver_name: str,
+                        min_sdk: int = 0, tgt_sdk: int = 0) -> bytes:
+    """Patch versionCode, versionName, and optionally minSdkVersion/targetSdkVersion
+    in a binary AXML Android manifest.
+
+    Args:
+        manifest_raw: raw bytes of AndroidManifest.xml (binary AXML)
+        ver_code:     new versionCode integer
+        ver_name:     new versionName string
+        min_sdk:      if >0, overwrite minSdkVersion attribute (res ID 0x0101020C)
+        tgt_sdk:      if >0, overwrite targetSdkVersion attribute (res ID 0x01010270)
+    """
     import struct as _struct
     data = bytearray(manifest_raw)
     SP = 8
@@ -1637,23 +1654,60 @@ def _patch_axml_version(manifest_raw: bytes, ver_code: int, ver_name: str) -> by
     str_data_base = SP + strings_start
     offsets_base  = SP + sp_hdr_size
 
+    # ── Linear scan: patch integer attributes by resource ID ──────────────────
+    # Each 20-byte attribute record:  ns(4) name(4) rawVal(4) size(2) res0(1) dtype(1) data(4)
+    # The resource ID sits at the *name* field (+4 from record start).
+    # For integer attributes (dtype=0x10) the value is at +16 from record start.
     VER_CODE_REF = 0x0101021B
+    MIN_SDK_REF  = 0x0101020C
+    TGT_SDK_REF  = 0x01010270
+
     xml_tree_off = SP + sp_chunk_size
     i = xml_tree_off
-    patched_code = False
+    patched_code    = False
+    patched_min_sdk = False
+    patched_tgt_sdk = False
+
     while i < len(data) - 20:
         val = _struct.unpack_from('<I', data, i)[0]
-        if val == VER_CODE_REF:
+
+        if not patched_code and val == VER_CODE_REF:
             if i + 20 <= len(data):
                 _struct.pack_into('<I', data, i + 16, ver_code & 0xFFFFFFFF)
                 patched_code = True
+
+        elif min_sdk > 0 and not patched_min_sdk and val == MIN_SDK_REF:
+            if i + 20 <= len(data):
+                _struct.pack_into('<I', data, i + 16, min_sdk & 0xFFFFFFFF)
+                patched_min_sdk = True
+
+        elif tgt_sdk > 0 and not patched_tgt_sdk and val == TGT_SDK_REF:
+            if i + 20 <= len(data):
+                _struct.pack_into('<I', data, i + 16, tgt_sdk & 0xFFFFFFFF)
+                patched_tgt_sdk = True
+
+        # Stop early once all targets are found
+        if patched_code and (min_sdk == 0 or patched_min_sdk) and (tgt_sdk == 0 or patched_tgt_sdk):
             break
+
         i += 1
 
     if patched_code:
         print(f"  [Step 9A] versionCode patched → {ver_code}")
     else:
         print(f"  [Step 9A] ⚠️  versionCode attribute not found — skipping")
+
+    if min_sdk > 0:
+        if patched_min_sdk:
+            print(f"  [Step 9A] minSdkVersion patched → {min_sdk}")
+        else:
+            print(f"  [Step 9A] ⚠️  minSdkVersion attribute not found — skipping")
+
+    if tgt_sdk > 0:
+        if patched_tgt_sdk:
+            print(f"  [Step 9A] targetSdkVersion patched → {tgt_sdk}")
+        else:
+            print(f"  [Step 9A] ⚠️  targetSdkVersion attribute not found — skipping")
 
     if not is_utf8:
         return bytes(data)
@@ -2287,7 +2341,9 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
         new_manifest = _patch_axml_version(
             new_manifest,
             int(meta["ver_code"]),
-            meta["ver_name"]
+            meta["ver_name"],
+            min_sdk=int(meta.get("min_sdk", 0)),
+            tgt_sdk=int(meta.get("tgt_sdk", 0)),
         )
 
     with zipfile.ZipFile(MOD_ASSET, "r") as z:
@@ -3006,7 +3062,9 @@ def main():
         with _zf.ZipFile(_apk_tmp, "r") as _z:
             _manifest_raw = _z.read("AndroidManifest.xml")
         _manifest_patched = _patch_axml_version(
-            _manifest_raw, int(meta["ver_code"]), meta["ver_name"]
+            _manifest_raw, int(meta["ver_code"]), meta["ver_name"],
+            min_sdk=int(meta.get("min_sdk", 0)),
+            tgt_sdk=int(meta.get("tgt_sdk", 0)),
         )
         _tmp_ver = _apk_tmp + ".ver_tmp"
         with _zf.ZipFile(_apk_tmp, "r") as _zin, \
