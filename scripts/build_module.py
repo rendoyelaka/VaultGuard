@@ -691,12 +691,11 @@ def step_randomize_res():
         _suffix = random.choice(_confusion_patterns)
         res_rename[name] = f"{dir_part}/{new_base}{ext}{_suffix}"
 
-    # classes.dex   → MUST be ZIP_STORED: ART uses mmap() for dex2oat (Android 6+/API 23+)
     # AndroidManifest.xml → MUST be ZIP_STORED: libziparchive parses it before full extraction
-    # resources.arsc → NOT required STORED for sideloaded APKs; AssetManager handles DEFLATE
-    #                  fine on Android 9–17. Only Play-distributed APKs need it STORED (API 30+).
-    #                  Removing it saves ~658 KB on companion_processed.apk.
-    MUST_STORE_RES = {"AndroidManifest.xml", "classes.dex"}
+    # classes.dex   → keep DEFLATE: raw companion.apk uses DEFLATE and installs fine on
+    #                  Android 9–17. Forcing STORED adds +1.64 MB with no benefit.
+    # resources.arsc → keep DEFLATE: saves ~406 KB, works on all Android versions.
+    MUST_STORE_RES = {"AndroidManifest.xml"}
 
     tmp = MOD_ASSET + ".res_tmp"
     with zipfile.ZipFile(MOD_ASSET, "r") as zin:
@@ -2364,7 +2363,8 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                     item.compress_type = zipfile.ZIP_STORED
                     zout.writestr(item, new_manifest)
                 elif item.filename == "classes.dex":
-                    item.compress_type = zipfile.ZIP_STORED
+                    # Keep DEFLATE — raw APK uses DEFLATE, installs on Android 9–17 confirmed.
+                    item.compress_type = zipfile.ZIP_DEFLATED
                     zout.writestr(item, new_dex)
                 elif item.filename == "resources.arsc":
                     # Keep original compression type (DEFLATE) — STORED not required
