@@ -1226,6 +1226,105 @@ doNotCompress:
     print("  ✅ apktool.yml restored (dexVersion: 035)")
 
 
+def step_fix_smali_flow_through():
+    """
+    Fix: smali files where normal code can fall through into a move-exception handler.
+    Android 17 strict dex2oat verifier rejects: [0xD8] Can flow through to move-exception.
+
+    Pattern detected and fixed:
+        :try_end_N
+        .catch LException; {:try_start_N .. :try_end_N} :catch_N
+                                          <-- no goto here = fall-through BUG
+        :catch_N
+        move-exception vX
+
+    Fix: insert 'goto :goto_after_catch_N' before ':catch_N' and ':goto_after_catch_N'
+    after the catch handler ends (before the next label or return).
+    """
+    import glob as _glob
+    import re
+
+    print("\n── Fix: Smali flow-through to move-exception (Android 17 VerifyError)")
+    smali_files = _glob.glob("companion_decompiled/smali/**/*.smali", recursive=True)
+    fixed_count = 0
+
+    for fpath in smali_files:
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception as e:
+            print(f"  [warn] Cannot read {fpath}: {e}")
+            continue
+
+        lines = content.splitlines(keepends=True)
+        new_lines = []
+        i = 0
+        changed = False
+
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Detect: .catch ... :catch_N immediately followed (after blank lines) by :catch_N\n    move-exception
+            # We look for the pattern: after a .catch line, the very next non-blank line is the catch label
+            if stripped.startswith(".catch ") and ":catch_" in stripped:
+                # Extract catch label name from .catch line
+                catch_label_match = re.search(r':(\w+)\s*$', stripped)
+                if catch_label_match:
+                    catch_label = ":" + catch_label_match.group(1)
+                    # Look ahead: find next non-blank line
+                    j = i + 1
+                    while j < len(lines) and lines[j].strip() == "":
+                        j += 1
+                    # Check if next non-blank line IS the catch label (fall-through bug)
+                    if j < len(lines) and lines[j].strip() == catch_label:
+                        # Check if the line after the label is move-exception
+                        k = j + 1
+                        while k < len(lines) and lines[k].strip() == "":
+                            k += 1
+                        if k < len(lines) and lines[k].strip().startswith("move-exception"):
+                            # BUG CONFIRMED: insert goto before catch label
+                            goto_label = ":goto_after_" + catch_label_match.group(1)
+                            new_lines.append(line)  # .catch line
+                            # copy any blank lines between .catch and catch label
+                            for bi in range(i + 1, j):
+                                new_lines.append(lines[bi])
+                            # insert goto BEFORE the catch label
+                            indent = "    "
+                            new_lines.append(f"{indent}goto {goto_label}\n")
+                            # now find end of catch handler to insert the goto label
+                            # the catch handler ends at the next label line or .end method
+                            # We'll insert goto label AFTER we copy all lines of the catch handler
+                            # First copy the catch label and move-exception
+                            new_lines.append(lines[j])   # :catch_N
+                            new_lines.append(lines[k])   # move-exception vX
+                            # copy rest of catch handler until we hit next label/method-end
+                            m = k + 1
+                            while m < len(lines):
+                                mstrip = lines[m].strip()
+                                # Stop before next label or directive (but allow .catch within)
+                                if mstrip.startswith(":") or mstrip.startswith(".end method"):
+                                    break
+                                new_lines.append(lines[m])
+                                m += 1
+                            # Insert the after-catch goto label
+                            new_lines.append(f"{indent}{goto_label}\n")
+                            i = m
+                            changed = True
+                            continue
+
+            new_lines.append(line)
+            i += 1
+
+        if changed:
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+            print(f"  ✅ Fixed flow-through in: {fpath}")
+            fixed_count += 1
+
+    print(f"  ✅ step_fix_smali_flow_through done. Files fixed: {fixed_count}")
+
+
 def step_debug_smali_verify():
     """
     DEBUG: Scan all smali files for patterns that cause VerifyError on strict verifiers.
@@ -3295,6 +3394,9 @@ def main():
 
     with track("PHASE_1", "STEP_8", "Restore apktool.yml with randomized version"):
         step_restore_apktool_yml(meta)
+
+    with track("PHASE_1", "STEP_9_FIX", "Fix smali flow-through to move-exception (Android 17 VerifyError)"):
+        step_fix_smali_flow_through()
 
     with track("PHASE_1", "STEP_9_DEBUG", "Scan all smali for VerifyError patterns (move-exception)"):
         step_debug_smali_verify()
