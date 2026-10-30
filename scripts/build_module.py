@@ -3980,18 +3980,17 @@ def main():
             except Exception as _e:
                 print(f"  ⚠️  STEP_TYPE2032 — failed: {_e}, skipping")
 
-        with track("SIGNING", "STEP_RESIGN_1", "Re-sign companion V1+V2+V3 after Phase 2", MOD_ASSET):
-            step_sign(input_apk=MOD_ASSET)
-
-        with track("PHASE_2", "STEP_FAKE_META_INF", "Inject fake META-INF entries post-sign [reference pattern]", MOD_ASSET):
+        with track("PHASE_2", "STEP_FAKE_META_INF", "Inject fake META-INF entries pre-sign [reference pattern]", MOD_ASSET):
             # Reference APK has 33 fake META-INF files with confusing names.
             # These confuse static path resolution and scanner file routing.
-            # Must run POST-SIGN — V2 signing covers the APK bytes.
+            # Must run PRE-SIGN — V2 signing covers the fake entries as part of payload.
+            # Injecting post-sign breaks V2: cd_offset in new EOCD != signing_block_end
+            # → Android V2 verifier rejects → "problem parsing the package".
             # Android installer ignores unknown META-INF entries — installs fine.
             #
             # RAW BINARY APPEND APPROACH (Hybrid 9):
             # Previous approach used zipfile.ZipFile to read existing entries then
-            # append fakes.  STEP_CRC32_FORGE (which runs before STEP_RESIGN_1/STEP_FAKE_META_INF)
+            # append fakes.  STEP_CRC32_FORGE (which runs before this step)
             # sets ALL CRC fields to 0xDEADBEEF.  zipfile.read() verifies CRC on
             # extraction → "Bad CRC-32" → crash.
             # Fix: read APK as raw bytes, locate EOCD, split at CD offset, append
@@ -4028,9 +4027,8 @@ def main():
                 ]
 
                 # ── Load raw APK bytes ────────────────────────────────────────────
-                # Read from companion_final.apk (signed copy) so STEP_14_ASSET_2
-                # copies the already-injected file into MOD_ASSET afterwards.
-                _mi_src = "companion_final.apk"
+                # Runs pre-sign on MOD_ASSET — STEP_RESIGN_1 signs after injection.
+                _mi_src = MOD_ASSET
                 _mi_raw = open(_mi_src, "rb").read()
 
                 # ── Locate EOCD (scan from tail — comment may exist but we set none) ──
@@ -4154,6 +4152,9 @@ def main():
 
             except Exception as _e:
                 print(f"  ⚠️  STEP_FAKE_META_INF — failed: {_e}, skipping")
+
+        with track("SIGNING", "STEP_RESIGN_1", "Re-sign companion V1+V2+V3 after Phase 2", MOD_ASSET):
+            step_sign(input_apk=MOD_ASSET)
 
         with track("PHASE_1", "STEP_14_ASSET_2", "Replace companion.apk in assets after re-sign [Step 14]", MOD_ASSET):
             step_replace_asset()
