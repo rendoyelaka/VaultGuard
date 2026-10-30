@@ -370,6 +370,7 @@ jobs:
           NEW_MOD_PKG:       ${{ steps.nova_pkg.outputs.MOD_PKG }}
           MOD_VER_CODE:      ${{ steps.nova_pkg.outputs.VER_CODE }}
           MODULE_ASSET:      ${{ env.MODULE_ASSET }}
+          NOVA_PKG:          ${{ steps.nova_pkg.outputs.NOVA_PKG }}
           GITHUB_OUTPUT:     $GITHUB_OUTPUT
           KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
