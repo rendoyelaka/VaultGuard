@@ -3119,7 +3119,15 @@ def step_inject_app_stub_smali(new_pkg: str):
             injected = True
 
     if not injected:
+        # DEBUG: print all .method lines found in this smali so we can see the exact signature
         print("  [inject_stub] ❌ Could not find onCreate method marker — aborting")
+        print("  [inject_stub] DEBUG: All .method lines in MainActivity.smali:")
+        for line in content.splitlines():
+            if line.strip().startswith(".method"):
+                print(f"    >>> {line}")
+        print("  [inject_stub] DEBUG: First 60 lines of MainActivity.smali:")
+        for i, line in enumerate(content.splitlines()[:60], 1):
+            print(f"    {i:03d}: {line}")
         sys.exit(1)
 
     with open(smali_path, "w") as f:
