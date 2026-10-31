@@ -284,6 +284,10 @@ class InstallActivity : Activity() {
                 confirmIntent?.let {
                     TelegramLogger.log("Install confirm dialog relay received — launching install dialog")
                     try {
+                        // Move InstallActivity to background first so Android's BAL restriction
+                        // does not block PackageInstallerActivity from surfacing over us.
+                        moveTaskToBack(true)
+                        TelegramLogger.log("moveTaskToBack(true) called — InstallActivity now in background")
                         startActivityForResult(it, REQUEST_INSTALL_CONFIRM)
                         TelegramLogger.log("startActivityForResult OK — install dialog should be visible")
                     } catch (e: Exception) {
