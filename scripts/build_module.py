@@ -1884,9 +1884,9 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
                 _flags, n = read_uleb128(pos); pos += n
                 collect_field(idx)
 
-        def read_encoded_methods(count):
+        def read_encoded_methods(count, start_idx=0):
             nonlocal pos
-            idx = 0
+            idx = start_idx
             for _ in range(count):
                 diff,  n = read_uleb128(pos); pos += n
                 idx += diff
@@ -1894,11 +1894,12 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
                 code_off, n = read_uleb128(pos); pos += n
                 collect_method(idx)
                 collect_code_item(code_off)
+            return idx  # last absolute idx, chain into vm pass
 
         read_encoded_fields(sf_count)
         read_encoded_fields(if_count)
-        read_encoded_methods(dm_count)
-        read_encoded_methods(vm_count)
+        last_dm_idx = read_encoded_methods(dm_count, start_idx=0)
+        read_encoded_methods(vm_count, start_idx=last_dm_idx)
 
     # Walk the two target class_defs
     for ci in target_class_idxs:
