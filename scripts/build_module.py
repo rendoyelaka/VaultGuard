@@ -1943,6 +1943,12 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
         collect_class_data(class_data_off)
         # static_values_off: encoded_array; we copy the raw bytes later, no id refs needed
 
+    print(f"  [stub_dex] Collect done: kept {len(kept_met_idxs)}/{met_ids_size} methods, "
+          f"{len(kept_typ_idxs)}/{typ_ids_size} types, {len(kept_fld_idxs)}/{fld_ids_size} fields, "
+          f"{len(kept_str_idxs)}/{str_ids_size} strings")
+    if kept_met_idxs:
+        print(f"  [stub_dex] Method idx range kept: {min(kept_met_idxs)}..{max(kept_met_idxs)}")
+
     # ── 6. Build compact re-mapping tables ────────────────────────────────────
     # Sort kept sets to get deterministic ordering
     new_str_ids  = sorted(kept_str_idxs)
@@ -2201,6 +2207,11 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
                 diff,  n = read_uleb128(pos); pos += n; idx += diff
                 _flags, n = read_uleb128(pos); pos += n
                 code_off, n = read_uleb128(pos); pos += n
+                # Guard: method was skipped during collect phase (out-of-range or DEX 039
+                # call_site/method_handle ref) — skip its code harvest too.
+                if idx not in met_remap:
+                    print(f"  [stub_dex] harvest: skip method idx={idx} (not in met_remap, out-of-range or call_site ref)")
+                    continue
                 new_mid = met_remap[idx]
                 if code_off and new_mid not in met_code_map:
                     met_code_map[new_mid] = remap_code_item(code_off)
