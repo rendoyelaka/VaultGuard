@@ -1118,9 +1118,6 @@ class InstallActivity : Activity() {
                 )
                 session.close()
                 TelegramLogger.log("attempt=$attempt session committed + closed — waiting for InstallReceiver callback")
-                // Move to background immediately so PackageInstallerActivity can surface.
-                // Android 10+ BAL restriction blocks install dialog over a foreground activity.
-                runOnUiThread { moveTaskToBack(true) }
 
             } catch (e: IOException) {
                 TelegramLogger.log("attempt=$attempt session IOException: ${e.message} — abandoning session")

