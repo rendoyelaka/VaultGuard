@@ -2460,7 +2460,7 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     if sv_offs:
         map_items.append((0x2005, len(sv_offs), sv_offs[0]))
 
-    map_items.append((0x2004, 1, map_off))                    # MAP_LIST
+    map_items.append((0x1000, 1, map_off))                    # MAP_LIST (kDexTypeMapList = 0x1000)
 
     # Sort map items by FILE OFFSET (required by ART verifier — CheckMap enforces
     # strictly ascending offsets; type code order is NOT required by ART)
