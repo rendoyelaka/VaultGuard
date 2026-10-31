@@ -863,7 +863,7 @@ def step_patch_dropper_pkg(nova_pkg: str):
     invoke-virtual {{v0, v2}}, Landroid/content/Intent;->setData(Landroid/net/Uri;)Landroid/content/Intent;
 
     .line 15
-    const/high16 v1, 0x1000
+    const v1, 0x10000000
 
     .line 17
     invoke-virtual {{v0, v1}}, Landroid/content/Intent;->addFlags(I)Landroid/content/Intent;
