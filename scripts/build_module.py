@@ -2939,31 +2939,72 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
     sp_end       = SP + sp_size
     xml_tree     = manifest_raw[sp_end:]
 
-    entries = []
-    for i in range(str_count):
-        off = struct.unpack_from("<I", manifest_raw, offsets_abs + i * 4)[0]
-        pos = str_data_abs + off
-        cc  = manifest_raw[pos]
-        bc  = manifest_raw[pos + 1]
-        ch  = manifest_raw[pos + 2:pos + 2 + bc]
-        entries.append((cc, bc, ch))
+    # ── Read manifest string pool with correct variable-width UTF-8 headers ──────
+    # UTF-8 AXML string entry format:
+    #   char_len: 1 byte if < 0x80, else 2 bytes (high-bit set, big-endian 7+8)
+    #   byte_len: 1 byte if < 0x80, else 2 bytes (high-bit set, big-endian 7+8)
+    #   utf8_bytes: byte_len bytes
+    #   null:     1 byte \x00
+    # The previous code hardcoded 2-byte headers (1 byte each for cc/bc), which
+    # corrupts every string with char_len>=128 or byte_len>=128 and misaligns all
+    # offsets from that point — causing "string #N is not null-terminated" on device.
+    def _axml_read_utf8(raw, pos):
+        """Read one UTF-8 AXML string entry. Returns (decoded_str, entry_size_bytes)."""
+        start = pos
+        b = raw[pos]; pos += 1
+        char_len = ((b & 0x7F) << 8) | raw[pos] if b & 0x80 else b
+        if b & 0x80: pos += 1
+        b = raw[pos]; pos += 1
+        byte_len = ((b & 0x7F) << 8) | raw[pos] if b & 0x80 else b
+        if b & 0x80: pos += 1
+        s = raw[pos:pos + byte_len].decode("utf-8", errors="replace")
+        pos += byte_len + 1  # +1 for null terminator
+        return s, pos - start
+
+    def _axml_encode_utf8(s):
+        """Encode a string as a UTF-8 AXML string entry with correct variable-width headers."""
+        enc = s.encode("utf-8")
+        cl, bl = len(s), len(enc)
+        hdr  = bytes([(cl >> 8) | 0x80, cl & 0xFF]) if cl > 0x7F else bytes([cl])
+        hdr += bytes([(bl >> 8) | 0x80, bl & 0xFF]) if bl > 0x7F else bytes([bl])
+        return hdr + enc + b'\x00'
+
+    flags_manifest = struct.unpack_from("<I", manifest_raw, SP + 16)[0]
+    is_utf8_manifest = bool(flags_manifest & 0x100)
+
+    strings_manifest = []
+    if is_utf8_manifest:
+        for i in range(str_count):
+            off = struct.unpack_from("<I", manifest_raw, offsets_abs + i * 4)[0]
+            s, _ = _axml_read_utf8(manifest_raw, str_data_abs + off)
+            strings_manifest.append(s)
+    else:
+        # UTF-16 manifest: read char_len (1 or 2 bytes) + char_len*2 bytes + 2-byte null
+        for i in range(str_count):
+            off = struct.unpack_from("<I", manifest_raw, offsets_abs + i * 4)[0]
+            pos = str_data_abs + off
+            b0 = manifest_raw[pos]; pos += 1
+            if b0 & 0x80:
+                b1 = manifest_raw[pos]; pos += 1
+                clen = ((b0 & 0x7F) << 8) | b1
+            else:
+                clen = b0
+            s = manifest_raw[pos:pos + clen * 2].decode("utf-16-le", errors="replace")
+            strings_manifest.append(s)
 
     new_str_data = bytearray()
     new_offsets  = []
     replaced = 0
+    OLD_STR = OLD.decode("utf-8")
+    NEW_STR = NEW.decode("utf-8")
 
-    for (cc, bc, ch) in entries:
+    for s in strings_manifest:
         new_offsets.append(len(new_str_data))
-        if OLD in ch:
-            new_ch = ch.replace(OLD, NEW)
-            new_str_data.extend([cc + DELTA, bc + DELTA])
-            new_str_data.extend(new_ch)
-            new_str_data.append(0)
+        if OLD_STR in s:
+            new_str_data.extend(_axml_encode_utf8(s.replace(OLD_STR, NEW_STR)))
             replaced += 1
         else:
-            new_str_data.extend([cc, bc])
-            new_str_data.extend(ch)
-            new_str_data.append(0)
+            new_str_data.extend(_axml_encode_utf8(s))
 
     if replaced == 0:
         print("[X] No strings replaced in manifest (package name)")
@@ -2972,44 +3013,26 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
 
     if class_rename_map:
         class_replaced = 0
-        new_str_data2 = bytearray()
-        new_offsets2  = []
-        pos2 = 0
-        temp = bytes(new_str_data)
-        while pos2 < len(temp):
-            if pos2 + 2 > len(temp): break
-            cc2 = temp[pos2]; bc2 = temp[pos2+1]
-            if pos2 + 2 + bc2 + 1 > len(temp): break
-            ch2 = temp[pos2+2:pos2+2+bc2]
-            new_offsets2.append(len(new_str_data2))
-            try:
-                s = ch2.decode("utf-8")
-            except Exception:
-                new_str_data2.extend([cc2, bc2]); new_str_data2.extend(ch2); new_str_data2.append(0)
-                pos2 += 2 + bc2 + 1; continue
+        new_strings2 = list(strings_manifest)  # work on decoded strings — no binary re-parse
 
-            replaced_class = False
+        # Apply replacements that already happened (pkg rename) then class rename
+        for idx, s in enumerate(new_strings2):
+            s = s.replace(OLD_STR, NEW_STR)  # keep pkg renames consistent
             for orig_class, new_class in class_rename_map.items():
                 base_orig = orig_class.split("$")[0]
                 base_new  = new_class.split("$")[0]
-                if s == new_pkg + "." + base_orig:
-                    full_new = new_pkg + "." + base_new
-                    enc = full_new.encode("utf-8")
-                    cl  = len(full_new); bl = len(enc)
-                    new_str_data2.append(cl if cl <= 127 else ((cl>>8)|0x80))
-                    if cl > 127: new_str_data2.append(cl&0xFF)
-                    new_str_data2.append(bl if bl <= 127 else ((bl>>8)|0x80))
-                    if bl > 127: new_str_data2.append(bl&0xFF)
-                    new_str_data2.extend(enc); new_str_data2.append(0)
-                    class_replaced += 1; replaced_class = True; break
-
-            if not replaced_class:
-                new_str_data2.extend([cc2, bc2]); new_str_data2.extend(ch2); new_str_data2.append(0)
-            pos2 += 2 + bc2 + 1
+                if s == NEW_STR + "." + base_orig:
+                    s = NEW_STR + "." + base_new
+                    class_replaced += 1
+                    break
+            new_strings2[idx] = s
 
         if class_replaced > 0:
-            new_str_data = new_str_data2
-            new_offsets  = new_offsets2
+            new_str_data = bytearray()
+            new_offsets  = []
+            for s in new_strings2:
+                new_offsets.append(len(new_str_data))
+                new_str_data.extend(_axml_encode_utf8(s))
             print(f"  Manifest: {class_replaced} class name(s) updated")
 
     while len(new_str_data) % 4 != 0:
