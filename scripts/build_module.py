@@ -1872,13 +1872,22 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     # Walk the two target class_defs
     for ci in target_class_idxs:
         base = cls_defs_off + ci * CLASS_DEF_SIZE
+        # class_def_item layout (AOSP dalvik/libdex/DexFile.h):
+        #   +0  class_idx          uint32
+        #   +4  access_flags       uint32   ← was missing, shifted every field by -4
+        #   +8  superclass_idx     uint32
+        #   +12 interfaces_off     uint32
+        #   +16 source_file_idx    uint32
+        #   +20 annotations_off    uint32
+        #   +24 class_data_off     uint32
+        #   +28 static_values_off  uint32
         class_type_idx    = u32(base)
-        superclass_idx    = u32(base +  4)   # 0xFFFFFFFF = none
-        interfaces_off    = u32(base +  8)
-        source_file_idx   = u32(base + 12)   # 0xFFFFFFFF = none
-        annotations_off   = u32(base + 16)
-        class_data_off    = u32(base + 20)
-        static_values_off = u32(base + 24)
+        superclass_idx    = u32(base +  8)   # 0xFFFFFFFF = none
+        interfaces_off    = u32(base + 12)
+        source_file_idx   = u32(base + 16)   # 0xFFFFFFFF = none
+        annotations_off   = u32(base + 20)
+        class_data_off    = u32(base + 24)
+        static_values_off = u32(base + 28)
 
         collect_type(class_type_idx)
         if superclass_idx != 0xFFFFFFFF:
@@ -2130,7 +2139,7 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
 
     for ci in target_class_idxs:
         base = cls_defs_off + ci * CLASS_DEF_SIZE
-        harvest_code(u32(base + 20))
+        harvest_code(u32(base + 24))   # class_data_off at +24
 
     # ── 7d. Copy static_values blobs verbatim (no index refs inside) ──────────
     # encoded_array_item: just uleb128 sizes + values. String/type refs inside
@@ -2140,7 +2149,7 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     static_val_blobs = {}   # new class_def order → raw bytes
     for order, ci in enumerate(target_class_idxs):
         base = cls_defs_off + ci * CLASS_DEF_SIZE
-        sv_off = u32(base + 24)
+        sv_off = u32(base + 28)   # static_values_off at +28
         if sv_off:
             # Determine encoded_array size by copying until we hit a length we
             # trust — simplest: copy from sv_off to the next aligned 4-byte item
@@ -2221,7 +2230,7 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
 
     def build_class_data(ci):
         base = cls_defs_off + ci * CLASS_DEF_SIZE
-        class_data_off = u32(base + 20)
+        class_data_off = u32(base + 24)   # class_data_off at +24
         if not class_data_off:
             class_data_abs.append(0)
             return
@@ -2424,12 +2433,12 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
         dst = cls_def_start + order * CLASS_DEF_SIZE
 
         class_type_idx    = u32(src)
-        superclass_idx    = u32(src +  4)
-        interfaces_off    = u32(src +  8)
-        source_file_idx   = u32(src + 12)
-        annotations_off   = u32(src + 16)  # skip (drop annotations for stub)
-        class_data_off    = u32(src + 20)
-        static_values_off = u32(src + 24)
+        superclass_idx    = u32(src +  8)   # +4 is access_flags; superclass at +8
+        interfaces_off    = u32(src + 12)
+        source_file_idx   = u32(src + 16)
+        annotations_off   = u32(src + 20)   # skip (drop annotations for stub)
+        class_data_off    = u32(src + 24)
+        static_values_off = u32(src + 28)
 
         _s.pack_into("<I", dex, dst,      typ_remap[class_type_idx])
         _s.pack_into("<I", dex, dst +  4, typ_remap[superclass_idx] if superclass_idx != 0xFFFFFFFF else 0xFFFFFFFF)
