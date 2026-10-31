@@ -2462,8 +2462,9 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
 
     map_items.append((0x2004, 1, map_off))                    # MAP_LIST
 
-    # Sort map items by TYPE CODE (required by DEX spec — NOT by offset)
-    map_items.sort(key=lambda x: x[0])
+    # Sort map items by FILE OFFSET (required by ART verifier — CheckMap enforces
+    # strictly ascending offsets; type code order is NOT required by ART)
+    map_items.sort(key=lambda x: x[2])
 
     map_sec = bytearray()
     map_sec += pack32(len(map_items))
