@@ -3103,9 +3103,10 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                     item.compress_type = zipfile.ZIP_DEFLATED
                     zout.writestr(item, new_dex)
                 elif item.filename == "resources.arsc":
-                    # Keep original compression type (DEFLATE) — STORED not required
-                    # for sideloaded APKs on Android 9–17. Saves ~406 KB.
-                    item.compress_type = zipfile.ZIP_DEFLATED
+                    # resources.arsc MUST be STORED — AssetManager memory-maps it
+                    # directly and requires it uncompressed on ALL Android versions.
+                    # DEFLATE causes Bad string block / IndexOutOfBoundsException.
+                    item.compress_type = zipfile.ZIP_STORED
                     zout.writestr(item, new_arsc)
                 elif item.filename in res_rename:
                     new_item = zipfile.ZipInfo(res_rename[item.filename])
