@@ -2293,6 +2293,7 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     class_data_abs = []   # [abs_off, ...] for each of the 2 class_defs in order
 
     def build_class_data(ci):
+        nonlocal data_sec
         base = cls_defs_off + ci * CLASS_DEF_SIZE
         class_data_off = u32(base + 24)   # class_data_off at +24
         if not class_data_off:
