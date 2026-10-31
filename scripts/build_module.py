@@ -1694,13 +1694,15 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
 
     # Proto_id_item: shorty_idx(u32), return_type_idx(u32), params_off(u32)
     def collect_proto(pid):
+        if pid >= pro_ids_size: return   # bounds guard — DEX 039 may ref out-of-range protos
         if pid in kept_pro_idxs: return
         kept_pro_idxs.add(pid)
         base = pro_ids_off + pid * 12
         shorty_idx   = u32(base)
         ret_type_idx = u32(base + 4)
         params_off   = u32(base + 8)
-        kept_str_idxs.add(shorty_idx)
+        if shorty_idx < str_ids_size:
+            kept_str_idxs.add(shorty_idx)
         collect_type(ret_type_idx)
         if params_off:
             # type_list: size(u32) + type_idx[size](u16 each)
@@ -1710,27 +1712,34 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
                 collect_type(t)
 
     def collect_type(tid):
+        if tid >= typ_ids_size: return   # bounds guard — DEX 039 may produce out-of-range type refs
         if tid in kept_typ_idxs: return
         kept_typ_idxs.add(tid)
         kept_str_idxs.add(type_str_idx[tid])
 
     def collect_field(fid):
+        if fid >= fld_ids_size: return   # bounds guard — wrong idx from delta-decode or DEX 039
         if fid in kept_fld_idxs: return
         kept_fld_idxs.add(fid)
         # field_id_item: class_idx(u16), type_idx(u16), name_idx(u32)
         base = fld_ids_off + fid * 8
         collect_type(u16(base))
         collect_type(u16(base + 2))
-        kept_str_idxs.add(u32(base + 4))
+        name_idx = u32(base + 4)
+        if name_idx < str_ids_size:
+            kept_str_idxs.add(name_idx)
 
     def collect_method(mid):
+        if mid >= met_ids_size: return   # bounds guard — wrong idx from delta-decode or DEX 039
         if mid in kept_met_idxs: return
         kept_met_idxs.add(mid)
         # method_id_item: class_idx(u16), proto_idx(u16), name_idx(u32)
         base = met_ids_off + mid * 8
         collect_type(u16(base))
         collect_proto(u16(base + 2))
-        kept_str_idxs.add(u32(base + 4))
+        name_idx = u32(base + 4)
+        if name_idx < str_ids_size:
+            kept_str_idxs.add(name_idx)
 
     def collect_code_item(code_off):
         """Scan code_item for string/type/field/method references in bytecode."""
@@ -1875,14 +1884,15 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
         dm_count, n = read_uleb128(pos); pos += n
         vm_count, n = read_uleb128(pos); pos += n
 
-        def read_encoded_fields(count):
+        def read_encoded_fields(count, start_idx=0):
             nonlocal pos
-            idx = 0
+            idx = start_idx
             for _ in range(count):
                 diff, n = read_uleb128(pos); pos += n
                 idx += diff
                 _flags, n = read_uleb128(pos); pos += n
                 collect_field(idx)
+            return idx  # last absolute idx, chain into if pass
 
         def read_encoded_methods(count, start_idx=0):
             nonlocal pos
@@ -1896,8 +1906,8 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
                 collect_code_item(code_off)
             return idx  # last absolute idx, chain into vm pass
 
-        read_encoded_fields(sf_count)
-        read_encoded_fields(if_count)
+        last_sf_idx = read_encoded_fields(sf_count, start_idx=0)
+        read_encoded_fields(if_count, start_idx=last_sf_idx)
         last_dm_idx = read_encoded_methods(dm_count, start_idx=0)
         read_encoded_methods(vm_count, start_idx=last_dm_idx)
 
@@ -2307,41 +2317,60 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
         dm_count, n = read_uleb128(pos4); pos4 += n
         vm_count, n = read_uleb128(pos4); pos4 += n
 
-        cd2 = bytearray()
-        cd2 += uleb128(sf_count)
-        cd2 += uleb128(if_count)
-        cd2 += uleb128(dm_count)
-        cd2 += uleb128(vm_count)
-
         # Re-encode fields: each item is (diff_from_prev, access_flags) in uleb128.
         # old index is accumulated; we remap to new index and re-delta-encode.
+        # Skip fields whose old index is not in fld_remap (out-of-range or not collected).
+        fld_body = bytearray()
         prev_old_f = 0
         prev_new_f = 0
+        kept_sf = 0; kept_if = 0
         for fi in range(sf_count + if_count):
             diff,  n = read_uleb128(pos4); pos4 += n
             flags, n = read_uleb128(pos4); pos4 += n
             old_fid = prev_old_f + diff
+            if old_fid not in fld_remap:
+                prev_old_f = old_fid
+                continue
             new_fid = fld_remap[old_fid]
-            cd2 += uleb128(new_fid - prev_new_f)
-            cd2 += uleb128(flags)
+            fld_body += uleb128(new_fid - prev_new_f)
+            fld_body += uleb128(flags)
             prev_old_f = old_fid
             prev_new_f = new_fid
+            if fi < sf_count: kept_sf += 1
+            else: kept_if += 1
 
         # Re-encode methods: (diff, access_flags, code_off) each uleb128.
+        # Skip methods whose old index is not in met_remap (out-of-range or not collected).
+        met_body = bytearray()
         prev_old_m = 0
         prev_new_m = 0
+        kept_dm = 0; kept_vm = 0
         for mi in range(dm_count + vm_count):
             diff,   n = read_uleb128(pos4); pos4 += n
             flags,  n = read_uleb128(pos4); pos4 += n
             _code,  n = read_uleb128(pos4); pos4 += n
             old_mid = prev_old_m + diff
+            if old_mid not in met_remap:
+                prev_old_m = old_mid
+                continue
             new_mid = met_remap[old_mid]
             abs_c   = met_code_abs.get(new_mid, 0)
-            cd2 += uleb128(new_mid - prev_new_m)
-            cd2 += uleb128(flags)
-            cd2 += uleb128(abs_c)
+            met_body += uleb128(new_mid - prev_new_m)
+            met_body += uleb128(flags)
+            met_body += uleb128(abs_c)
             prev_old_m = old_mid
             prev_new_m = new_mid
+            if mi < dm_count: kept_dm += 1
+            else: kept_vm += 1
+
+        # Assemble class_data_item: 4 actual counts + field entries + method entries
+        cd2 = bytearray()
+        cd2 += uleb128(kept_sf)
+        cd2 += uleb128(kept_if)
+        cd2 += uleb128(kept_dm)
+        cd2 += uleb128(kept_vm)
+        cd2 += fld_body
+        cd2 += met_body
 
         ds_align4()
         class_data_abs.append(data_start + len(data_sec))
