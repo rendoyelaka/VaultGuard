@@ -2184,9 +2184,9 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
                 diff, n = read_uleb128(pos); pos += n; idx += diff
                 _, n    = read_uleb128(pos); pos += n
 
-        def harvest_encoded_methods(count):
+        def harvest_encoded_methods(count, start_idx=0):
             nonlocal pos
-            idx = 0
+            idx = start_idx
             for _ in range(count):
                 diff,  n = read_uleb128(pos); pos += n; idx += diff
                 _flags, n = read_uleb128(pos); pos += n
@@ -2194,11 +2194,12 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
                 new_mid = met_remap[idx]
                 if code_off and new_mid not in met_code_map:
                     met_code_map[new_mid] = remap_code_item(code_off)
+            return idx  # last absolute idx, chain into vm pass
 
         skip_encoded_fields(sf_count)
         skip_encoded_fields(if_count)
-        harvest_encoded_methods(dm_count)
-        harvest_encoded_methods(vm_count)
+        last_dm_idx = harvest_encoded_methods(dm_count, start_idx=0)
+        harvest_encoded_methods(vm_count, start_idx=last_dm_idx)
 
     for ci in target_class_idxs:
         base = cls_defs_off + ci * CLASS_DEF_SIZE
