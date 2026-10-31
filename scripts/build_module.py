@@ -2683,9 +2683,10 @@ def _inject_axml_app_name(manifest_raw: bytes, new_pkg: str, renamed_app_class: 
     xml_tree = bytes(axml[sp_end:])
     new_axml += xml_tree
 
-    # ── Patch sp header: str_count and sp_size ────────────────────────────────
-    struct.pack_into("<I", new_axml, SP + 4, new_sp_size)   # sp_size
-    struct.pack_into("<I", new_axml, SP + 8, new_str_count) # str_count
+    # ── Patch sp header: str_count, sp_size, and strings_start ──────────────
+    struct.pack_into("<I", new_axml, SP + 4, new_sp_size)              # sp_size
+    struct.pack_into("<I", new_axml, SP + 8, new_str_count)            # str_count
+    struct.pack_into("<I", new_axml, SP + 20, 28 + new_str_count * 4) # strings_start: must reflect expanded offset table
 
     # ── Find <application> START_ELEMENT in new xml_tree and inject attr ──────
     new_sp_end  = SP + new_sp_size
