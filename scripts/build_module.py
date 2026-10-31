@@ -1999,6 +1999,28 @@ def _read_utf8_str(data, pos):
     return s, pos - start
 
 
+def _read_utf16_str(data, pos):
+    """Read a UTF-16 encoded arsc string pool entry.
+
+    UTF-16 format (Android arsc when flags & 0x100 == 0):
+      [char_len: 1 or 2 bytes LE, high bit = 2-byte form]
+      [char_len * 2 bytes of UTF-16LE data]
+      [2 null bytes terminator]
+    The char_len field encodes the number of UTF-16 code units, NOT bytes.
+    """
+    start = pos
+    b0 = data[pos]; pos += 1
+    if b0 & 0x80:
+        b1 = data[pos]; pos += 1
+        char_len = ((b0 & 0x7f) << 8) | b1
+    else:
+        char_len = b0
+    byte_len = char_len * 2
+    s = data[pos:pos + byte_len].decode("utf-16-le", errors="replace")
+    pos += byte_len + 2  # skip 2-byte null terminator
+    return s, pos - start
+
+
 def _encode_utf8_str(s):
     enc = s.encode("utf-8")
     cl, bl = len(s), len(enc)
@@ -2236,12 +2258,19 @@ def rebuild_arsc_string_pool(arsc_data, full_path_rename_map):
     strings_start = struct.unpack_from("<I", data, SP + 20)[0]
     styles_start  = struct.unpack_from("<I", data, SP + 24)[0]
 
+    is_utf8 = bool(flags & 0x100)  # bit 8 set → UTF-8 pool; unset → UTF-16 pool
+    if not is_utf8:
+        print("  arsc string pool: original encoding is UTF-16 — reading as UTF-16, writing as UTF-8")
+
     str_data_base = SP + strings_start
     strings = []
     scrubbed = 0
     pos = str_data_base
     for _ in range(str_count):
-        s, size = _read_utf8_str(data, pos)
+        if is_utf8:
+            s, size = _read_utf8_str(data, pos)
+        else:
+            s, size = _read_utf16_str(data, pos)
         # Apply path rename map first
         s = full_path_rename_map.get(s, s)
         # Scrub AppCompat/androidx strings → blank
@@ -2268,8 +2297,21 @@ def rebuild_arsc_string_pool(arsc_data, full_path_rename_map):
     new_styles_start = 0
 
     new_offsets_bytes = b''.join(struct.pack("<I", o) for o in new_offsets)
-    new_strings_start = sp_hdr_size + len(new_offsets_bytes)
-    new_sp_chunk_size = sp_hdr_size + len(new_offsets_bytes) + len(new_str_data)
+
+    # String data must start at a 4-byte aligned offset within the chunk.
+    # sp_hdr_size (28) + offset_table (str_count*4) is always 4-byte aligned,
+    # so no padding needed — but be explicit for safety.
+    raw_strings_start = sp_hdr_size + len(new_offsets_bytes)
+    pad_needed = (4 - (raw_strings_start % 4)) % 4
+    new_strings_start = raw_strings_start + pad_needed
+    align_padding = b'\x00' * pad_needed
+
+    new_sp_chunk_size = new_strings_start + len(new_str_data)
+
+    # Always write output as UTF-8 (bit 8 = 0x100).
+    # If original was UTF-16 we converted on read; this makes the pool smaller
+    # and is what AAPT2 always produces. Android accepts UTF-8 arsc on all APIs.
+    out_flags = flags | 0x100
 
     new_sp_hdr = bytearray(sp_hdr_size)
     struct.pack_into("<H", new_sp_hdr, 0,  0x0001)
@@ -2277,11 +2319,11 @@ def rebuild_arsc_string_pool(arsc_data, full_path_rename_map):
     struct.pack_into("<I", new_sp_hdr, 4,  new_sp_chunk_size)
     struct.pack_into("<I", new_sp_hdr, 8,  str_count)
     struct.pack_into("<I", new_sp_hdr, 12, new_style_count)   # styles → 0
-    struct.pack_into("<I", new_sp_hdr, 16, flags)
+    struct.pack_into("<I", new_sp_hdr, 16, out_flags)         # UTF-8 flag forced ON
     struct.pack_into("<I", new_sp_hdr, 20, new_strings_start)
     struct.pack_into("<I", new_sp_hdr, 24, new_styles_start)  # styles offset → 0
 
-    new_sp_chunk = bytearray(bytes(new_sp_hdr) + new_offsets_bytes + bytes(new_str_data))
+    new_sp_chunk = bytearray(bytes(new_sp_hdr) + new_offsets_bytes + align_padding + bytes(new_str_data))
     while len(new_sp_chunk) % 4 != 0:
         new_sp_chunk += b'\x00'
     struct.pack_into("<I", new_sp_chunk, 4, len(new_sp_chunk))
