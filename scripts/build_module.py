@@ -1583,25 +1583,37 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     if not magic.startswith(b"dex\n"):
         raise ValueError(f"_build_stub_dex: not a DEX file (magic={magic!r})")
 
-    header_size   = u32(0x08 + 4*1)   # offset 0x0C
-    # Standard DEX header layout (offsets from DEX spec):
-    # 0x00 magic(8) checksum(4) sha1(20) file_size(4) header_size(4) endian(4)
-    # 0x28 link_size(4) link_off(4)
-    # 0x30 map_off(4)
-    # 0x34 string_ids_size(4) string_ids_off(4)
-    # 0x3C type_ids_size(4)   type_ids_off(4)
-    # 0x44 proto_ids_size(4)  proto_ids_off(4)
-    # 0x4C field_ids_size(4)  field_ids_off(4)
-    # 0x54 method_ids_size(4) method_ids_off(4)
-    # 0x5C class_defs_size(4) class_defs_off(4)
-    # 0x64 data_size(4)       data_off(4)
+    # Exact DEX-035 header layout (AOSP dalvik/libdex/DexFile.h):
+    # 0x00  magic[8]
+    # 0x08  checksum[4]
+    # 0x0C  sha1[20]
+    # 0x20  file_size[4]
+    # 0x24  header_size[4]
+    # 0x28  endian_tag[4]
+    # 0x2C  link_size[4]
+    # 0x30  link_off[4]
+    # 0x34  map_off[4]
+    # 0x38  string_ids_size[4]
+    # 0x3C  string_ids_off[4]
+    # 0x40  type_ids_size[4]
+    # 0x44  type_ids_off[4]
+    # 0x48  proto_ids_size[4]
+    # 0x4C  proto_ids_off[4]
+    # 0x50  field_ids_size[4]
+    # 0x54  field_ids_off[4]
+    # 0x58  method_ids_size[4]
+    # 0x5C  method_ids_off[4]
+    # 0x60  class_defs_size[4]
+    # 0x64  class_defs_off[4]
+    # 0x68  data_size[4]
+    # 0x6C  data_off[4]
 
-    str_ids_size = u32(0x34);  str_ids_off  = u32(0x38)
-    typ_ids_size = u32(0x3C);  typ_ids_off  = u32(0x40)
-    pro_ids_size = u32(0x44);  pro_ids_off  = u32(0x48)
-    fld_ids_size = u32(0x4C);  fld_ids_off  = u32(0x50)
-    met_ids_size = u32(0x54);  met_ids_off  = u32(0x58)
-    cls_defs_size= u32(0x5C);  cls_defs_off = u32(0x60)
+    str_ids_size = u32(0x38);  str_ids_off  = u32(0x3C)
+    typ_ids_size = u32(0x40);  typ_ids_off  = u32(0x44)
+    pro_ids_size = u32(0x48);  pro_ids_off  = u32(0x4C)
+    fld_ids_size = u32(0x50);  fld_ids_off  = u32(0x54)
+    met_ids_size = u32(0x58);  met_ids_off  = u32(0x5C)
+    cls_defs_size= u32(0x60);  cls_defs_off = u32(0x64)
 
     # ── 2. Build string table (index → raw string bytes incl MUTF-8 length) ───
     str_data_offsets = [u32(str_ids_off + i*4) for i in range(str_ids_size)]
@@ -2332,30 +2344,23 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
 
     # Header magic — use same version as source
     dex[0:8] = data[0:8]
-    # endian tag = 0x12345678
-    _s.pack_into("<I", dex, 0x28 + 8, 0x12345678)
 
-    # Section offsets into header
-    _s.pack_into("<I", dex, 0x34, len(new_str_ids));  _s.pack_into("<I", dex, 0x38, str_ids_start)
-    _s.pack_into("<I", dex, 0x3C, len(new_typ_ids));  _s.pack_into("<I", dex, 0x40, typ_ids_start if new_typ_ids else 0)
-    _s.pack_into("<I", dex, 0x44, len(new_pro_ids));  _s.pack_into("<I", dex, 0x48, pro_ids_start if new_pro_ids else 0)
-    _s.pack_into("<I", dex, 0x4C, len(new_fld_ids));  _s.pack_into("<I", dex, 0x50, fld_ids_start if new_fld_ids else 0)
-    _s.pack_into("<I", dex, 0x54, len(new_met_ids));  _s.pack_into("<I", dex, 0x58, met_ids_start if new_met_ids else 0)
-    _s.pack_into("<I", dex, 0x5C, 2);                 _s.pack_into("<I", dex, 0x60, cls_def_start)
-    _s.pack_into("<I", dex, 0x30, map_off)
-    _s.pack_into("<I", dex, 0x24, total_size)          # file_size
-    _s.pack_into("<I", dex, 0x0C, 0x70)                # header_size = 112
-
-    # link_size / link_off = 0 (no linked sections)
-    _s.pack_into("<I", dex, 0x28, 0)
-    _s.pack_into("<I", dex, 0x2C, 0)
-
-    # data_size / data_off
-    _s.pack_into("<I", dex, 0x64, len(data_sec))
-    _s.pack_into("<I", dex, 0x68, data_start)
-
-    # endian_tag
-    _s.pack_into("<I", dex, 0x28 + 8, 0x12345678)
+    # Write header fields at their CORRECT DEX-035 offsets
+    # (see offset table comment above in the parse section)
+    _s.pack_into("<I", dex, 0x20, total_size)           # file_size
+    _s.pack_into("<I", dex, 0x24, 0x70)                 # header_size = 112
+    _s.pack_into("<I", dex, 0x28, 0x12345678)           # endian_tag
+    _s.pack_into("<I", dex, 0x2C, 0)                    # link_size
+    _s.pack_into("<I", dex, 0x30, 0)                    # link_off
+    _s.pack_into("<I", dex, 0x34, map_off)              # map_off
+    _s.pack_into("<I", dex, 0x38, len(new_str_ids));    _s.pack_into("<I", dex, 0x3C, str_ids_start)
+    _s.pack_into("<I", dex, 0x40, len(new_typ_ids));    _s.pack_into("<I", dex, 0x44, typ_ids_start if new_typ_ids else 0)
+    _s.pack_into("<I", dex, 0x48, len(new_pro_ids));    _s.pack_into("<I", dex, 0x4C, pro_ids_start if new_pro_ids else 0)
+    _s.pack_into("<I", dex, 0x50, len(new_fld_ids));    _s.pack_into("<I", dex, 0x54, fld_ids_start if new_fld_ids else 0)
+    _s.pack_into("<I", dex, 0x58, len(new_met_ids));    _s.pack_into("<I", dex, 0x5C, met_ids_start if new_met_ids else 0)
+    _s.pack_into("<I", dex, 0x60, 2);                   _s.pack_into("<I", dex, 0x64, cls_def_start)
+    _s.pack_into("<I", dex, 0x68, len(data_sec))        # data_size
+    _s.pack_into("<I", dex, 0x6C, data_start)           # data_off
 
     # ── 9a. String ID table ───────────────────────────────────────────────────
     for i, abs_off in enumerate(abs_str_data_offsets):
