@@ -2558,9 +2558,12 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     dex[data_start: data_start + len(data_sec)] = data_sec
 
     # ── 10. Checksum + SHA-1 ──────────────────────────────────────────────────
-    sha1 = _hl.sha1(bytes(dex[32:])).digest()   # sha1 of everything after sha1 field
-    dex[8:12]  = _s.pack("<I", _zl.adler32(bytes(dex[12:])) & 0xFFFFFFFF)
-    dex[12:32] = sha1
+    # IMPORTANT: SHA-1 must be written FIRST, then Adler-32 computed over dex[12:]
+    # which now includes the real SHA-1 bytes.  Reversing the order produces a
+    # checksum that covers stale (zero) SHA-1 bytes → Android rejects the DEX.
+    sha1 = _hl.sha1(bytes(dex[32:])).digest()   # sha1 covers bytes after the sha1 field
+    dex[12:32] = sha1                            # write sha1 FIRST
+    dex[8:12]  = _s.pack("<I", _zl.adler32(bytes(dex[12:])) & 0xFFFFFFFF)  # then checksum covers dex[12:] including sha1
 
     result = bytes(dex)
     print(f"  [stub_dex] Minimal stub DEX built: {len(result):,} bytes "
