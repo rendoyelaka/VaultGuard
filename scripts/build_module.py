@@ -2414,12 +2414,12 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     #   0x0004 TYPE_FIELD_ID_ITEM
     #   0x0005 TYPE_METHOD_ID_ITEM
     #   0x0006 TYPE_CLASS_DEF_ITEM
-    #   0x2002 TYPE_STRING_DATA_ITEM
-    #   0x2003 TYPE_TYPE_LIST (if any proto has params)
-    #   0x2001 TYPE_CODE_ITEM
+    #   0x1001 TYPE_TYPE_LIST (if any proto has params)
     #   0x2000 TYPE_CLASS_DATA_ITEM
+    #   0x2001 TYPE_CODE_ITEM
+    #   0x2002 TYPE_STRING_DATA_ITEM
     #   0x2004 TYPE_MAP_LIST
-    #   0x1003 TYPE_ENCODED_ARRAY_ITEM (if any static values)
+    #   0x2005 TYPE_ENCODED_ARRAY_ITEM (if any static values)
 
     map_off = data_start + len(data_sec)
 
@@ -2443,7 +2443,7 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     # Type lists
     type_list_offs = sorted(set(v for v in proto_param_abs.values() if v))
     if type_list_offs:
-        map_items.append((0x2003, len(type_list_offs), type_list_offs[0]))
+        map_items.append((0x1001, len(type_list_offs), type_list_offs[0]))
 
     # Code items
     code_offs = sorted(set(met_code_abs.values()))
@@ -2458,12 +2458,12 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     # Encoded array (static values)
     sv_offs = sorted(set(v for v in static_val_abs.values() if v))
     if sv_offs:
-        map_items.append((0x1003, len(sv_offs), sv_offs[0]))
+        map_items.append((0x2005, len(sv_offs), sv_offs[0]))
 
-    map_items.append((0x1000, 1, map_off))                    # MAP_LIST
+    map_items.append((0x2004, 1, map_off))                    # MAP_LIST
 
-    # Sort map items by offset (required by DEX spec)
-    map_items.sort(key=lambda x: x[2])
+    # Sort map items by TYPE CODE (required by DEX spec — NOT by offset)
+    map_items.sort(key=lambda x: x[0])
 
     map_sec = bytearray()
     map_sec += pack32(len(map_items))
