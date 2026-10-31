@@ -3727,6 +3727,46 @@ def step_inject_kotlin(new_pkg):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _check_string156(label: str, apk_path: str = "companion_renamed_unsigned.apk") -> None:
+    """Diagnostic: read string #156 from the APK manifest and report null-termination status."""
+    import zipfile as _zf, struct as _st
+    try:
+        with _zf.ZipFile(apk_path, "r") as _z:
+            _d = _z.read("AndroidManifest.xml")
+        _SP = 8
+        _sp_hdr  = _st.unpack_from('<H', _d, _SP + 2)[0]
+        _n       = _st.unpack_from('<I', _d, _SP + 8)[0]
+        _flags   = _st.unpack_from('<I', _d, _SP + 16)[0]
+        _s_start = _st.unpack_from('<I', _d, _SP + 20)[0]
+        _is_utf8 = bool(_flags & 0x100)
+        _off_abs  = _SP + _sp_hdr
+        _dat_abs  = _SP + _s_start
+        if not _is_utf8:
+            print(f"  [STR156] {label} — manifest is UTF-16, skip check")
+            return
+        if _n <= 156:
+            print(f"  [STR156] {label} — only {_n} strings, no #156")
+            return
+        _off = _st.unpack_from('<I', _d, _off_abs + 156 * 4)[0]
+        _pos = _dat_abs + _off
+        # read char_len
+        _b0 = _d[_pos]; _pos += 1
+        if _b0 & 0x80: _pos += 1
+        # read byte_len
+        _b1 = _d[_pos]; _pos += 1
+        if _b1 & 0x80:
+            _bl = ((_b1 & 0x7F) << 8) | _d[_pos]; _pos += 1
+        else:
+            _bl = _b1
+        _text = _d[_pos:_pos + _bl].decode('utf-8', errors='replace')
+        _null = _d[_pos + _bl] if _pos + _bl < len(_d) else None
+        _ok = _null == 0x00
+        _sym = "✅" if _ok else "❌ BUG HERE"
+        print(f"  [STR156] {label} → '{_text}' null=0x{_null:02X} {_sym}")
+    except Exception as _e:
+        print(f"  [STR156] {label} → ERROR: {_e}")
+
+
 def main():
     print("=" * 60)
     print("  build_module.py — Companion APK Build Script")
@@ -3843,6 +3883,7 @@ def main():
         step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                                 class_rename_map=class_rename_map,
                                 dex_a_bytes=dex_a_bytes)
+    _check_string156("after STEP_10 step_patch_and_assemble")
 
     with track("PHASE_1", "STEP_9A", "Patch versionCode + versionName in binary AXML manifest", MOD_ASSET):
         import zipfile as _zf
@@ -3866,25 +3907,31 @@ def main():
                     _zout.writestr(_item, _data)
         os.replace(_tmp_ver, _apk_tmp)
         print(f"  ✅ Step 9A version patch applied")
+    _check_string156("after STEP_9A _patch_axml_version")
 
     if not _phase1_only:  # PHASE_2 — runs for both full build and PHASE12_ONLY
         with track("PHASE_2", "STEP_13_UNICODE", "Deep unicode folder nesting companion [Step 13]", "companion_renamed_unsigned.apk"):
             step_unicode_nest(build_hash)
+        _check_string156("after STEP_13_UNICODE step_unicode_nest")
 
         with track("PHASE_2", "STEP_15_NOISE", "Decoy noise files injection [Step 15]", "companion_renamed_unsigned.apk"):
             step_decoy_noise_files(build_hash)
+        _check_string156("after STEP_15_NOISE step_decoy_noise_files")
 
         with track("PHASE_2", "STEP_17_MANIFEST", "Fake manifest entries injection [Step 17]", "companion_renamed_unsigned.apk"):
             step_fake_manifest_entries()
+        _check_string156("after STEP_17_MANIFEST step_fake_manifest_entries")
 
     with track("PHASE_2", "STEP_11_ZIPALIGN", "Zipalign companion APK [Step 11]", "companion_renamed_unsigned.apk"):
         step_zipalign()
+    _check_string156("after STEP_11_ZIPALIGN", apk_path="companion_renamed_aligned.apk")
 
     with track("PHASE_1", "STEP_12_FINGERPRINT", "Generate per-build fingerprint SHA-512 + BLAKE3 [Step 12]"):
         step_fingerprint()
 
     with track("PHASE_1", "STEP_13_SIGN", "Sign companion APK with platform cert (android@android.com) [Step 13]", "companion_renamed_aligned.apk"):
         step_sign()
+    _check_string156("after STEP_13_SIGN step_sign", apk_path="companion_final.apk")
 
     with track("PHASE_1", "STEP_14_ASSET", "Replace companion.apk in assets [Step 14]", MOD_ASSET):
         step_replace_asset()
