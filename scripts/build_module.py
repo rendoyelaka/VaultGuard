@@ -1314,12 +1314,12 @@ def _generate_dex_stub_smali(new_path: str) -> str:
 
     # ciphertext = blob[4..]
     array-length v3, v1
-    sub-int/lit8 v3, v3, 0x4
+    add-int/lit8 v3, v3, -0x4
     new-array v4, v3, [B
     const/4 v0, 0x0
     const/4 v5, 0x4
     array-length v3, v1
-    sub-int/lit8 v3, v3, 0x4
+    add-int/lit8 v3, v3, -0x4
     invoke-static {{v1, v5, v4, v0, v3}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
     # v4 = ciphertext
 
@@ -1444,7 +1444,7 @@ def _generate_dex_stub_smali(new_path: str) -> str:
     # v3:v4 = state
 
     # i = n-1
-    sub-int/lit8 v6, v0, 0x1
+    add-int/lit8 v6, v0, -0x1
     # v6 = i
 
     :shuffle_loop
@@ -1473,7 +1473,7 @@ def _generate_dex_stub_smali(new_path: str) -> str:
     # Restore n (v0 was overwritten — restore from array-length)
     array-length v0, p0
 
-    sub-int/lit8 v6, v6, 0x1   # i--
+    add-int/lit8 v6, v6, -0x1   # i--
     goto :shuffle_loop
 
     :shuffle_done
@@ -1528,7 +1528,8 @@ def _generate_dex_stub_smali(new_path: str) -> str:
     and-long/2addr v3, v1
 
     # ks_byte = (state >> 16) & 0xFF
-    ushr-long v1, v3, 0x10     # v1:v2 = state >> 16
+    const/16 v7, 0x10
+    ushr-long v1, v3, v7       # v1:v2 = state >> 16
     long-to-int v1, v1
     and-int/lit16 v1, v1, 0xFF  # v1 = ks_byte
 
