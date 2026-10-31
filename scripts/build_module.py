@@ -2429,10 +2429,12 @@ def _patch_axml_version(manifest_raw: bytes, ver_code: int, ver_name: str,
 
     def read_utf8(pos):
         b0 = data[pos]; pos += 1
-        if b0 & 0x80: pos += 1
+        if b0 & 0x80: pos += 1          # 2-byte char_len: skip second byte (value unused)
         b1 = data[pos]; pos += 1
-        bl = ((b1 & 0x7F) << 8) | data[pos] if b1 & 0x80 else b1
-        if b1 & 0x80: pos += 1
+        if b1 & 0x80:                   # 2-byte byte_len
+            bl = ((b1 & 0x7F) << 8) | data[pos]; pos += 1
+        else:
+            bl = b1
         return data[pos:pos + bl].decode('utf-8', errors='replace')
 
     def encode_utf8_str(s):
