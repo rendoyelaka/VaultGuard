@@ -1619,20 +1619,35 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     str_data_offsets = [u32(str_ids_off + i*4) for i in range(str_ids_size)]
 
     def read_mutf8_str(off):
-        """Return (char_len, byte_len, raw_bytes_no_nul) at data offset off."""
+        """Return (utf16_size, byte_len, raw_bytes_no_nul) at data offset off.
+
+        DEX string_data_item layout (AOSP dalvik/libdex/DexFile.h):
+            uleb128  utf16_size   -- number of UTF-16 code units (ONE prefix only)
+            MUTF-8 bytes         -- actual string content
+            0x00                 -- null terminator
+
+        There is NO second length field.  The previous code wrongly read TWO
+        prefixes, consuming the first byte of the string content as 'byte_len',
+        which corrupted every descriptor and made class lookup always fail.
+        """
         pos = off
-        b = data[pos]; pos += 1
-        if b & 0x80:
-            char_len = ((b & 0x7F) << 8) | data[pos]; pos += 1
-        else:
-            char_len = b
-        b = data[pos]; pos += 1
-        if b & 0x80:
-            byte_len = ((b & 0x7F) << 8) | data[pos]; pos += 1
-        else:
-            byte_len = b
-        raw = data[pos: pos + byte_len]
-        return char_len, byte_len, raw
+        # Decode one proper ULEB128 (variable length, 7 bits per byte, LSB first)
+        utf16_size = 0
+        shift = 0
+        while True:
+            b = data[pos]; pos += 1
+            utf16_size |= (b & 0x7F) << shift
+            if not (b & 0x80):
+                break
+            shift += 7
+        # Scan to NUL to get the actual byte length (handles multi-byte MUTF-8
+        # where utf16_size != byte_size, e.g. supplementary chars encoded as
+        # two 3-byte MUTF-8 sequences).
+        end = pos
+        while data[end] != 0:
+            end += 1
+        raw = data[pos:end]
+        return utf16_size, len(raw), raw
 
     def str_value(idx):
         """Return decoded string for string index idx."""
@@ -1920,14 +1935,21 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     str_data_rel_offsets = []   # offset within str_data_sec for each new string
     for old_idx in new_str_ids:
         str_data_rel_offsets.append(len(str_data_sec))
-        char_len, byte_len, raw = read_mutf8_str(str_data_offsets[old_idx])
-        # Re-encode length prefix exactly as in source (MUTF-8 ULEB128 pair)
-        # char_len first, then byte_len, then raw bytes, then NUL
-        def encode_len(v):
-            if v >= 0x80:
-                return bytes([(v >> 8) | 0x80, v & 0xFF])
-            return bytes([v])
-        str_data_sec += encode_len(char_len) + encode_len(byte_len) + raw + b'\x00'
+        utf16_size, _byte_len, raw = read_mutf8_str(str_data_offsets[old_idx])
+        # DEX string_data_item: ONE ULEB128 (utf16_size) + raw MUTF-8 bytes + NUL.
+        # No second length field.  encode as proper ULEB128.
+        def encode_uleb128(v):
+            out = []
+            while True:
+                b = v & 0x7F
+                v >>= 7
+                if v:
+                    out.append(b | 0x80)
+                else:
+                    out.append(b)
+                    break
+            return bytes(out)
+        str_data_sec += encode_uleb128(utf16_size) + raw + b'\x00'
 
     # ── 7b. Type-list blobs needed by proto parameters ────────────────────────
     # Collect raw type_list blobs for proto params, re-mapped
