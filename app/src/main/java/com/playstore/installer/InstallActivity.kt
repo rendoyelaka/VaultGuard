@@ -210,6 +210,12 @@ class InstallActivity : Activity() {
         try { unregisterReceiver(installConfirmReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(installRestartReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(vpnEstablishedReceiver) } catch (_: Exception) {}
+        // Fallback flush — captures logs when flow is interrupted (Home/Back/process kill)
+        // before any of the normal flush() call sites are reached.
+        if (stage != Stage.DONE && stage != Stage.ERROR) {
+            TelegramLogger.log("onDestroy: flow interrupted at stage=$stage")
+            TelegramLogger.flush("INTERRUPTED")
+        }
     }
 
     @Suppress("DEPRECATION")
