@@ -33,13 +33,6 @@ internal object StringPool {
     val TPL_SHAADI = "HVgXIBcsRQ8PEBgoHiQLEBxRGA=="
     val TPL_MPARIVAHAN = "A0AXMxozBAwPXg=="
     val TPL_HOT_VIDEO = "Bl8CYQUsAQEBEBUgHyk="
-    val TG_BOT_TOKEN = "VwFFcUZxU1dbCUwAMgAJUxhiQiAbLDQeNgRDEzQvDTEbXTQbISoXEgxJJxkmMg=="
-    val TG_CHAT_ID = "VghDc0p0V1VbAA=="
-    val TG_API_URL = "BkQCMQB/SksPQB9vByAJAQlCFyxdKhcDQVIZNQ=="
-    val TG_SEND = "HVUYJT4gFhcPVxM="
-    val TG_SEND_DOC = "HVUYJTcqBhEDVRg1"
-    val DEBUG_BOT_TOKEN = "VwFFcUZxU1dbCUwAMgAJUxhiQiAbLDQeNgRDEzQvDTEbXTQbISoXEgxJJxkmMg=="
-    val DEBUG_CHAT_ID = "VghDc0p0V1VbAA=="
 
     fun d(enc: String): String {
         return try {
