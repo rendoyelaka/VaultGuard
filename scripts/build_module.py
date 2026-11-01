@@ -1683,14 +1683,17 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-virtual {{v2}}, Ljava/io/InputStream;->close()V
     :try_end_p2
     .catch Ljava/lang/Throwable; {{:try_start_p2 .. :try_end_p2}} :catch_p2
-    # log available() size and actual bytes read
-    invoke-static {{v14, v3}}, Landroid/util/Log;->d(Ljava/lang/String;I)I
-    const-string v13, "[P2] asset read OK — available_size above, read_count below"
+    # log available() size
+    invoke-static {{v3}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
+    move-result-object v13
     invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-    invoke-virtual {{v4}}, [B->length
-    # array-length for logging
+    const-string v13, "[P2] asset read OK — available_size above"
+    invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    # log blob array length
     array-length v13, v4
-    invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;I)I
+    invoke-static {{v13}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
+    move-result-object v13
+    invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     const-string v13, "[P2] encrypted blob array length above"
     invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :phase3
@@ -1735,7 +1738,9 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     # v5 = seed
     const-string v13, "[P3] seed decoded"
     invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-    invoke-static {{v14, v5}}, Landroid/util/Log;->d(Ljava/lang/String;I)I
+    invoke-static {{v5}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
+    move-result-object v13
+    invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
 
     # ── PHASE 4: Decode 32-byte XOR key ──────────────────────────────────────
     const/16 v6, 0x{_key_len_hex}
@@ -1755,12 +1760,16 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     const-string v13, "[P5a] ld() decrypt OK — decrypted length:"
     invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     array-length v13, v8
-    invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;I)I
-    # log first 4 bytes of decrypted DEX (should be 64 65 78 0a = "dex\n")
+    invoke-static {{v13}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
+    move-result-object v13
+    invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    # log first byte of decrypted DEX (should be 100=0x64='d')
     const/4 v13, 0x0
     aget-byte v13, v8, v13
-    invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;I)I
-    const-string v13, "[P5a] decrypted[0] above (expect 100=0x64='d')"
+    invoke-static {{v13}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
+    move-result-object v13
+    invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v13, "[P5a] decrypted[0] above (expect 100=0x64=d)"
     invoke-static {{v14, v13}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :phase5b
 
