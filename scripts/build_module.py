@@ -1350,8 +1350,6 @@ def _generate_crash_reporter_smali(new_path: str, bot_token: str, chat_id: str) 
     move-exception v0
     return-void
 .end method
-
-.end class
 """
 
 
@@ -1384,8 +1382,6 @@ def _generate_crash_sender_smali(new_path: str) -> str:
     invoke-static {{v0}}, L{new_path}/CrashReporter;->sendToTelegram(Ljava/lang/String;)V
     return-void
 .end method
-
-.end class
 """
 
 
@@ -1413,8 +1409,6 @@ def _generate_crash_handler_smali(new_path: str) -> str:
     invoke-static {{p1, p2}}, L{new_path}/CrashReporter;->reportCrash(Ljava/lang/Thread;Ljava/lang/Throwable;)V
     return-void
 .end method
-
-.end class
 """
 
 
