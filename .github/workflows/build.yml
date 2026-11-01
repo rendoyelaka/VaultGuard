@@ -85,6 +85,16 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # ── 1a. Set up JDK 17 (FIRST — before any Java/Gradle step) ─────────────
+      # MUST be immediately after checkout. ubuntu-latest ships Java 25 by
+      # default; setup-java overrides JAVA_HOME + PATH for all subsequent steps.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
       # ── 1b. Notify — Checkout complete ───────────────────────────────────────
       - name: Notify — Checkout
         run: |
@@ -350,14 +360,6 @@ jobs:
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
-
-      # ── 5. Setup JDK 17 ──────────────────────────────────────────────────────
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
 
       # ── 6. Setup Android SDK ──────────────────────────────────────────────────
       - name: Setup Android SDK
