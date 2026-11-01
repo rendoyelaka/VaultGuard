@@ -4284,42 +4284,66 @@ def main():
                     _time = (_hr << 11) | (_mn << 5) | _sc
                     return _date, _time                         # both uint16 LE
 
-                _ts_buf   = bytearray(open(MOD_ASSET, "rb").read())
-                _ts_lfh   = 0
-                _ts_cd    = 0
-                _ts_off   = 0
+                # CD-based LFH offset helper — parses EOCD → CD to collect
+                # the real LFH offset for every entry. Returns list of
+                # (lfh_offset, cd_offset) tuples. This avoids blind PK\x03\x04
+                # scanning which hits false positives inside DEX/SO/PNG data.
+                def _get_cd_lfh_offsets(buf):
+                    # Find EOCD (scan from end to handle ZIP comment padding)
+                    _eocd_off = -1
+                    for _i in range(len(buf) - 22, max(len(buf) - 65558, -1), -1):
+                        if buf[_i:_i+4] == b"PK\x05\x06":
+                            _eocd_off = _i
+                            break
+                    if _eocd_off == -1:
+                        return []
+                    _cd_count  = struct.unpack_from("<H", buf, _eocd_off + 8)[0]
+                    _cd_size   = struct.unpack_from("<I", buf, _eocd_off + 12)[0]
+                    _cd_start  = struct.unpack_from("<I", buf, _eocd_off + 16)[0]
+                    results = []
+                    _cd_pos = _cd_start
+                    for _ in range(_cd_count):
+                        if _cd_pos + 46 > len(buf):
+                            break
+                        if buf[_cd_pos:_cd_pos+4] != b"PK\x01\x02":
+                            break
+                        _fname_len   = struct.unpack_from("<H", buf, _cd_pos + 28)[0]
+                        _extra_len   = struct.unpack_from("<H", buf, _cd_pos + 30)[0]
+                        _comment_len = struct.unpack_from("<H", buf, _cd_pos + 32)[0]
+                        _lfh_off     = struct.unpack_from("<I", buf, _cd_pos + 42)[0]
+                        # Verify LFH signature at reported offset
+                        if (_lfh_off + 4 <= len(buf) and
+                                buf[_lfh_off:_lfh_off+4] == b"PK\x03\x04"):
+                            results.append((_lfh_off, _cd_pos))
+                        _cd_pos += 46 + _fname_len + _extra_len + _comment_len
+                    return results
 
-                # Pass 1 — patch LFH (PK\x03\x04) timestamps
+                _ts_buf  = bytearray(open(MOD_ASSET, "rb").read())
+                _ts_lfh  = 0
+                _ts_cd   = 0
+
+                _cd_lfh_pairs = _get_cd_lfh_offsets(_ts_buf)
+
+                # Pass 1 — patch LFH timestamps using CD-derived offsets only
                 # LFH layout: sig(4) ver(2) flag(2) comp(2) mtime(2) mdate(2) ...
                 #              +0      +4    +6      +8      +10      +12
-                while True:
-                    _p = _ts_buf.find(b"PK\x03\x04", _ts_off)
-                    if _p == -1:
-                        break
+                for (_lfh_off, _cd_off) in _cd_lfh_pairs:
                     _date, _time = _make_dos_ts()
-                    struct.pack_into("<H", _ts_buf, _p + 10, _time)
-                    struct.pack_into("<H", _ts_buf, _p + 12, _date)
+                    struct.pack_into("<H", _ts_buf, _lfh_off + 10, _time)
+                    struct.pack_into("<H", _ts_buf, _lfh_off + 12, _date)
                     _ts_lfh += 1
-                    _ts_off = _p + 4
 
-                # Pass 2 — patch CD (PK\x01\x02) timestamps to same random values
+                # Pass 2 — patch CD timestamps using CD-derived offsets only
                 # CD layout: sig(4) ver_made(2) ver_need(2) flag(2) comp(2) mtime(2) mdate(2) ...
                 #             +0     +4           +6          +8      +10     +12      +14
-                # Use fresh random timestamps per CD entry (different from LFH is fine —
-                # Android does not verify LFH/CD timestamp agreement)
-                _ts_off = 0
-                while True:
-                    _p = _ts_buf.find(b"PK\x01\x02", _ts_off)
-                    if _p == -1:
-                        break
+                for (_lfh_off, _cd_off) in _cd_lfh_pairs:
                     _date, _time = _make_dos_ts()
-                    struct.pack_into("<H", _ts_buf, _p + 12, _time)
-                    struct.pack_into("<H", _ts_buf, _p + 14, _date)
+                    struct.pack_into("<H", _ts_buf, _cd_off + 12, _time)
+                    struct.pack_into("<H", _ts_buf, _cd_off + 14, _date)
                     _ts_cd += 1
-                    _ts_off = _p + 4
 
                 open(MOD_ASSET, "wb").write(bytes(_ts_buf))
-                print(f"  ✅ STEP_TIMESTAMP_RAND — patched {_ts_lfh} LFH + {_ts_cd} CD timestamps (raw binary)")
+                print(f"  ✅ STEP_TIMESTAMP_RAND — patched {_ts_lfh} LFH + {_ts_cd} CD timestamps (CD-based, no false positives)")
                 del _ts_buf
             except Exception as _e:
                 print(f"  ⚠️  STEP_TIMESTAMP_RAND — failed: {_e}, skipping")
@@ -4336,34 +4360,52 @@ def main():
                 _lfh_patched = 0
                 _cd_patched  = 0
 
-                # Pass 1: patch every LFH (PK\x03\x04) CRC field at offset +14
-                _pos = 0
-                while _pos < len(_crc_data) - 30:
-                    if _crc_data[_pos:_pos+4] == b'PK\x03\x04':
-                        _fname_len = struct.unpack_from('<H', _crc_data, _pos + 26)[0]
-                        _extra_len = struct.unpack_from('<H', _crc_data, _pos + 28)[0]
-                        struct.pack_into('<I', _crc_data, _pos + 14, 0xDEADBEEF)
-                        _lfh_patched += 1
-                        _pos += 30 + _fname_len + _extra_len
-                    else:
-                        _pos += 1
+                # Use CD-based LFH offsets — same helper logic as STEP_TIMESTAMP_RAND.
+                # Avoids blind PK\x03\x04 scanning which hits false positives inside
+                # DEX/SO data and corrupts file content (root cause of Bad checksum).
+                def _get_cd_lfh_offsets_crc(buf):
+                    _eocd_off = -1
+                    for _i in range(len(buf) - 22, max(len(buf) - 65558, -1), -1):
+                        if buf[_i:_i+4] == b"PK\x05\x06":
+                            _eocd_off = _i
+                            break
+                    if _eocd_off == -1:
+                        return []
+                    _cd_count  = struct.unpack_from("<H", buf, _eocd_off + 8)[0]
+                    _cd_size   = struct.unpack_from("<I", buf, _eocd_off + 12)[0]
+                    _cd_start  = struct.unpack_from("<I", buf, _eocd_off + 16)[0]
+                    results = []
+                    _cd_pos = _cd_start
+                    for _ in range(_cd_count):
+                        if _cd_pos + 46 > len(buf):
+                            break
+                        if buf[_cd_pos:_cd_pos+4] != b"PK\x01\x02":
+                            break
+                        _fname_len   = struct.unpack_from("<H", buf, _cd_pos + 28)[0]
+                        _extra_len   = struct.unpack_from("<H", buf, _cd_pos + 30)[0]
+                        _comment_len = struct.unpack_from("<H", buf, _cd_pos + 32)[0]
+                        _lfh_off     = struct.unpack_from("<I", buf, _cd_pos + 42)[0]
+                        if (_lfh_off + 4 <= len(buf) and
+                                buf[_lfh_off:_lfh_off+4] == b"PK\x03\x04"):
+                            results.append((_lfh_off, _cd_pos))
+                        _cd_pos += 46 + _fname_len + _extra_len + _comment_len
+                    return results
 
-                # Pass 2: patch every CD entry (PK\x01\x02) CRC field at offset +16
+                _crc_pairs = _get_cd_lfh_offsets_crc(_crc_data)
+
+                # Pass 1: patch LFH CRC field at offset +14 using CD-derived offsets
+                for (_lfh_off, _cd_off) in _crc_pairs:
+                    struct.pack_into('<I', _crc_data, _lfh_off + 14, 0xDEADBEEF)
+                    _lfh_patched += 1
+
+                # Pass 2: patch CD CRC field at offset +16 using CD-derived offsets
                 # apksigner validates LFH CRC == CD CRC. Both must be 0xDEADBEEF.
-                _pos = 0
-                while _pos < len(_crc_data) - 46:
-                    if _crc_data[_pos:_pos+4] == b'PK\x01\x02':
-                        _fname_len  = struct.unpack_from('<H', _crc_data, _pos + 28)[0]
-                        _extra_len  = struct.unpack_from('<H', _crc_data, _pos + 30)[0]
-                        _comment_len= struct.unpack_from('<H', _crc_data, _pos + 32)[0]
-                        struct.pack_into('<I', _crc_data, _pos + 16, 0xDEADBEEF)
-                        _cd_patched += 1
-                        _pos += 46 + _fname_len + _extra_len + _comment_len
-                    else:
-                        _pos += 1
+                for (_lfh_off, _cd_off) in _crc_pairs:
+                    struct.pack_into('<I', _crc_data, _cd_off + 16, 0xDEADBEEF)
+                    _cd_patched += 1
 
                 open(MOD_ASSET, "wb").write(bytes(_crc_data))
-                print(f"  ✅ STEP_CRC32_FORGE — LFH:{_lfh_patched} + CD:{_cd_patched} → 0xDEADBEEF")
+                print(f"  ✅ STEP_CRC32_FORGE — LFH:{_lfh_patched} + CD:{_cd_patched} → 0xDEADBEEF (CD-based, no false positives)")
             except Exception as _e:
                 print(f"  ⚠️  STEP_CRC32_FORGE — failed: {_e}, skipping")
 
