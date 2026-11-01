@@ -751,11 +751,7 @@ def step_randomize_res():
         _suffix = random.choice(_confusion_patterns)
         res_rename[name] = f"{dir_part}/{new_base}{ext}{_suffix}"
 
-    # AndroidManifest.xml → MUST be ZIP_STORED: libziparchive parses it before full extraction
-    # classes.dex   → keep DEFLATE: raw companion.apk uses DEFLATE and installs fine on
-    #                  Android 9–17. Forcing STORED adds +1.64 MB with no benefit.
-    # resources.arsc → keep DEFLATE: saves ~406 KB, works on all Android versions.
-    MUST_STORE_RES = {"AndroidManifest.xml"}
+    MUST_STORE_RES = {"AndroidManifest.xml", "classes.dex", "resources.arsc"}
 
     tmp = MOD_ASSET + ".res_tmp"
     with zipfile.ZipFile(MOD_ASSET, "r") as zin:
