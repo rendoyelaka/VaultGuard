@@ -3360,7 +3360,7 @@ def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
     attach_method = f"""
 # DEX loader hook — loads encrypted io/socket slice via native JNI
 .method public attachBaseContext(Landroid/content/Context;)V
-    .locals 6
+    .locals 10
 
     # super.attachBaseContext(base)
     invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
@@ -3380,16 +3380,32 @@ def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
     invoke-static {{v2}}, Ljava/nio/ByteBuffer;->wrap([B)Ljava/nio/ByteBuffer;
     move-result-object v3
 
-    # InMemoryDexClassLoader loader = new InMemoryDexClassLoader(bb, parent)
+    # v8 = current app PathClassLoader (this.getClass().getClassLoader())
     invoke-virtual {{p0}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
-    move-result-object v4
-    invoke-virtual {{v4}}, Ljava/lang/Class;->getClassLoader()Ljava/lang/ClassLoader;
-    move-result-object v4
+    move-result-object v8
+    invoke-virtual {{v8}}, Ljava/lang/Class;->getClassLoader()Ljava/lang/ClassLoader;
+    move-result-object v8
 
+    # InMemoryDexClassLoader loader = new InMemoryDexClassLoader(bb, v8)
+    # parent = current PathClassLoader so full system classes still resolve
     new-instance v5, Ldalvik/system/InMemoryDexClassLoader;
-    invoke-direct {{v5, v3, v4}}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
+    invoke-direct {{v5, v3, v8}}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
 
-    # Thread.currentThread().setContextClassLoader(loader)
+    # --- Reflectively set ClassLoader.parent on the PathClassLoader to v5 ---
+    # so that ActivityThread.mClassLoader.loadClass() delegates up to our DEX.
+    # v6 = ClassLoader.class
+    const-class v6, Ljava/lang/ClassLoader;
+    # v7 = field "parent"
+    const-string v7, "parent"
+    invoke-virtual {{v6, v7}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    move-result-object v7
+    # field.setAccessible(true)
+    const/4 v9, 0x1
+    invoke-virtual {{v7, v9}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    # field.set(pathClassLoader, inMemoryDexClassLoader)
+    invoke-virtual {{v7, v8, v5}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
+
+    # Thread.currentThread().setContextClassLoader(loader) — belt-and-suspenders
     invoke-static {{}}, Ljava/lang/Thread;->currentThread()Ljava/lang/Thread;
     move-result-object v4
     invoke-virtual {{v4, v5}}, Ljava/lang/Thread;->setContextClassLoader(Ljava/lang/ClassLoader;)V
