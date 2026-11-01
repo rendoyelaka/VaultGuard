@@ -3829,8 +3829,8 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                     item.compress_type = zipfile.ZIP_STORED
                     zout.writestr(item, new_manifest)
                 elif item.filename == "classes.dex":
-                    # Keep DEFLATE — raw APK uses DEFLATE, installs on Android 9–17 confirmed.
-                    item.compress_type = zipfile.ZIP_DEFLATED
+                    # MUST be ZIP_STORED — ART requires stub DEX uncompressed to mmap at load time.
+                    item.compress_type = zipfile.ZIP_STORED
                     zout.writestr(item, new_dex)
                 elif item.filename == "resources.arsc":
                     # resources.arsc MUST be STORED — AssetManager memory-maps it
