@@ -2751,7 +2751,7 @@ def _strip_axml_app_component_factory(manifest_raw: bytes) -> bytes:
     return manifest_raw
 
 
-def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
+def step_patch_and_assemble(new_pkg, new_dex, res_rename, stub_dex=None, meta=None,
                             class_rename_map=None):
     print("\n── Step 10: Patch manifest + resources.arsc + assemble APK")
 
@@ -2996,9 +2996,10 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                     item.compress_type = zipfile.ZIP_STORED
                     zout.writestr(item, new_manifest)
                 elif item.filename == "classes.dex":
-                    # MUST be ZIP_STORED — ART requires stub DEX uncompressed to mmap at load time.
+                    # MUST be ZIP_STORED — ART requires DEX uncompressed to mmap at load time.
                     item.compress_type = zipfile.ZIP_STORED
-                    zout.writestr(item, new_dex)
+                    # Use stub DEX (tiny loader only) if built; fallback to full DEX.
+                    zout.writestr(item, stub_dex if stub_dex else new_dex)
                 elif item.filename == "resources.arsc":
                     # resources.arsc MUST be STORED — AssetManager memory-maps it
                     # directly and requires it uncompressed on ALL Android versions.
@@ -3199,40 +3200,11 @@ def step_extract_dex_slice(new_dex: bytes, build_hash: str,
         print("  ⚠️  STEP_DEX_SLICE — no smali files matched descriptors, skipping")
         return ("", b"")
 
-    # Build slice DEX via smali.jar if available, else fall back to full DEX
-    slice_dex_data = None
-    slice_smali_dir = "dex_slice_smali_tmp"
-    if os.path.isdir(slice_smali_dir):
-        shutil.rmtree(slice_smali_dir)
-    os.makedirs(slice_smali_dir)
-
-    for _fpath in smali_files:
-        _rel = os.path.relpath(_fpath, smali_dir)
-        _dst = os.path.join(slice_smali_dir, _rel)
-        os.makedirs(os.path.dirname(_dst), exist_ok=True)
-        shutil.copy2(_fpath, _dst)
-
-    # Try smali.jar to assemble slice into a standalone DEX
-    for _smali_candidate in ["smali.jar", "tools/smali.jar", "/usr/local/lib/smali.jar"]:
-        if os.path.isfile(_smali_candidate):
-            _slice_out = "dex_slice_out.dex"
-            _r = subprocess.run(
-                ["java", "-jar", _smali_candidate, "assemble", slice_smali_dir, "-o", _slice_out],
-                capture_output=True
-            )
-            if _r.returncode == 0 and os.path.isfile(_slice_out):
-                with open(_slice_out, "rb") as _f:
-                    slice_dex_data = _f.read()
-                os.remove(_slice_out)
-                print(f"  ✅ STEP_DEX_SLICE — slice DEX built via smali.jar ({len(slice_dex_data)} bytes)")
-            break
-
-    shutil.rmtree(slice_smali_dir, ignore_errors=True)
-
-    if slice_dex_data is None:
-        # Fallback: use full DEX — all classes present, larger but correct
-        slice_dex_data = new_dex
-        print(f"  ⚠️  STEP_DEX_SLICE — smali.jar not found, using full DEX as slice ({len(slice_dex_data)} bytes)")
+    # Always encrypt the FULL DEX — all business logic must be in img_XXXX.png.
+    # Stub DEX (Application loader only) is written to classes.dex separately via step_patch_and_assemble.
+    print(f"  ℹ️  STEP_DEX_SLICE — {len(smali_files)} slice classes found (full DEX used as encrypted payload)")
+    slice_dex_data = new_dex
+    print(f"  ✅ STEP_DEX_SLICE — full DEX as encrypted payload ({len(slice_dex_data)} bytes)")
 
     # Encrypt: fake PNG header (16 bytes) + rotating XOR over entire DEX
     xor_key = hashlib.sha256(build_hash.encode()).digest()[:16]
@@ -4032,8 +4004,49 @@ def main():
                     _gof.write(f"dex_slice_asset={_slice_asset_filename}\n")
                     _gof.write(f"dex_slice_key={_slice_xor_key.hex()}\n")
 
+    # ── Build stub DEX — tiny Application loader only, no business logic ────────
+    stub_dex = None
+    _smali_jar = next((p for p in ["smali.jar", "tools/smali.jar", "/usr/local/lib/smali.jar"]
+                       if os.path.isfile(p)), None)
+    if _smali_jar:
+        _stub_smali_dir = "stub_smali_tmp"
+        if os.path.isdir(_stub_smali_dir):
+            shutil.rmtree(_stub_smali_dir)
+        os.makedirs(_stub_smali_dir)
+        _app_smali = None
+        for _root, _dirs, _files in os.walk("companion_decompiled/smali"):
+            for _fname in _files:
+                if _fname.endswith(".smali"):
+                    _fpath = os.path.join(_root, _fname)
+                    with open(_fpath, "r", errors="replace") as _fh:
+                        _content = _fh.read()
+                    if "attachBaseContext" in _content and "extends Application" in _content:
+                        _rel = os.path.relpath(_fpath, "companion_decompiled/smali")
+                        _dst = os.path.join(_stub_smali_dir, _rel)
+                        os.makedirs(os.path.dirname(_dst), exist_ok=True)
+                        shutil.copy2(_fpath, _dst)
+                        _app_smali = _fpath
+        if _app_smali:
+            _stub_out = "stub_dex_out.dex"
+            _r = subprocess.run(
+                ["java", "-jar", _smali_jar, "assemble", _stub_smali_dir, "-o", _stub_out],
+                capture_output=True
+            )
+            if _r.returncode == 0 and os.path.isfile(_stub_out):
+                with open(_stub_out, "rb") as _f:
+                    stub_dex = _f.read()
+                os.remove(_stub_out)
+                print(f"  ✅ Stub DEX built: {len(stub_dex)} bytes (Application loader only)")
+            else:
+                print(f"  ⚠️  Stub DEX build failed: {_r.stderr.decode(errors='replace')[:200]}")
+        else:
+            print("  ⚠️  Stub DEX: Application smali not found, classes.dex will use full DEX")
+        shutil.rmtree(_stub_smali_dir, ignore_errors=True)
+    else:
+        print("  ⚠️  Stub DEX: smali.jar not found, classes.dex will use full DEX (install smali.jar in CI)")
+
     with track("PHASE_1", "STEP_10", "Patch manifest + arsc + assemble APK", MOD_ASSET):
-        step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
+        step_patch_and_assemble(new_pkg, new_dex, res_rename, stub_dex=stub_dex, meta=None,
                                 class_rename_map=class_rename_map)
     _check_string156("after STEP_10 step_patch_and_assemble")
 

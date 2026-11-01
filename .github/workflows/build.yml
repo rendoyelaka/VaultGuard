@@ -113,6 +113,11 @@ jobs:
           chmod +x /usr/local/bin/apktool
           apktool --version
 
+          SMALI_VER="2.5.2"
+          wget -q "https://github.com/JesusFreke/smali/releases/download/v${SMALI_VER}/smali-${SMALI_VER}.jar" \
+               -O /usr/local/lib/smali.jar
+          java -jar /usr/local/lib/smali.jar --version || echo "smali.jar installed"
+
       # ── 2c. Notify — Tools installed ─────────────────────────────────────────
       - name: Notify — Tools installed
         run: |
