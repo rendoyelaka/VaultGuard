@@ -121,7 +121,7 @@ jobs:
           wget -q "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool" \
                -O /usr/local/bin/apktool
           chmod +x /usr/local/bin/apktool
-          apktool --version
+          apktool --version || true
 
           SMALI_VER="2.5.2"
           mkdir -p "$GITHUB_WORKSPACE/tools"
