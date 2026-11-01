@@ -1619,30 +1619,28 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
 
 
 .method protected attachBaseContext(Landroid/content/Context;)V
-    .registers 18
+    .registers 16
     .param p1, "base"
 
-    # v15 = log tag (constant, reused throughout)
-    # v14 = temp message/exception register
-    # p0=v16 (this), p1=v17 (context) — no collision with locals v0-v15
-    const-string v15, "IMDCL_DBG"
+    # v13 = log tag, v0 = msg scratch (v0 always reloaded before computation)
+    const-string v13, "IMDCL_DBG"
 
     # ── super FIRST ────────────────────────────────────────────────────────────
     :try_start_super
     invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
     :try_end_super
     .catch Ljava/lang/Throwable; {{:try_start_super .. :try_end_super}} :catch_super
-    const-string v14, "[P0] super.attachBaseContext OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P0] super.attachBaseContext OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :phase1
 
     :catch_super
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P0] FATAL: super.attachBaseContext threw"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P0] FATAL: super.attachBaseContext threw"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :phase1
@@ -1655,18 +1653,18 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     move-result-object v1
     :try_end_p1
     .catch Ljava/lang/Throwable; {{:try_start_p1 .. :try_end_p1}} :catch_p1
-    const-string v14, "[P1] asset path decoded OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-    invoke-static {{v15, v1}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P1] asset path decoded OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    invoke-static {{v13, v1}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :phase2
 
     :catch_p1
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P1] FATAL: path decode threw"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P1] FATAL: path decode threw"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :phase2
@@ -1681,32 +1679,32 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     new-array v4, v3, [B
     const/4 v0, 0x0
     invoke-virtual {{v2, v4, v0, v3}}, Ljava/io/InputStream;->read([BII)I
-    move-result v14
+    move-result v0
     invoke-virtual {{v2}}, Ljava/io/InputStream;->close()V
     :try_end_p2
     .catch Ljava/lang/Throwable; {{:try_start_p2 .. :try_end_p2}} :catch_p2
     # log available() size
     invoke-static {{v3}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P2] asset read OK — available_size above"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P2] asset read OK — available_size above"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     # log blob array length
-    array-length v14, v4
-    invoke-static {{v14}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P2] encrypted blob array length above"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    array-length v0, v4
+    invoke-static {{v0}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P2] encrypted blob array length above"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :phase3
 
     :catch_p2
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P2] FATAL: asset open/read threw"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P2] FATAL: asset open/read threw"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :phase3
@@ -1738,11 +1736,11 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     shl-int/lit8 v6, v6, 0x18
     or-int/2addr v5, v6
     # v5 = seed
-    const-string v14, "[P3] seed decoded"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P3] seed decoded"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     invoke-static {{v5}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
 
     # ── PHASE 4: Decode 32-byte XOR key ──────────────────────────────────────
     const/16 v6, 0x{_key_len_hex}
@@ -1750,8 +1748,8 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     fill-array-data v6, :key_data
     invoke-static {{v6}}, L{_pkg_path}/{app_class_name};->xb([B)[B
     move-result-object v6
-    const-string v14, "[P4] key decoded OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P4] key decoded OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
 
     # ── PHASE 5a: Decrypt blob ────────────────────────────────────────────────
     :try_start_p5a
@@ -1759,29 +1757,29 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     move-result-object v8
     :try_end_p5a
     .catch Ljava/lang/Throwable; {{:try_start_p5a .. :try_end_p5a}} :catch_p5a
-    const-string v14, "[P5a] ld() decrypt OK — decrypted length:"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-    array-length v14, v8
-    invoke-static {{v14}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P5a] ld() decrypt OK — decrypted length:"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    array-length v0, v8
+    invoke-static {{v0}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     # log first byte of decrypted DEX (should be 100=0x64='d')
-    const/4 v14, 0x0
-    aget-byte v14, v8, v14
-    invoke-static {{v14}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P5a] decrypted[0] above (expect 100=0x64=d)"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const/4 v0, 0x0
+    aget-byte v0, v8, v0
+    invoke-static {{v0}}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P5a] decrypted[0] above (expect 100=0x64=d)"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :phase5b
 
     :catch_p5a
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P5a] FATAL: ld() decrypt threw"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P5a] FATAL: ld() decrypt threw"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :phase5b
@@ -1827,20 +1825,20 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     check-cast v12, Ljava/lang/ClassLoader;
     :try_end_p5b
     .catch Ljava/lang/Throwable; {{:try_start_p5b .. :try_end_p5b}} :catch_p5b
-    const-string v14, "[P5b] IMDCL created OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P5b] IMDCL created OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     invoke-virtual {{v12}}, Ljava/lang/Object;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :phase6
 
     :catch_p5b
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P5b] FATAL: IMDCL create threw (forName/getConstructor/newInstance)"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P5b] FATAL: IMDCL create threw (forName/getConstructor/newInstance)"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :phase6
@@ -1857,17 +1855,17 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     move-result-object v0
     :try_end_6a
     .catch Ljava/lang/Throwable; {{:try_start_6a .. :try_end_6a}} :catch_6a
-    const-string v14, "[P6a] ActivityThread.class found OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6a] ActivityThread.class found OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :step_6b
 
     :catch_6a
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P6a] FATAL: Class.forName(ActivityThread) threw"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6a] FATAL: Class.forName(ActivityThread) threw"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :step_6b
@@ -1888,20 +1886,20 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     move-result-object v1
     :try_end_6b
     .catch Ljava/lang/Throwable; {{:try_start_6b .. :try_end_6b}} :catch_6b
-    const-string v14, "[P6b] currentActivityThread() OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6b] currentActivityThread() OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     invoke-virtual {{v1}}, Ljava/lang/Object;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :step_6c
 
     :catch_6b
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P6b] FATAL: currentActivityThread() threw"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6b] FATAL: currentActivityThread() threw"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :step_6c
@@ -1920,22 +1918,22 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     move-result-object v1
     :try_end_6c
     .catch Ljava/lang/Throwable; {{:try_start_6c .. :try_end_6c}} :catch_6c
-    const-string v14, "[P6c] mBoundApplication field get OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6c] mBoundApplication field get OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     invoke-virtual {{v1}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
-    move-result-object v14
-    invoke-virtual {{v14}}, Ljava/lang/Class;->getName()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    move-result-object v0
+    invoke-virtual {{v0}}, Ljava/lang/Class;->getName()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :step_6d
 
     :catch_6c
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P6c] FATAL: getDeclaredField(mBoundApplication) threw"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6c] FATAL: getDeclaredField(mBoundApplication) threw"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :step_6d
@@ -1956,22 +1954,22 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     move-result-object v1
     :try_end_6d
     .catch Ljava/lang/Throwable; {{:try_start_6d .. :try_end_6d}} :catch_6d
-    const-string v14, "[P6d] AppBindData.info (LoadedApk) get OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6d] AppBindData.info (LoadedApk) get OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     invoke-virtual {{v1}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
-    move-result-object v14
-    invoke-virtual {{v14}}, Ljava/lang/Class;->getName()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    move-result-object v0
+    invoke-virtual {{v0}}, Ljava/lang/Class;->getName()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :step_6e
 
     :catch_6d
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P6d] FATAL: getDeclaredField(info) threw"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6d] FATAL: getDeclaredField(info) threw"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :step_6e
@@ -1990,34 +1988,34 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-virtual {{v2, v3}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
     # log current mClassLoader BEFORE overwrite
     invoke-virtual {{v2, v1}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v14
-    invoke-virtual {{v14}}, Ljava/lang/Object;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P6e] mClassLoader BEFORE inject (above)"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    move-result-object v0
+    invoke-virtual {{v0}}, Ljava/lang/Object;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6e] mClassLoader BEFORE inject (above)"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     invoke-virtual {{v2, v1, v12}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
     # verify the write stuck
     invoke-virtual {{v2, v1}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v14
-    invoke-virtual {{v14}}, Ljava/lang/Object;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P6e] mClassLoader AFTER inject (above) — should be IMDCL"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    move-result-object v0
+    invoke-virtual {{v0}}, Ljava/lang/Object;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6e] mClassLoader AFTER inject (above) — should be IMDCL"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     :try_end_6e
     .catch Ljava/lang/Throwable; {{:try_start_6e .. :try_end_6e}} :catch_6e
-    const-string v14, "[P6e] mClassLoader inject OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6e] mClassLoader inject OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     goto :step_6f
 
     :catch_6e
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P6e] FATAL: set LoadedApk.mClassLoader threw"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6e] FATAL: set LoadedApk.mClassLoader threw"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :step_6f
@@ -2041,21 +2039,21 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-virtual {{v0, v9, v12}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
     :try_end_6f
     .catch Ljava/lang/Throwable; {{:try_start_6f .. :try_end_6f}} :catch_6f
-    const-string v14, "[P6f] PathClassLoader.parent inject OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[IMDCL_DBG] attachBaseContext COMPLETE — all phases OK"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6f] PathClassLoader.parent inject OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[IMDCL_DBG] attachBaseContext COMPLETE — all phases OK"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :catch_6f
-    move-exception v14
-    invoke-virtual {{v14}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
-    move-result-object v14
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[P6f] WARN: PathClassLoader.parent inject threw (non-fatal)"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
-    const-string v14, "[IMDCL_DBG] attachBaseContext COMPLETE (P6f warn)"
-    invoke-static {{v15, v14}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[P6f] WARN: PathClassLoader.parent inject threw (non-fatal)"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+    const-string v0, "[IMDCL_DBG] attachBaseContext COMPLETE (P6f warn)"
+    invoke-static {{v13, v0}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
     return-void
 
     :path_data
