@@ -1852,7 +1852,7 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
     move-result-object v0
     invoke-static {{v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;
-    move-result-object v0
+    move-result-object v7
     :try_end_6a
     .catch Ljava/lang/Throwable; {{:try_start_6a .. :try_end_6a}} :catch_6a
     const-string v0, "[P6a] ActivityThread.class found OK"
@@ -1878,7 +1878,7 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     move-result-object v2
     const/4 v3, 0x0
     new-array v3, v3, [Ljava/lang/Class;
-    invoke-virtual {{v0, v2, v3}}, Ljava/lang/Class;->getMethod(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;
+    invoke-virtual {{v7, v2, v3}}, Ljava/lang/Class;->getMethod(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;
     move-result-object v2
     const/4 v3, 0x0
     new-array v4, v3, [Ljava/lang/Object;
@@ -1910,7 +1910,7 @@ def step_dex_protect(new_dex: bytes, new_pkg: str,
     fill-array-data v2, :mba_data
     invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
     move-result-object v2
-    invoke-virtual {{v0, v2}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    invoke-virtual {{v7, v2}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
     move-result-object v2
     const/4 v3, 0x1
     invoke-virtual {{v2, v3}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
