@@ -2828,14 +2828,15 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
         class_data_off    = u32(src + 24)
         static_values_off = u32(src + 28)
 
-        _s.pack_into("<I", dex, dst,      typ_remap[class_type_idx])
-        _s.pack_into("<I", dex, dst +  4, typ_remap[superclass_idx] if superclass_idx != 0xFFFFFFFF else 0xFFFFFFFF)
-        _s.pack_into("<I", dex, dst +  8, 0)  # interfaces (drop for stub — both classes have no interfaces)
-        _s.pack_into("<I", dex, dst + 12, str_remap[source_file_idx] if source_file_idx != 0xFFFFFFFF else 0xFFFFFFFF)
-        _s.pack_into("<I", dex, dst + 16, 0)  # annotations_off (drop)
-        _s.pack_into("<I", dex, dst + 20, class_data_abs[order])
-        _s.pack_into("<I", dex, dst + 24, static_val_abs.get(order, 0))
-        _s.pack_into("<I", dex, dst + 28, 0)  # padding
+        access_flags = u32(src + 4)   # read access_flags from original class_def at correct offset +4
+        _s.pack_into("<I", dex, dst,       typ_remap[class_type_idx])
+        _s.pack_into("<I", dex, dst +  4,  access_flags)
+        _s.pack_into("<I", dex, dst +  8,  typ_remap[superclass_idx] if superclass_idx != 0xFFFFFFFF else 0xFFFFFFFF)
+        _s.pack_into("<I", dex, dst + 12,  0)   # interfaces_off (dropped for stub)
+        _s.pack_into("<I", dex, dst + 16,  str_remap[source_file_idx] if source_file_idx != 0xFFFFFFFF else 0xFFFFFFFF)
+        _s.pack_into("<I", dex, dst + 20,  0)   # annotations_off (dropped for stub)
+        _s.pack_into("<I", dex, dst + 24,  class_data_abs[order])
+        _s.pack_into("<I", dex, dst + 28,  static_val_abs.get(order, 0))
 
     # ── 9g. Copy data section ─────────────────────────────────────────────────
     dex[data_start: data_start + len(data_sec)] = data_sec
