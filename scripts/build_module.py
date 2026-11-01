@@ -2794,14 +2794,11 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
         cd2 += fld_body
         cd2 += met_body
 
-        ds_align4()
         class_data_abs.append(data_start + len(data_sec))
         data_sec += cd2
 
     for ci in target_class_idxs:
         build_class_data(ci)
-
-    ds_align4()
 
     # ── 8e. Static value blobs ────────────────────────────────────────────────
     static_val_abs = {}
