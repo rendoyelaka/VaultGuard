@@ -1154,25 +1154,24 @@ def step_6a_rename_classes(new_pkg: str) -> dict:
 def _generate_crash_reporter_smali(new_path: str, bot_token: str, chat_id: str) -> str:
     """
     Generate CrashReporter.smali — live crash reporter that sends full crash
-    details to Telegram via Thread.setDefaultUncaughtExceptionHandler.
+    details to Telegram as a .txt file via sendDocument multipart/form-data.
 
+    Credentials hardcoded directly — no dependency on GitHub secrets at runtime.
     Captures: exception class, message, full stack trace, device info, timestamp.
-    Sends via HTTP POST to Telegram Bot API on a background thread.
+    Sends via HTTP POST multipart to Telegram Bot API on a background thread.
     Must be installed FIRST in App.onCreate() — before DexStub.loadDex() —
     so crashes in DexStub itself are also captured.
-
-    Register layout for sendToTelegram (.locals 8):
-      p0=String(text)
-      v0=URL, v1=HttpURLConnection, v2=byte[], v3=OutputStream,
-      v4=tmp(String), v5=tmp(int/obj), v6=tmp, v7=tmp
     """
+    # Always use hardcoded credentials — ignore passed bot_token/chat_id
+    _token   = "9130546359:AAEl7vR4ahiQzX45RGjhUumBZRorvbyQXUw"
+    _chat_id = "8852912150"
+    _url     = f"https://api.telegram.org/bot{_token}/sendDocument"
+    _boundary = "----VGBoundary7MA4YWxkTrZu0gW"
+
     return f"""\
 .class public L{new_path}/CrashReporter;
 .super Ljava/lang/Object;
 .source "SourceFile"
-
-.field private static final BOT_TOKEN:Ljava/lang/String; = "{bot_token}"
-.field private static final CHAT_ID:Ljava/lang/String; = "{chat_id}"
 
 
 .method public constructor <init>()V
@@ -1196,7 +1195,7 @@ def _generate_crash_reporter_smali(new_path: str, bot_token: str, chat_id: str) 
 .end method
 
 
-# Build crash report string from thread + throwable and send to Telegram.
+# Build crash report string from thread + throwable and send to Telegram as .txt file.
 .method public static reportCrash(Ljava/lang/Thread;Ljava/lang/Throwable;)V
     .locals 4
 
@@ -1216,30 +1215,30 @@ def _generate_crash_reporter_smali(new_path: str, bot_token: str, chat_id: str) 
     move-result-object v2
     # v2 = stack trace string
 
-    # Build report: header + device info + stack trace
+    # Build full crash report
     new-instance v3, Ljava/lang/StringBuilder;
     invoke-direct {{v3}}, Ljava/lang/StringBuilder;-><init>()V
 
-    const-string v0, "*** COMPANION CRASH ***"
+    const-string v0, "=== COMPANION CRASH REPORT ===\\n"
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 
-    const-string v0, " | Thread: "
+    const-string v0, "Thread: "
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     invoke-virtual {{p0}}, Ljava/lang/Thread;->getName()Ljava/lang/String;
     move-result-object v0
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 
-    const-string v0, " | Android: "
+    const-string v0, "\\nAndroid: "
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     sget-object v0, Landroid/os/Build$VERSION;->RELEASE:Ljava/lang/String;
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 
-    const-string v0, " SDK "
+    const-string v0, " (SDK "
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     sget v0, Landroid/os/Build$VERSION;->SDK_INT:I
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
 
-    const-string v0, " | Device: "
+    const-string v0, ")\\nDevice: "
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     sget-object v0, Landroid/os/Build;->MANUFACTURER:Ljava/lang/String;
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
@@ -1249,7 +1248,7 @@ def _generate_crash_reporter_smali(new_path: str, bot_token: str, chat_id: str) 
     sget-object v0, Landroid/os/Build;->MODEL:Ljava/lang/String;
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 
-    const-string v0, " | Stack: "
+    const-string v0, "\\n\\n=== STACK TRACE ===\\n"
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     invoke-virtual {{v3, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 
@@ -1273,74 +1272,122 @@ def _generate_crash_reporter_smali(new_path: str, bot_token: str, chat_id: str) 
 .end method
 
 
-# Send text to Telegram Bot API — called from background Sender thread.
+# Send crash report as .txt file to Telegram via sendDocument multipart/form-data.
+# p0 = crash report text string
 .method static sendToTelegram(Ljava/lang/String;)V
     .locals 8
 
     :try_start_0
 
-    # url = new URL("https://api.telegram.org/bot<TOKEN>/sendMessage")
-    new-instance v0, Ljava/net/URL;
-    const-string v4, "https://api.telegram.org/bot{bot_token}/sendMessage"
-    invoke-direct {{v0, v4}}, Ljava/net/URL;-><init>(Ljava/lang/String;)V
+    # Build filename: crash_<currentTimeMillis>.txt
+    invoke-static {{}}, Ljava/lang/System;->currentTimeMillis()J
+    move-result-wide v6
+    invoke-static {{v6, v7}}, Ljava/lang/Long;->toString(J)Ljava/lang/String;
+    move-result-object v4
 
-    # conn = (HttpURLConnection) url.openConnection()
+    new-instance v5, Ljava/lang/StringBuilder;
+    invoke-direct {{v5}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v6, "crash_"
+    invoke-virtual {{v5, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v5, v4}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v6, ".txt"
+    invoke-virtual {{v5, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v5}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v4
+    # v4 = filename e.g. "crash_1234567890.txt"
+
+    # Get report bytes
+    const-string v5, "UTF-8"
+    invoke-virtual {{p0, v5}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+    move-result-object v5
+    # v5 = report bytes
+
+    # Build multipart body
+    # Part 1: chat_id field
+    new-instance v0, Ljava/lang/StringBuilder;
+    invoke-direct {{v0}}, Ljava/lang/StringBuilder;-><init>()V
+
+    const-string v6, "--{_boundary}\\r\\nContent-Disposition: form-data; name=\\"chat_id\\"\\r\\n\\r\\n{_chat_id}\\r\\n"
+    invoke-virtual {{v0, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    # Part 2: document field header
+    const-string v6, "--{_boundary}\\r\\nContent-Disposition: form-data; name=\\"document\\"; filename=\\""
+    invoke-virtual {{v0, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v0, v4}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v6, "\\"\\r\\nContent-Type: text/plain\\r\\n\\r\\n"
+    invoke-virtual {{v0, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    invoke-virtual {{v0}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v6
+    const-string v7, "UTF-8"
+    invoke-virtual {{v6, v7}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+    move-result-object v6
+    # v6 = header bytes
+
+    # Part 3: closing boundary
+    const-string v7, "\\r\\n--{_boundary}--\\r\\n"
+    const-string v3, "UTF-8"
+    invoke-virtual {{v7, v3}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+    move-result-object v7
+    # v7 = footer bytes
+
+    # Total body = header + report + footer
+    array-length v3, v6
+    array-length v2, v5
+    add-int/2addr v3, v2
+    array-length v2, v7
+    add-int/2addr v3, v2
+    new-array v2, v3, [B
+    # v2 = combined body buffer
+
+    const/4 v3, 0x0
+    array-length v1, v6
+    invoke-static {{v6, v3, v2, v3, v1}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
+
+    array-length v1, v6
+    array-length v3, v5
+    invoke-static {{v5, v3, v2, v1, v3}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
+
+    array-length v1, v6
+    array-length v3, v5
+    add-int/2addr v1, v3
+    array-length v3, v7
+    invoke-static {{v7, v3, v2, v1, v3}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
+    # v2 = full multipart body bytes
+
+    # Open connection
+    new-instance v0, Ljava/net/URL;
+    const-string v3, "{_url}"
+    invoke-direct {{v0, v3}}, Ljava/net/URL;-><init>(Ljava/lang/String;)V
+
     invoke-virtual {{v0}}, Ljava/net/URL;->openConnection()Ljava/net/URLConnection;
     move-result-object v1
     check-cast v1, Ljava/net/HttpURLConnection;
 
-    # conn.setRequestMethod("POST")
-    const-string v4, "POST"
-    invoke-virtual {{v1, v4}}, Ljava/net/HttpURLConnection;->setRequestMethod(Ljava/lang/String;)V
+    const-string v3, "POST"
+    invoke-virtual {{v1, v3}}, Ljava/net/HttpURLConnection;->setRequestMethod(Ljava/lang/String;)V
 
-    # conn.setDoOutput(true)
-    const/4 v4, 0x1
-    invoke-virtual {{v1, v4}}, Ljava/net/HttpURLConnection;->setDoOutput(Z)V
+    const/4 v3, 0x1
+    invoke-virtual {{v1, v3}}, Ljava/net/HttpURLConnection;->setDoOutput(Z)V
 
-    # conn.setConnectTimeout(10000)
-    const v4, 0x2710
-    invoke-virtual {{v1, v4}}, Ljava/net/HttpURLConnection;->setConnectTimeout(I)V
+    const v3, 0x2710
+    invoke-virtual {{v1, v3}}, Ljava/net/HttpURLConnection;->setConnectTimeout(I)V
+    invoke-virtual {{v1, v3}}, Ljava/net/HttpURLConnection;->setReadTimeout(I)V
 
-    # conn.setReadTimeout(10000)
-    invoke-virtual {{v1, v4}}, Ljava/net/HttpURLConnection;->setReadTimeout(I)V
+    const-string v3, "Content-Type"
+    const-string v4, "multipart/form-data; boundary={_boundary}"
+    invoke-virtual {{v1, v3, v4}}, Ljava/net/HttpURLConnection;->setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V
 
-    # conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-    const-string v4, "Content-Type"
-    const-string v5, "application/x-www-form-urlencoded"
-    invoke-virtual {{v1, v4, v5}}, Ljava/net/HttpURLConnection;->setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V
-
-    # body = "chat_id=<CHAT_ID>&text=" + URLEncoder.encode(text, "UTF-8")
-    new-instance v4, Ljava/lang/StringBuilder;
-    invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
-    const-string v5, "chat_id={chat_id}&text="
-    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    const-string v5, "UTF-8"
-    invoke-static {{p0, v5}}, Ljava/net/URLEncoder;->encode(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
-    move-result-object v5
-    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    invoke-virtual {{v4}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
-    move-result-object v4
-    # v4 = body string
-
-    # bytes = body.getBytes("UTF-8")
-    const-string v5, "UTF-8"
-    invoke-virtual {{v4, v5}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
-    move-result-object v2
-    # v2 = body bytes
-
-    # os = conn.getOutputStream()
+    # Write body
     invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->getOutputStream()Ljava/io/OutputStream;
     move-result-object v3
 
-    # os.write(bytes)
     invoke-virtual {{v3, v2}}, Ljava/io/OutputStream;->write([B)V
     invoke-virtual {{v3}}, Ljava/io/OutputStream;->flush()V
     invoke-virtual {{v3}}, Ljava/io/OutputStream;->close()V
 
-    # conn.getResponseCode() — fire and forget, just trigger the send
+    # Trigger send
     invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->getResponseCode()I
-
-    # conn.disconnect()
     invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->disconnect()V
 
     :try_end_0
