@@ -2567,6 +2567,177 @@ def _inject_axml_app_name(manifest_raw: bytes, new_pkg: str, renamed_app_class: 
     return bytes(new_axml)
 
 
+def _inject_axml_app_component_factory(manifest_raw: bytes, new_pkg: str,
+                                        factory_class: str = "StubComponentFactory") -> bytes:
+    """
+    Inject android:appComponentFactory="<new_pkg>.<factory_class>" attribute into
+    the <application> START_ELEMENT in a binary AXML manifest.
+
+    This registers our StubComponentFactory (AppComponentFactory subclass) with
+    Android so it intercepts Activity/Service/Receiver instantiation before any
+    class lookup occurs, allowing us to resolve them via InMemoryDexClassLoader.
+
+    Uses identical string-pool surgery to _inject_axml_app_name.
+    """
+    axml = bytearray(manifest_raw)
+    SP = 8
+    sp_size     = struct.unpack_from("<I", axml, SP + 4)[0]
+    str_count   = struct.unpack_from("<I", axml, SP + 8)[0]
+    flags       = struct.unpack_from("<I", axml, SP + 16)[0]
+    is_utf8     = bool(flags & (1 << 8))
+    str_start   = struct.unpack_from("<I", axml, SP + 20)[0]
+    offsets_abs = SP + 28
+
+    if not is_utf8:
+        print("  [inject_acf] ⚠️  manifest is UTF-16 encoded — injection not supported, skipping")
+        return manifest_raw
+
+    # Build string table: index → string value
+    strings   = {}
+    str_data_start = SP + str_start
+    for i in range(str_count):
+        off = struct.unpack_from("<I", axml, offsets_abs + i * 4)[0]
+        p   = str_data_start + off
+        try:
+            cl = axml[p]; p += 1
+            if cl & 0x80: cl = ((cl & 0x7F) << 8) | axml[p]; p += 1
+            bl = axml[p]; p += 1
+            if bl & 0x80: bl = ((bl & 0x7F) << 8) | axml[p]; p += 1
+            s = bytes(axml[p:p + bl]).decode("utf-8", "replace")
+            strings[i] = s
+        except Exception:
+            strings[i] = ""
+
+    # Check if android:appComponentFactory already exists on <application>
+    sp_end   = SP + sp_size
+    tree_pos = sp_end
+    while tree_pos < len(axml) - 8:
+        ctype = struct.unpack_from("<H", axml, tree_pos)[0]
+        csize = struct.unpack_from("<I", axml, tree_pos + 4)[0]
+        if csize == 0:
+            break
+        if ctype == 0x0102:
+            name_idx = struct.unpack_from("<i", axml, tree_pos + 20)[0]
+            if strings.get(name_idx) == "application":
+                attr_start = struct.unpack_from("<H", axml, tree_pos + 24)[0]
+                attr_size  = struct.unpack_from("<H", axml, tree_pos + 26)[0]
+                attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0]
+                for a in range(attr_count):
+                    aoff = tree_pos + attr_start + a * attr_size
+                    n2   = struct.unpack_from("<i", axml, aoff + 4)[0]
+                    if strings.get(n2) == "appComponentFactory":
+                        print("  [inject_acf] ⚠️  android:appComponentFactory already present — skipping")
+                        return manifest_raw
+                break
+        tree_pos += csize
+
+    # ── Append two new UTF-8 strings to string pool ───────────────────────────
+    existing_str_data_end = sp_end
+    existing_str_data_len = sp_end - str_data_start
+
+    factory_value  = new_pkg + "." + factory_class
+    attr_name_str  = "appComponentFactory"
+
+    def _utf8_axml_entry(s: str) -> bytes:
+        enc = s.encode("utf-8")
+        cl  = len(s)
+        bl  = len(enc)
+        hdr = bytearray()
+        if cl > 127:
+            hdr.append((cl >> 8) | 0x80); hdr.append(cl & 0xFF)
+        else:
+            hdr.append(cl)
+        if bl > 127:
+            hdr.append((bl >> 8) | 0x80); hdr.append(bl & 0xFF)
+        else:
+            hdr.append(bl)
+        return bytes(hdr) + enc + b'\x00'
+
+    name_entry  = _utf8_axml_entry(attr_name_str)
+    value_entry = _utf8_axml_entry(factory_value)
+
+    idx_name  = str_count          # "appComponentFactory"
+    idx_value = str_count + 1      # "<pkg>.StubComponentFactory"
+
+    off_name  = existing_str_data_len
+    off_value = existing_str_data_len + len(name_entry)
+
+    offsets_table_end = offsets_abs + str_count * 4
+
+    new_offsets_bytes = bytearray(axml[offsets_abs:offsets_table_end])
+    new_offsets_bytes += struct.pack("<I", off_name)
+    new_offsets_bytes += struct.pack("<I", off_value)
+
+    old_str_data = axml[str_data_start:sp_end]
+    new_str_data = old_str_data + name_entry + value_entry
+    while len(new_str_data) % 4 != 0:
+        new_str_data += b'\x00'
+
+    new_str_count = str_count + 2
+    new_sp_size   = 28 + new_str_count * 4 + len(new_str_data)
+
+    part_before_offsets = bytes(axml[0:offsets_abs])
+    new_axml = bytearray(part_before_offsets)
+    new_axml += bytes(new_offsets_bytes)
+    new_axml += bytes(new_str_data)
+    xml_tree = bytes(axml[sp_end:])
+    new_axml += xml_tree
+
+    struct.pack_into("<I", new_axml, SP + 4, new_sp_size)
+    struct.pack_into("<I", new_axml, SP + 8, new_str_count)
+    struct.pack_into("<I", new_axml, SP + 20, 28 + new_str_count * 4)
+
+    # ── Find <application> START_ELEMENT and inject appComponentFactory attr ──
+    new_sp_end  = SP + new_sp_size
+    tree_start  = new_sp_end
+    tree_cursor = tree_start
+    injected    = False
+
+    while tree_cursor < len(new_axml) - 8:
+        ctype = struct.unpack_from("<H", new_axml, tree_cursor)[0]
+        csize = struct.unpack_from("<I", new_axml, tree_cursor + 4)[0]
+        if csize == 0:
+            break
+        if ctype == 0x0102:
+            name_idx = struct.unpack_from("<i", new_axml, tree_cursor + 20)[0]
+            elem_name = strings.get(name_idx, "")
+            if elem_name == "application":
+                attr_start_h = struct.unpack_from("<H", new_axml, tree_cursor + 24)[0]
+                attr_size_h  = struct.unpack_from("<H", new_axml, tree_cursor + 26)[0]
+                attr_count_h = struct.unpack_from("<H", new_axml, tree_cursor + 28)[0]
+
+                ns_idx = -1
+                if attr_count_h > 0:
+                    first_attr_off = tree_cursor + attr_start_h
+                    ns_idx = struct.unpack_from("<i", new_axml, first_attr_off)[0]
+
+                new_attr = bytearray(20)
+                struct.pack_into("<i", new_attr, 0,  ns_idx)    # namespace
+                struct.pack_into("<i", new_attr, 4,  idx_name)  # "appComponentFactory" string index
+                struct.pack_into("<i", new_attr, 8,  idx_value) # raw_val = value string index
+                struct.pack_into("<H", new_attr, 12, 8)         # value_size = 8
+                new_attr[14] = 0x00                             # res0
+                new_attr[15] = 0x03                             # TYPE_STRING
+                struct.pack_into("<i", new_attr, 16, idx_value) # typed value = value string index
+
+                insert_pos = tree_cursor + attr_start_h + attr_count_h * attr_size_h
+                new_axml = new_axml[:insert_pos] + bytearray(new_attr) + new_axml[insert_pos:]
+
+                struct.pack_into("<H", new_axml, tree_cursor + 28, attr_count_h + 1)
+                struct.pack_into("<I", new_axml, tree_cursor + 4,  csize + 20)
+                injected = True
+                break
+        tree_cursor += csize
+
+    if not injected:
+        print("  [inject_acf] ⚠️  <application> element not found in manifest — skipping")
+        return manifest_raw
+
+    struct.pack_into("<I", new_axml, 4, len(new_axml))
+    print(f"  [inject_acf] ✅ android:appComponentFactory=\"{factory_value}\" injected into <application>")
+    return bytes(new_axml)
+
+
 def _strip_axml_provider(manifest_raw: bytes, provider_class_name: str) -> bytes:
     """
     Remove a <provider> element from a binary AXML manifest by class name.
@@ -2913,6 +3084,15 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, stub_dex=None, meta=No
     if class_rename_map and "App" in class_rename_map:
         _app_class_name = class_rename_map["App"]
     new_manifest = _inject_axml_app_name(new_manifest, new_pkg, _app_class_name)
+
+    # Inject android:appComponentFactory="<new_pkg>.StubComponentFactory" into <application>.
+    # This registers our AppComponentFactory subclass so Android calls it to
+    # instantiate Activities/Services/Receivers — before any class lookup runs.
+    # StubComponentFactory uses Class.forName(name, true, sLoader) to resolve
+    # classes from InMemoryDexClassLoader, which is set by attachBaseContext().
+    # No hidden API used — AppComponentFactory is a fully public API since API 28.
+    _factory_class_name = class_rename_map.get("StubComponentFactory", "StubComponentFactory") if class_rename_map else "StubComponentFactory"
+    new_manifest = _inject_axml_app_component_factory(new_manifest, new_pkg, _factory_class_name)
 
     if meta:
         new_manifest = _patch_axml_version(
@@ -3338,11 +3518,15 @@ def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
 
     # --- 1. Add native method declaration after .implements lines / before first .method ---
     # We insert it right before the first .method line
+    stub_factory_class = class_rename_map.get("StubComponentFactory", "StubComponentFactory")
     native_decl = (
         "\n"
         "# Native DEX loader — implemented in libnp_loader.so\n"
         f".method public native xd(Landroid/content/Context;Ljava/lang/String;)[B\n"
         ".end method\n"
+        "\n"
+        "# Static reference to the loaded IMDCL — read by StubComponentFactory\n"
+        f".field public static sLoader:Ljava/lang/ClassLoader;\n"
     )
 
     # Find insertion point: before the first .method
@@ -3360,7 +3544,7 @@ def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
     attach_method = f"""
 # DEX loader hook — loads encrypted io/socket slice via native JNI
 .method public attachBaseContext(Landroid/content/Context;)V
-    .locals 10
+    .locals 6
 
     # super.attachBaseContext(base)
     invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
@@ -3380,35 +3564,27 @@ def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
     invoke-static {{v2}}, Ljava/nio/ByteBuffer;->wrap([B)Ljava/nio/ByteBuffer;
     move-result-object v3
 
-    # v8 = current app PathClassLoader (this.getClass().getClassLoader())
+    # v4 = current app PathClassLoader (this.getClass().getClassLoader())
     invoke-virtual {{p0}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
-    move-result-object v8
-    invoke-virtual {{v8}}, Ljava/lang/Class;->getClassLoader()Ljava/lang/ClassLoader;
-    move-result-object v8
+    move-result-object v4
+    invoke-virtual {{v4}}, Ljava/lang/Class;->getClassLoader()Ljava/lang/ClassLoader;
+    move-result-object v4
 
-    # InMemoryDexClassLoader loader = new InMemoryDexClassLoader(bb, v8)
+    # InMemoryDexClassLoader loader = new InMemoryDexClassLoader(bb, pathClassLoader)
     # parent = current PathClassLoader so full system classes still resolve
     new-instance v5, Ldalvik/system/InMemoryDexClassLoader;
-    invoke-direct {{v5, v3, v8}}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
+    invoke-direct {{v5, v3, v4}}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
 
-    # --- Reflectively set ClassLoader.parent on the PathClassLoader to v5 ---
-    # so that ActivityThread.mClassLoader.loadClass() delegates up to our DEX.
-    # v6 = ClassLoader.class
-    const-class v6, Ljava/lang/ClassLoader;
-    # v7 = field "parent"
-    const-string v7, "parent"
-    invoke-virtual {{v6, v7}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
-    move-result-object v7
-    # field.setAccessible(true)
-    const/4 v9, 0x1
-    invoke-virtual {{v7, v9}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
-    # field.set(pathClassLoader, inMemoryDexClassLoader)
-    invoke-virtual {{v7, v8, v5}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
+    # Store loader in Application.sLoader (static field on this class)
+    sput-object v5, L{new_path}/{app_class};->sLoader:Ljava/lang/ClassLoader;
+
+    # Store loader in StubComponentFactory.sLoader (static field, read by AppComponentFactory hook)
+    sput-object v5, L{new_path}/{stub_factory_class};->sLoader:Ljava/lang/ClassLoader;
 
     # Thread.currentThread().setContextClassLoader(loader) — belt-and-suspenders
     invoke-static {{}}, Ljava/lang/Thread;->currentThread()Ljava/lang/Thread;
-    move-result-object v4
-    invoke-virtual {{v4, v5}}, Ljava/lang/Thread;->setContextClassLoader(Ljava/lang/ClassLoader;)V
+    move-result-object v0
+    invoke-virtual {{v0, v5}}, Ljava/lang/Thread;->setContextClassLoader(Ljava/lang/ClassLoader;)V
 
     :skip_load
     return-void
@@ -4047,6 +4223,95 @@ def main():
                         shutil.copy2(_fpath, _dst)
                         _app_smali = _fpath
         if _app_smali:
+            # Write StubComponentFactory.smali alongside the Application smali.
+            # This class implements AppComponentFactory (API 28+), intercepts
+            # instantiateActivity/Service/Receiver, and resolves classes via
+            # sLoader (set by attachBaseContext to the InMemoryDexClassLoader).
+            _new_path_dir = new_pkg.replace(".", "/")
+            _factory_class = class_rename_map.get("StubComponentFactory", "StubComponentFactory") if class_rename_map else "StubComponentFactory"
+            _app_class_for_smali = class_rename_map.get("App", "App") if class_rename_map else "App"
+            _factory_smali_content = f""".class public L{_new_path_dir}/{_factory_class};
+.super Landroid/app/AppComponentFactory;
+
+# Holds InMemoryDexClassLoader set by {_app_class_for_smali}.attachBaseContext()
+.field public static sLoader:Ljava/lang/ClassLoader;
+
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {{p0}}, Landroid/app/AppComponentFactory;-><init>()V
+    return-void
+.end method
+
+.method public instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    .locals 3
+    sget-object v0, L{_new_path_dir}/{_factory_class};->sLoader:Ljava/lang/ClassLoader;
+    if-eqz v0, :use_default
+    const/4 v1, 0x1
+    invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
+    move-result-object v2
+    invoke-virtual {{v2}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    move-result-object v0
+    const/4 v1, 0x0
+    new-array v1, v1, [Ljava/lang/Object;
+    invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Landroid/app/Activity;
+    return-object v0
+    :use_default
+    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    move-result-object v0
+    return-object v0
+.end method
+
+.method public instantiateService(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Service;
+    .locals 3
+    sget-object v0, L{_new_path_dir}/{_factory_class};->sLoader:Ljava/lang/ClassLoader;
+    if-eqz v0, :use_default
+    const/4 v1, 0x1
+    invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
+    move-result-object v2
+    invoke-virtual {{v2}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    move-result-object v0
+    const/4 v1, 0x0
+    new-array v1, v1, [Ljava/lang/Object;
+    invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Landroid/app/Service;
+    return-object v0
+    :use_default
+    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateService(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Service;
+    move-result-object v0
+    return-object v0
+.end method
+
+.method public instantiateReceiver(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/content/BroadcastReceiver;
+    .locals 3
+    sget-object v0, L{_new_path_dir}/{_factory_class};->sLoader:Ljava/lang/ClassLoader;
+    if-eqz v0, :use_default
+    const/4 v1, 0x1
+    invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
+    move-result-object v2
+    invoke-virtual {{v2}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    move-result-object v0
+    const/4 v1, 0x0
+    new-array v1, v1, [Ljava/lang/Object;
+    invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Landroid/content/BroadcastReceiver;
+    return-object v0
+    :use_default
+    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateReceiver(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/content/BroadcastReceiver;
+    move-result-object v0
+    return-object v0
+.end method
+"""
+            _factory_dst_dir = os.path.join(_stub_smali_dir, _new_path_dir)
+            os.makedirs(_factory_dst_dir, exist_ok=True)
+            _factory_dst = os.path.join(_factory_dst_dir, f"{_factory_class}.smali")
+            with open(_factory_dst, "w", encoding="utf-8") as _fh:
+                _fh.write(_factory_smali_content)
+            print(f"  ✅ StubComponentFactory.smali written: {_factory_dst}")
+
             _stub_out = "stub_dex_out.dex"
             _r = subprocess.run(
                 ["java", "-jar", _smali_jar, "assemble", _stub_smali_dir, "-o", _stub_out],
