@@ -362,6 +362,9 @@ jobs:
         run: |
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          # NDK + CMake required for np_loader.so (DEX decrypt JNI engine — Step A6)
+          sdkmanager "ndk;25.2.9519653" "cmake;3.18.1"
+          echo "$ANDROID_SDK_ROOT/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       # ── 6b. Build module APK (after SDK so apksigner is from build-tools) ──
       - name: Build companion APK

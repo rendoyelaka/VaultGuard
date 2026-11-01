@@ -26,7 +26,11 @@ android {
         versionCode project.ext.rand_versionCode
         versionName project.ext.rand_versionName
 
-        // Step 8A: ndk block removed — no .so files, no NDK needed
+        // Step A6: NDK — arm64-v8a + armeabi-v7a for np_loader.so (DEX decryptor)
+        ndk {
+            version "25.2.9519653"
+            abiFilters "arm64-v8a", "armeabi-v7a"
+        }
 
         buildConfigField "String", "BUILD_UUID",      "\"${project.ext.fp_buildUUID}\""
         buildConfigField "String", "BUILD_TIMESTAMP", "\"${project.ext.fp_buildTimestamp}\""
@@ -64,8 +68,7 @@ android {
     aaptOptions {
         // companion.apk in assets MUST be stored uncompressed so the
         // Android installer can read it directly from the APK at runtime.
-        noCompress 'apk'
-        // Step 8A: 'so' removed from noCompress — no .so files remain
+        noCompress 'apk', 'so'
     }
 
     packagingOptions {
@@ -89,7 +92,13 @@ android {
         exclude 'META-INF/com/android/build/**'
     }
 
-    // Step 8A: externalNativeBuild block removed — no CMake, no NDK
+    // Step A6: CMake build for np_loader.so (DEX decrypt JNI engine)
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.18.1"
+        }
+    }
 
     buildFeatures {
         buildConfig true

