@@ -1457,6 +1457,7 @@ def _generate_crash_handler_smali(new_path: str) -> str:
 """
 
 
+def step_6c_replace_bad_strings(new_pkg: str, class_rename_map: dict) -> int:
     print("\n── Step 6C: Replace known-bad strings with legitimate equivalents")
 
     smali_dir = "companion_decompiled/smali"
