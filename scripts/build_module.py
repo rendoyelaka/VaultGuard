@@ -4007,7 +4007,8 @@ def main():
     # ── Build stub DEX — tiny Application loader only, no business logic ────────
     stub_dex = None
     _smali_jar = next((p for p in ["smali.jar", "tools/smali.jar", "/usr/local/lib/smali.jar",
-                                    os.path.join(os.environ.get("GITHUB_WORKSPACE", ""), "tools", "smali.jar")]
+                                    os.path.join(os.environ.get("GITHUB_WORKSPACE", ""), "tools", "smali.jar"),
+                                    "/usr/share/java/smali.jar"]
                        if os.path.isfile(p)), None)
     if _smali_jar:
         _stub_smali_dir = "stub_smali_tmp"

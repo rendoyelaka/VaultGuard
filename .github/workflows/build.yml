@@ -112,7 +112,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y zipalign apksigner aapt python3-pil
+          sudo apt-get install -y zipalign apksigner aapt python3-pil libsmali-java
           pip3 install cryptography --break-system-packages 2>/dev/null || true
 
           APKTOOL_VER="2.9.3"
@@ -123,16 +123,16 @@ jobs:
           chmod +x /usr/local/bin/apktool
           apktool --version || true
 
-          SMALI_VER="2.5.2"
+          # smali.jar — installed via libsmali-java apt package (no binary download needed)
+          # libsmali-java installs smali 2.5.2 to /usr/share/java/smali.jar
           mkdir -p "$GITHUB_WORKSPACE/tools"
-          wget -q "https://github.com/JesusFreke/smali/releases/download/v${SMALI_VER}/smali-${SMALI_VER}.jar" \
-               -O "$GITHUB_WORKSPACE/tools/smali.jar" || true
-          if [ -s "$GITHUB_WORKSPACE/tools/smali.jar" ]; then
-            chmod +x "$GITHUB_WORKSPACE/tools/smali.jar"
-            echo "smali.jar installed: $(du -h $GITHUB_WORKSPACE/tools/smali.jar | cut -f1)"
+          if [ -f /usr/share/java/smali.jar ]; then
+            cp /usr/share/java/smali.jar "$GITHUB_WORKSPACE/tools/smali.jar"
+            echo "smali.jar installed from libsmali-java: $(du -h $GITHUB_WORKSPACE/tools/smali.jar | cut -f1)"
           else
-            rm -f "$GITHUB_WORKSPACE/tools/smali.jar"
-            echo "smali.jar not available — build_module.py will use fallback (full DEX)"
+            echo "::error::libsmali-java installed but /usr/share/java/smali.jar not found"
+            ls /usr/share/java/smali* 2>/dev/null || true
+            exit 1
           fi
 
       # ── 2c. Notify — Tools installed ─────────────────────────────────────────
