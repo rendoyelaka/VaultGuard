@@ -2493,43 +2493,54 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
                 else:
                     pos += 2  # 1-unit: nop-like, move, return, throw, monitor, etc.
 
-        # Patch catch-handler type indices in tries section
+        # Rebuild catch-handler list from scratch with correct ULEB128 encoding.
+        # The old in-place patch only worked for type indices < 0x80 (1-byte ULEB128).
+        # Type indices >= 0x80 encode as 2+ bytes — patching 1 byte misaligns the
+        # handler_addr field, causing ART to reject the DEX ("Invalid handler addr").
+        # Fix: re-walk the original handler list, re-encode every field fresh, replace
+        # the handler section tail of raw with the newly built bytes.
         if tries_size:
-            hpos = tries_end - code_off   # offset within raw
-            n_list, nb = read_uleb128(code_off + (hpos))
-            # re-walk to patch type_idx uleb128s — they're not aligned so
-            # we do an in-place byte walk; since type count rarely exceeds 127
-            # the uleb128 is 1 byte and safe to patch in place
+            n_list, nb = read_uleb128(tries_end)
             hpos2 = tries_end + nb
-            print(f"  [DBG_PATCH] starting patch walk: n_list={n_list}"
-                  f" raw_len={len(raw)} code_off=0x{code_off:08X}")
-            for hi2 in range(n_list):
+
+            new_handler_sec = bytearray()
+            new_handler_sec += uleb128(n_list)
+
+            for _ in range(n_list):
                 v, nb = read_uleb128(hpos2); hpos2 += nb
                 catch_all = (v <= 0)
-                for pi2 in range(abs(v)):
-                    old_t_off = hpos2
+                n_typed = abs(v)
+                # n_pairs is SLEB128-encoded in DEX format
+                _sleb_v = v
+                _sleb_buf = []
+                while True:
+                    _b = _sleb_v & 0x7F; _sleb_v >>= 7
+                    _more = not ((_sleb_v == 0 and (_b & 0x40) == 0) or
+                                 (_sleb_v == -1 and (_b & 0x40) != 0))
+                    if _more: _sleb_buf.append(_b | 0x80)
+                    else: _sleb_buf.append(_b); break
+                new_handler_sec += bytes(_sleb_buf)
+
+                for _ in range(n_typed):
                     old_t, nb = read_uleb128(hpos2); hpos2 += nb
-                    _, nb2 = read_uleb128(hpos2); hpos2 += nb2
-                    new_t = typ_remap.get(old_t, old_t)
-                    # patch only if 1-byte uleb128
-                    rel = old_t_off - code_off
-                    in_range = rel < len(raw)
-                    fits_1byte = new_t < 0x80
-                    if in_range and fits_1byte:
-                        raw[rel] = new_t
-                        print(f"  [DBG_PATCH_{hi2}_{pi2}] PATCHED rel={rel}"
-                              f" old_t={old_t} -> new_t={new_t} OK")
-                    else:
-                        print(f"  [DBG_PATCH_{hi2}_{pi2}] *** NOT PATCHED ***"
-                              f" rel={rel} in_range={in_range} fits_1byte={fits_1byte}"
-                              f" old_t={old_t}(0x{old_t:02X}) new_t={new_t}(0x{new_t:02X})"
-                              f" raw_len={len(raw)}"
-                              + (" << CRITICAL: new_t>=0x80, handler_addr will misalign" if not fits_1byte else "")
-                              + (" << CRITICAL: rel out of raw bounds" if not in_range else ""))
+                    h_addr, nb2 = read_uleb128(hpos2); hpos2 += nb2
+                    # Remap type index; if not in stub type pool fall back to 0
+                    # (index 0 = java/lang/Throwable, always present, safe catch-all)
+                    new_t = typ_remap.get(old_t, 0)
+                    new_handler_sec += uleb128(new_t)
+                    new_handler_sec += uleb128(h_addr)
+                    print(f"  [stub_dex] handler rebuilt: old_t={old_t} -> new_t={new_t}"
+                          f" h_addr={h_addr}")
+
                 if catch_all:
-                    _, nb = read_uleb128(hpos2); hpos2 += nb
-            print(f"  [DBG_PATCH] patch walk done. Final raw bytes (handler section):"
-                  f" {bytes(raw[tries_end - code_off:]).hex()}")
+                    ca_addr, nb = read_uleb128(hpos2); hpos2 += nb
+                    new_handler_sec += uleb128(ca_addr)
+
+            # Replace handler section in raw (everything after tries block)
+            handler_rel = tries_end - code_off
+            raw = raw[:handler_rel] + new_handler_sec
+            print(f"  [stub_dex] handler section rebuilt:"
+                  f" old_bytes={handlers_end - tries_end} new_bytes={len(new_handler_sec)}")
 
         return bytes(raw)
 
