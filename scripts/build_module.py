@@ -4022,7 +4022,9 @@ def main():
                     _fpath = os.path.join(_root, _fname)
                     with open(_fpath, "r", errors="replace") as _fh:
                         _content = _fh.read()
-                    if "attachBaseContext" in _content and "extends Application" in _content:
+                    if "attachBaseContext" in _content and (
+                            "extends Application" in _content or
+                            ".super Landroid/app/Application;" in _content):
                         _rel = os.path.relpath(_fpath, "companion_decompiled/smali")
                         _dst = os.path.join(_stub_smali_dir, _rel)
                         os.makedirs(os.path.dirname(_dst), exist_ok=True)
