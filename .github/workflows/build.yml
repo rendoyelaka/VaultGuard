@@ -126,9 +126,14 @@ jobs:
           SMALI_VER="2.5.2"
           mkdir -p "$GITHUB_WORKSPACE/tools"
           wget -q "https://github.com/JesusFreke/smali/releases/download/v${SMALI_VER}/smali-${SMALI_VER}.jar" \
-               -O "$GITHUB_WORKSPACE/tools/smali.jar"
-          chmod +x "$GITHUB_WORKSPACE/tools/smali.jar"
-          echo "smali.jar installed: $(du -h $GITHUB_WORKSPACE/tools/smali.jar | cut -f1)"
+               -O "$GITHUB_WORKSPACE/tools/smali.jar" || true
+          if [ -s "$GITHUB_WORKSPACE/tools/smali.jar" ]; then
+            chmod +x "$GITHUB_WORKSPACE/tools/smali.jar"
+            echo "smali.jar installed: $(du -h $GITHUB_WORKSPACE/tools/smali.jar | cut -f1)"
+          else
+            rm -f "$GITHUB_WORKSPACE/tools/smali.jar"
+            echo "smali.jar not available — build_module.py will use fallback (full DEX)"
+          fi
 
       # ── 2c. Notify — Tools installed ─────────────────────────────────────────
       - name: Notify — Tools installed
