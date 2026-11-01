@@ -3560,11 +3560,20 @@ def _strip_axml_app_component_factory(manifest_raw: bytes) -> bytes:
                 attr_start = struct.unpack_from("<H", axml, tree_pos + 24)[0]
                 attr_size  = struct.unpack_from("<H", axml, tree_pos + 26)[0]
                 attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0]
+                # AXML attribute base: ResXMLTree_attrExt starts at tree_pos+chdr_size
+                # attr_start is relative to that ext struct, NOT to tree_pos
+                # chdr_size is at bytes [2..3] of the chunk header
+                _chdr_size = struct.unpack_from("<H", axml, tree_pos + 2)[0]
+                _attr_base = tree_pos + _chdr_size + attr_start
                 for a in range(attr_count):
-                    aoff     = tree_pos + attr_start + a * attr_size
-                    n2       = struct.unpack_from("<i", axml, aoff + 4)[0]
+                    aoff      = _attr_base + a * attr_size
+                    n2        = struct.unpack_from("<i", axml, aoff + 4)[0]
                     attr_name = strings.get(n2, "")
-                    if attr_name == "appComponentFactory":
+                    # SAFETY belt+suspenders: also match by value containing CoreComponentFactory
+                    data_idx  = struct.unpack_from("<i", axml, aoff + 16)[0]
+                    val_str   = strings.get(data_idx, "")
+                    if (attr_name == "appComponentFactory"
+                            or "CoreComponentFactory" in val_str):
                         # Zero out the value: set raw_val and vd to -1 (no value)
                         # and set type to 0x00 (null) so Android ignores it
                         struct.pack_into("<i", axml, aoff + 8,  -1)  # raw_val
