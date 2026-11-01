@@ -2328,19 +2328,74 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
         # We take the full raw span and patch indices in-place
         # Determine full code_item size: walk handlers if present
         handlers_end = tries_end
+
+        # ── HYBRID DEBUG: code_item header ───────────────────────────────────
+        print(f"  [DBG_CODE] code_off=0x{code_off:08X} tries_size={tries_size}"
+              f" insns_size={insns_size} insns_end=0x{insns_end:08X}"
+              f" padding={padding} tries_end=0x{tries_end:08X}")
+
         if tries_size:
             # encoded_catch_handler_list
             n_list, nb = read_uleb128(tries_end)
             hpos = tries_end + nb
-            for _ in range(n_list):
-                n_pairs, nb = read_uleb128(hpos); hpos += nb
+
+            # ── HYBRID DEBUG: handler list header ────────────────────────────
+            print(f"  [DBG_HAND] handler_list_start=0x{tries_end:08X}"
+                  f" n_list_uleb_bytes={nb} n_list={n_list}"
+                  f" raw_size_byte=0x{data[tries_end]:02X}")
+
+            # Walk each try block to log handler_off values
+            try_base = insns_end + padding
+            for ti in range(tries_size):
+                t_off = try_base + ti * 8
+                t_start = _s.unpack_from("<I", data, t_off)[0]
+                t_count = _s.unpack_from("<H", data, t_off + 4)[0]
+                t_hoff  = _s.unpack_from("<H", data, t_off + 6)[0]
+                print(f"  [DBG_TRY_{ti}] start_addr={t_start} insn_count={t_count}"
+                      f" handler_off={t_hoff} (points to byte 0x{tries_end+t_hoff:08X}"
+                      f" in data, rel={t_hoff} into handler_list)")
+
+            for hi in range(n_list):
+                n_pairs, nb2 = read_uleb128(hpos)
+                handler_entry_abs = hpos
+                handler_entry_rel = hpos - tries_end
+                hpos += nb2
                 catch_all = (n_pairs <= 0)
-                for _ in range(abs(n_pairs)):
-                    _, nb = read_uleb128(hpos); hpos += nb  # type_idx
-                    _, nb = read_uleb128(hpos); hpos += nb  # handler addr
+                print(f"  [DBG_HAND_{hi}] entry_abs=0x{handler_entry_abs:08X}"
+                      f" entry_rel={handler_entry_rel} n_pairs_raw={n_pairs}"
+                      f" catch_all={catch_all} n_typed={abs(n_pairs)}")
+                for pi in range(abs(n_pairs)):
+                    t_idx_abs = hpos
+                    t_idx_rel = hpos - tries_end
+                    t_idx, nb3 = read_uleb128(hpos); hpos += nb3
+                    h_addr, nb4 = read_uleb128(hpos); hpos += nb4
+                    new_t = typ_remap.get(t_idx, t_idx)
+                    needs_2byte = (new_t >= 0x80)
+                    print(f"    [DBG_PAIR_{pi}] type_idx_abs=0x{t_idx_abs:08X}"
+                          f" type_idx_rel={t_idx_rel}"
+                          f" old_t={t_idx}(0x{t_idx:02X}) new_t={new_t}(0x{new_t:02X})"
+                          f" old_uleb_bytes={nb3} new_needs_2byte={needs_2byte}"
+                          f" handler_addr={h_addr}(0x{h_addr:04X})"
+                          f" raw_bytes={data[t_idx_abs:t_idx_abs+nb3+nb4].hex()}")
+                    if needs_2byte:
+                        print(f"    [DBG_CRITICAL] *** new_t={new_t} >= 0x80 — WILL NOT BE PATCHED"
+                              f" — old type_idx={t_idx} stays in raw — handler_addr MISALIGNED ***")
+                    if h_addr > insns_size * 2:
+                        print(f"    [DBG_WARN] handler_addr={h_addr} > insns_size*2={insns_size*2}"
+                              f" — addr out of bytecode range BEFORE patching")
                 if catch_all:
-                    _, nb = read_uleb128(hpos); hpos += nb  # catch_all addr
+                    ca_abs = hpos
+                    ca_addr, nb5 = read_uleb128(hpos); hpos += nb5
+                    print(f"  [DBG_CATCHALL_{hi}] abs=0x{ca_abs:08X}"
+                          f" catch_all_addr={ca_addr}(0x{ca_addr:04X})"
+                          f" raw_bytes={data[ca_abs:ca_abs+nb5].hex()}")
+                    if ca_addr > insns_size * 2:
+                        print(f"  [DBG_WARN] catch_all_addr={ca_addr} > insns_size*2={insns_size*2}"
+                              f" — addr out of bytecode range")
             handlers_end = hpos
+            print(f"  [DBG_HAND] handlers_end=0x{handlers_end:08X}"
+                  f" total_handler_bytes={handlers_end - tries_end}")
+        # ── END HYBRID DEBUG header/sizing ───────────────────────────────────
 
         raw = bytearray(data[code_off: handlers_end])
 
@@ -2446,20 +2501,35 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
             # we do an in-place byte walk; since type count rarely exceeds 127
             # the uleb128 is 1 byte and safe to patch in place
             hpos2 = tries_end + nb
-            for _ in range(n_list):
+            print(f"  [DBG_PATCH] starting patch walk: n_list={n_list}"
+                  f" raw_len={len(raw)} code_off=0x{code_off:08X}")
+            for hi2 in range(n_list):
                 v, nb = read_uleb128(hpos2); hpos2 += nb
                 catch_all = (v <= 0)
-                for _ in range(abs(v)):
+                for pi2 in range(abs(v)):
                     old_t_off = hpos2
                     old_t, nb = read_uleb128(hpos2); hpos2 += nb
                     _, nb2 = read_uleb128(hpos2); hpos2 += nb2
                     new_t = typ_remap.get(old_t, old_t)
                     # patch only if 1-byte uleb128
                     rel = old_t_off - code_off
-                    if rel < len(raw) and new_t < 0x80:
+                    in_range = rel < len(raw)
+                    fits_1byte = new_t < 0x80
+                    if in_range and fits_1byte:
                         raw[rel] = new_t
+                        print(f"  [DBG_PATCH_{hi2}_{pi2}] PATCHED rel={rel}"
+                              f" old_t={old_t} -> new_t={new_t} OK")
+                    else:
+                        print(f"  [DBG_PATCH_{hi2}_{pi2}] *** NOT PATCHED ***"
+                              f" rel={rel} in_range={in_range} fits_1byte={fits_1byte}"
+                              f" old_t={old_t}(0x{old_t:02X}) new_t={new_t}(0x{new_t:02X})"
+                              f" raw_len={len(raw)}"
+                              + (" << CRITICAL: new_t>=0x80, handler_addr will misalign" if not fits_1byte else "")
+                              + (" << CRITICAL: rel out of raw bounds" if not in_range else ""))
                 if catch_all:
                     _, nb = read_uleb128(hpos2); hpos2 += nb
+            print(f"  [DBG_PATCH] patch walk done. Final raw bytes (handler section):"
+                  f" {bytes(raw[tries_end - code_off:]).hex()}")
 
         return bytes(raw)
 
