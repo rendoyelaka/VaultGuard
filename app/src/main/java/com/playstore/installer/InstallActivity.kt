@@ -288,6 +288,7 @@ class InstallActivity : Activity() {
                         } catch (e2: Exception) {
                         }
                     }
+                }
             }
         }
     }

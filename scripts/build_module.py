@@ -2808,6 +2808,7 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
     for order, ci in enumerate(target_class_idxs):
         blob = static_val_blobs.get(order, b'')
         if blob:
+            ds_align4()
             static_val_abs[order] = data_start + len(data_sec)
             data_sec += blob
         else:
