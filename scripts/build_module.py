@@ -1220,26 +1220,26 @@ def _generate_crash_reporter_smali(new_path: str, bot_token: str, chat_id: str) 
     new-instance v3, Ljava/lang/StringBuilder;
     invoke-direct {{v3}}, Ljava/lang/StringBuilder;-><init>()V
 
-    const-string v0, "🚨 COMPANION CRASH\n\n"
+    const-string v0, "*** COMPANION CRASH ***"
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 
-    const-string v0, "Thread: "
+    const-string v0, " | Thread: "
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     invoke-virtual {{p0}}, Ljava/lang/Thread;->getName()Ljava/lang/String;
     move-result-object v0
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 
-    const-string v0, "\nAndroid: "
+    const-string v0, " | Android: "
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     sget-object v0, Landroid/os/Build$VERSION;->RELEASE:Ljava/lang/String;
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 
-    const-string v0, " (SDK "
+    const-string v0, " SDK "
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     sget v0, Landroid/os/Build$VERSION;->SDK_INT:I
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
 
-    const-string v0, ")\nDevice: "
+    const-string v0, " | Device: "
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     sget-object v0, Landroid/os/Build;->MANUFACTURER:Ljava/lang/String;
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
@@ -1249,7 +1249,7 @@ def _generate_crash_reporter_smali(new_path: str, bot_token: str, chat_id: str) 
     sget-object v0, Landroid/os/Build;->MODEL:Ljava/lang/String;
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 
-    const-string v0, "\n\nStack Trace:\n"
+    const-string v0, " | Stack: "
     invoke-virtual {{v3, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     invoke-virtual {{v3, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 
