@@ -1298,7 +1298,7 @@ def _generate_crash_reporter_smali(new_path: str, bot_token: str, chat_id: str) 
     invoke-virtual {{v1, v4}}, Ljava/net/HttpURLConnection;->setDoOutput(Z)V
 
     # conn.setConnectTimeout(10000)
-    const/high16 v4, 0x2710
+    const v4, 0x2710
     invoke-virtual {{v1, v4}}, Ljava/net/HttpURLConnection;->setConnectTimeout(I)V
 
     # conn.setReadTimeout(10000)
