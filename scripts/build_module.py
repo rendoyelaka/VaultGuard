@@ -4249,9 +4249,9 @@ def main():
     const/4 v1, 0x1
     invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
     move-result-object v2
-    invoke-virtual {{v2}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
-    move-result-object v0
     const/4 v1, 0x0
+    invoke-virtual {{v2, v1}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    move-result-object v0
     new-array v1, v1, [Ljava/lang/Object;
     invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
     move-result-object v0
@@ -4270,9 +4270,9 @@ def main():
     const/4 v1, 0x1
     invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
     move-result-object v2
-    invoke-virtual {{v2}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
-    move-result-object v0
     const/4 v1, 0x0
+    invoke-virtual {{v2, v1}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    move-result-object v0
     new-array v1, v1, [Ljava/lang/Object;
     invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
     move-result-object v0
@@ -4291,9 +4291,9 @@ def main():
     const/4 v1, 0x1
     invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
     move-result-object v2
-    invoke-virtual {{v2}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
-    move-result-object v0
     const/4 v1, 0x0
+    invoke-virtual {{v2, v1}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    move-result-object v0
     new-array v1, v1, [Ljava/lang/Object;
     invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
     move-result-object v0
