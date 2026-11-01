@@ -2398,6 +2398,7 @@ def _build_stub_dex(real_dex: bytes, new_path: str, renamed_app: str) -> bytes:
         # ── END HYBRID DEBUG header/sizing ───────────────────────────────────
 
         raw = bytearray(data[code_off: handlers_end])
+        _s.pack_into("<I", raw, 8, 0)   # zero debug_info_off — original offset invalid in stub DEX
 
         # Patch instruction stream (same walk as collect_code_item)
         base_in_raw = 16   # insns start at offset 16 within code_item
