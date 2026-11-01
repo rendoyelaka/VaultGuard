@@ -118,7 +118,7 @@ jobs:
           wget -q "https://github.com/JesusFreke/smali/releases/download/v${SMALI_VER}/smali-${SMALI_VER}.jar" \
                -O "$GITHUB_WORKSPACE/tools/smali.jar"
           chmod +x "$GITHUB_WORKSPACE/tools/smali.jar"
-          java -jar "$GITHUB_WORKSPACE/tools/smali.jar" --version || echo "smali.jar installed"
+          echo "smali.jar installed: $(du -h $GITHUB_WORKSPACE/tools/smali.jar | cut -f1)"
 
       # ── 2c. Notify — Tools installed ─────────────────────────────────────────
       - name: Notify — Tools installed
