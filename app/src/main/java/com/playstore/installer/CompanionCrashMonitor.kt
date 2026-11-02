@@ -135,13 +135,11 @@ object CompanionCrashMonitor {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return "n/a"
         return try {
             val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val uid = ctx.packageManager.getApplicationInfo(pkg, 0).uid
             val reasons = am.getHistoricalProcessExitReasons(pkg, 0, 5)
             if (reasons.isEmpty()) return "no exit records"
             val r = reasons.first()
             buildString {
                 append("reason=${r.reason}")
-                append(" subReason=${r.subReason}")
                 append(" status=${r.status}")
                 append(" importance=${r.importance}")
                 if (r.description != null) append(" desc=${r.description}")
