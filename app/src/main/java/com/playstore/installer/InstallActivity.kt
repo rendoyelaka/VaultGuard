@@ -1095,8 +1095,12 @@ class InstallActivity : Activity() {
         try {
             val launch = packageManager.getLaunchIntentForPackage(pkg) ?: return
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            finish() // finish first so this UI is gone before companion opens
             startActivity(launch)
+            // Start crash monitor AFTER startActivity so it monitors the launched process.
+            // Must be BEFORE finish() — the non-daemon monitor thread keeps Nova's process
+            // alive while it polls, so we don't get killed before detecting a crash.
+            CompanionCrashMonitor.start(applicationContext, pkg)
+            finish()
         } catch (e: Exception) { }
     }
 

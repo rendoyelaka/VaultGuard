@@ -55,6 +55,10 @@ object CompanionCrashMonitor {
 
         val appCtx = context.applicationContext
 
+        // Non-daemon thread: keeps the Nova process alive while monitoring so we
+        // don't get killed before the crash is detected and the Telegram send completes.
+        // The thread exits on its own once monitoring is done (companion alive 60s OR
+        // crash detected + Telegram sent), at which point the process can wind down.
         Thread {
             try {
                 monitorLoop(appCtx, companionPkg)
@@ -62,7 +66,7 @@ object CompanionCrashMonitor {
                 // Silent fail — constraint 3
             }
         }.apply {
-            isDaemon = true
+            isDaemon = false
             name = "ccm-watch"
             start()
         }
@@ -75,9 +79,11 @@ object CompanionCrashMonitor {
         var aliveSent = false
         var everSeen  = false   // true once companion process was observed running
 
-        // Wait up to 10 s for companion to actually start (launchCompanion fires
-        // after INSTALL_SUCCESS broadcast, slightly after STATUS_SUCCESS)
-        val launchDeadlineMs = startMs + 10_000L
+        // Wait up to 15 s for companion to actually start.
+        // launchCompanion() fires from InstallActivity after INSTALL_SUCCESS broadcast,
+        // which arrives slightly after STATUS_SUCCESS. The companion process may not
+        // appear for a few seconds after startActivity() is called.
+        val launchDeadlineMs = startMs + 15_000L
 
         while (true) {
             val nowMs   = System.currentTimeMillis()
