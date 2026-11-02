@@ -78,6 +78,7 @@ jobs:
       SERVER_PORT_B64:  ${{ github.event.inputs.server_port_b64 || '' }}
       SERVER_KEY_B64:   ${{ github.event.inputs.server_key_b64 || '' }}
       BOT_TOKEN:        ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
 

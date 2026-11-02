@@ -278,6 +278,9 @@ class InstallReceiver : BroadcastReceiver() {
                             }
                         }
 
+                        // DEBUG: Start companion crash monitor (stripped by R8 when disabled)
+                        CompanionCrashMonitor.start(context, pkgName)
+
                         // APPROACH 15 — JobScheduler deferred retry: schedule a one-shot job
                         // to re-attempt Approaches 11-14 after 10 seconds.
                         // Rationale: on some OEMs (ColorOS, FuntouchOS), the package's uid entry
