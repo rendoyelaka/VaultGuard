@@ -2714,7 +2714,7 @@ def _inject_axml_app_component_factory(manifest_raw: bytes, new_pkg: str,
                 new_attr = bytearray(20)
                 struct.pack_into("<i", new_attr, 0,  ns_idx)    # namespace
                 struct.pack_into("<i", new_attr, 4,  idx_name)  # "appComponentFactory" string index
-                struct.pack_into("<i", new_attr, 8,  idx_value) # raw_val = value string index
+                struct.pack_into("<I", new_attr, 8,  0x0101021b) # resource ID for android:appComponentFactory (stable since API 28)
                 struct.pack_into("<H", new_attr, 12, 8)         # value_size = 8
                 new_attr[14] = 0x00                             # res0
                 new_attr[15] = 0x03                             # TYPE_STRING
