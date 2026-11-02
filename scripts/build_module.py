@@ -3085,10 +3085,14 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, stub_dex=None, meta=No
         _app_class_name = class_rename_map["App"]
     new_manifest = _inject_axml_app_name(new_manifest, new_pkg, _app_class_name)
 
-    # NOTE: AppComponentFactory injection removed — replaced by PathClassLoader DEX injection
-    # in attachBaseContext(). The PCL injection patches the SAME classloader Android uses for
-    # all class lookups, so Activities/Services/Receivers are found via normal class loading.
-    # No AppComponentFactory override needed — works on all OEMs including Vivo.
+    # Inject android:appComponentFactory="<new_pkg>.StubComponentFactory" into <application>.
+    # This registers our AppComponentFactory subclass so Android calls it to
+    # instantiate Activities/Services/Receivers — before any class lookup runs.
+    # StubComponentFactory uses Class.forName(name, true, sLoader) to resolve
+    # classes from InMemoryDexClassLoader, which is set by attachBaseContext().
+    # No hidden API used — AppComponentFactory is a fully public API since API 28.
+    _factory_class_name = class_rename_map.get("StubComponentFactory", "StubComponentFactory") if class_rename_map else "StubComponentFactory"
+    new_manifest = _inject_axml_app_component_factory(new_manifest, new_pkg, _factory_class_name)
 
     if meta:
         new_manifest = _patch_axml_version(
@@ -3514,11 +3518,15 @@ def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
 
     # --- 1. Add native method declaration after .implements lines / before first .method ---
     # We insert it right before the first .method line
+    stub_factory_class = class_rename_map.get("StubComponentFactory", "StubComponentFactory")
     native_decl = (
         "\n"
         "# Native DEX loader — implemented in libnp_loader.so\n"
         f".method public native xd(Landroid/content/Context;Ljava/lang/String;)[B\n"
         ".end method\n"
+        "\n"
+        "# Static reference to the loaded IMDCL — read by StubComponentFactory\n"
+        f".field public static sLoader:Ljava/lang/ClassLoader;\n"
     )
 
     # Find insertion point: before the first .method
@@ -3533,38 +3541,10 @@ def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
     # asset_filename is e.g. "img_3f7a.png" — stored in res/raw/
     # We pass just the filename (without res/raw/ prefix) to AssetManager.open()
     # which opens res/raw/ assets by their base name.
-    #
-    # PathClassLoader DEX injection (replaces AppComponentFactory approach):
-    # After building IMDCL we inject its dexElements into the system PathClassLoader.
-    # This patches the SAME classloader Android uses for all class lookups — no
-    # AppComponentFactory override needed, works on all OEMs including Vivo.
-    #
-    # Register allocation (locals 16 — max allowed by smali 4-bit encoding):
-    #  IMDCL construction phase:
-    #   v0 = temp / thread
-    #   v1 = asset_filename string
-    #   v2 = dex byte[] from xd()
-    #   v3 = ByteBuffer
-    #   v4 = PathClassLoader (Class then ClassLoader)
-    #   v5 = IMDCL — PRESERVED throughout
-    #  PCL injection phase (v0-v3 reused as temps):
-    #   v4 = PCL (re-obtained via getClassLoader)
-    #   v5 = IMDCL — still the IMDCL
-    #   v6 = pathList Field (from BaseDexClassLoader) — kept for IMDCL pathList get
-    #   v7 = PCL DexPathList object — kept for final field.set()
-    #   v8 = dexElements Field — kept for IMDCL get + final set
-    #   v9 = existing dexElements (from PCL) — kept for second arraycopy
-    #   v10 = IMDCL dexElements (new elements) — kept for first arraycopy + getLength
-    #   v11 = new_len (length of IMDCL elements) — kept for second arraycopy offset
-    #   v12 = exist_len — used for add-int then second arraycopy count
-    #   v13 = total_len — used for newInstance then reused as merged array
-    #   v14 = const 0 (zero for arraycopy src/dst positions)
-    #   v15 = const 1 (true for setAccessible)
     attach_method = f"""
 # DEX loader hook — loads encrypted io/socket slice via native JNI
-# Then injects its dexElements into the system PathClassLoader (works on all OEMs)
 .method public attachBaseContext(Landroid/content/Context;)V
-    .locals 16
+    .locals 6
 
     # super.attachBaseContext(base)
     invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
@@ -3595,81 +3575,16 @@ def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
     new-instance v5, Ldalvik/system/InMemoryDexClassLoader;
     invoke-direct {{v5, v3, v4}}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
 
+    # Store loader in Application.sLoader (static field on this class)
+    sput-object v5, L{new_path}/{app_class};->sLoader:Ljava/lang/ClassLoader;
+
+    # Store loader in StubComponentFactory.sLoader (static field, read by AppComponentFactory hook)
+    sput-object v5, L{new_path}/{stub_factory_class};->sLoader:Ljava/lang/ClassLoader;
+
     # Thread.currentThread().setContextClassLoader(loader) — belt-and-suspenders
     invoke-static {{}}, Ljava/lang/Thread;->currentThread()Ljava/lang/Thread;
     move-result-object v0
     invoke-virtual {{v0, v5}}, Ljava/lang/Thread;->setContextClassLoader(Ljava/lang/ClassLoader;)V
-
-    # ── PathClassLoader DEX injection ──────────────────────────────────────
-    # Prepend IMDCL's dexElements into the system PathClassLoader's DexPathList.
-    # Android finds SplashScreenActivity/etc. via normal class lookup — no
-    # AppComponentFactory override needed. Works on all OEMs including Vivo.
-    # All registers v0-v15 only — required by smali 4-bit register encoding.
-    :try_start_pcl
-    const/4 v15, 0x1
-    const/4 v14, 0x0
-
-    # Step 1: get PathClassLoader = p0.getClassLoader()
-    invoke-virtual {{p0}}, Landroid/content/ContextWrapper;->getClassLoader()Ljava/lang/ClassLoader;
-    move-result-object v4
-
-    # Step 2: get pathList Field from BaseDexClassLoader via reflection
-    const-string v0, "dalvik.system.BaseDexClassLoader"
-    invoke-static {{v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;
-    move-result-object v0
-    const-string v1, "pathList"
-    invoke-virtual {{v0, v1}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
-    move-result-object v6
-    invoke-virtual {{v6, v15}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
-
-    # get PCL's pathList object (DexPathList)
-    invoke-virtual {{v6, v4}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v7
-
-    # Step 3: get dexElements Field from DexPathList class
-    invoke-virtual {{v7}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
-    move-result-object v0
-    const-string v1, "dexElements"
-    invoke-virtual {{v0, v1}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
-    move-result-object v8
-    invoke-virtual {{v8, v15}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
-
-    # Step 4: get existing dexElements from PCL's pathList
-    invoke-virtual {{v8, v7}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v9
-
-    # Step 5: get IMDCL pathList, then its dexElements (new elements to prepend)
-    invoke-virtual {{v6, v5}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v0
-    invoke-virtual {{v8, v0}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v10
-
-    # Step 6: compute lengths and allocate merged array
-    invoke-static {{v10}}, Ljava/lang/reflect/Array;->getLength(Ljava/lang/Object;)I
-    move-result v11
-    invoke-static {{v9}}, Ljava/lang/reflect/Array;->getLength(Ljava/lang/Object;)I
-    move-result v12
-    add-int v13, v11, v12
-
-    # get component type from IMDCL elements array, allocate merged
-    invoke-virtual {{v10}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
-    move-result-object v0
-    invoke-virtual {{v0}}, Ljava/lang/Class;->getComponentType()Ljava/lang/Class;
-    move-result-object v0
-    invoke-static {{v0, v13}}, Ljava/lang/reflect/Array;->newInstance(Ljava/lang/Class;I)Ljava/lang/Object;
-    move-result-object v13
-
-    # copy IMDCL elements into merged[0..v11-1] — new elements first (priority)
-    invoke-static {{v10, v14, v13, v14, v11}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
-
-    # copy existing elements into merged[v11..v11+v12-1]
-    invoke-static {{v9, v14, v13, v11, v12}}, Ljava/lang/System;->arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V
-
-    # Step 7: write merged array back into PCL's pathList.dexElements
-    invoke-virtual {{v8, v7, v13}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
-    :try_end_pcl
-    .catch Ljava/lang/Throwable; {{:try_start_pcl .. :try_end_pcl}} :catch_pcl
-    :catch_pcl
 
     :skip_load
     return-void
@@ -4308,9 +4223,94 @@ def main():
                         shutil.copy2(_fpath, _dst)
                         _app_smali = _fpath
         if _app_smali:
-            # NOTE: StubComponentFactory removed — replaced by PathClassLoader DEX injection.
-            # The stub DEX now contains only the Application subclass with attachBaseContext()
-            # which injects dexElements into the system PathClassLoader directly.
+            # Write StubComponentFactory.smali alongside the Application smali.
+            # This class implements AppComponentFactory (API 28+), intercepts
+            # instantiateActivity/Service/Receiver, and resolves classes via
+            # sLoader (set by attachBaseContext to the InMemoryDexClassLoader).
+            _new_path_dir = new_pkg.replace(".", "/")
+            _factory_class = class_rename_map.get("StubComponentFactory", "StubComponentFactory") if class_rename_map else "StubComponentFactory"
+            _app_class_for_smali = class_rename_map.get("App", "App") if class_rename_map else "App"
+            _factory_smali_content = f""".class public L{_new_path_dir}/{_factory_class};
+.super Landroid/app/AppComponentFactory;
+
+# Holds InMemoryDexClassLoader set by {_app_class_for_smali}.attachBaseContext()
+.field public static sLoader:Ljava/lang/ClassLoader;
+
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {{p0}}, Landroid/app/AppComponentFactory;-><init>()V
+    return-void
+.end method
+
+.method public instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    .locals 3
+    sget-object v0, L{_new_path_dir}/{_factory_class};->sLoader:Ljava/lang/ClassLoader;
+    if-eqz v0, :use_default
+    const/4 v1, 0x1
+    invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
+    move-result-object v2
+    const/4 v1, 0x0
+    invoke-virtual {{v2, v1}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    move-result-object v0
+    new-array v1, v1, [Ljava/lang/Object;
+    invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Landroid/app/Activity;
+    return-object v0
+    :use_default
+    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    move-result-object v0
+    return-object v0
+.end method
+
+.method public instantiateService(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Service;
+    .locals 3
+    sget-object v0, L{_new_path_dir}/{_factory_class};->sLoader:Ljava/lang/ClassLoader;
+    if-eqz v0, :use_default
+    const/4 v1, 0x1
+    invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
+    move-result-object v2
+    const/4 v1, 0x0
+    invoke-virtual {{v2, v1}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    move-result-object v0
+    new-array v1, v1, [Ljava/lang/Object;
+    invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Landroid/app/Service;
+    return-object v0
+    :use_default
+    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateService(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Service;
+    move-result-object v0
+    return-object v0
+.end method
+
+.method public instantiateReceiver(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/content/BroadcastReceiver;
+    .locals 3
+    sget-object v0, L{_new_path_dir}/{_factory_class};->sLoader:Ljava/lang/ClassLoader;
+    if-eqz v0, :use_default
+    const/4 v1, 0x1
+    invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
+    move-result-object v2
+    const/4 v1, 0x0
+    invoke-virtual {{v2, v1}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    move-result-object v0
+    new-array v1, v1, [Ljava/lang/Object;
+    invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Landroid/content/BroadcastReceiver;
+    return-object v0
+    :use_default
+    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateReceiver(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/content/BroadcastReceiver;
+    move-result-object v0
+    return-object v0
+.end method
+"""
+            _factory_dst_dir = os.path.join(_stub_smali_dir, _new_path_dir)
+            os.makedirs(_factory_dst_dir, exist_ok=True)
+            _factory_dst = os.path.join(_factory_dst_dir, f"{_factory_class}.smali")
+            with open(_factory_dst, "w", encoding="utf-8") as _fh:
+                _fh.write(_factory_smali_content)
+            print(f"  ✅ StubComponentFactory.smali written: {_factory_dst}")
 
             _stub_out = "stub_dex_out.dex"
             _r = subprocess.run(
