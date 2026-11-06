@@ -2665,18 +2665,25 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
             s, _ = _axml_read_utf8(manifest_raw, str_data_abs + off)
             strings_manifest.append(s)
     else:
-        # UTF-16 manifest: read char_len (1 or 2 bytes) + char_len*2 bytes + 2-byte null
+        # UTF-16 manifest: char_len is a standard uint16 LE (2 bytes),
+        # followed by char_len*2 UTF-16LE bytes, then a 2-byte null terminator.
+        # NOTE: the old companion APK used variable-width 1-or-2 byte headers;
+        # the new companion APK uses the standard Android AXML uint16 LE format.
         for i in range(str_count):
-            off = struct.unpack_from("<I", manifest_raw, offsets_abs + i * 4)[0]
-            pos = str_data_abs + off
-            b0 = manifest_raw[pos]; pos += 1
-            if b0 & 0x80:
-                b1 = manifest_raw[pos]; pos += 1
-                clen = ((b0 & 0x7F) << 8) | b1
-            else:
-                clen = b0
-            s = manifest_raw[pos:pos + clen * 2].decode("utf-16-le", errors="replace")
+            off  = struct.unpack_from("<I", manifest_raw, offsets_abs + i * 4)[0]
+            pos  = str_data_abs + off
+            clen = struct.unpack_from("<H", manifest_raw, pos)[0]
+            s    = manifest_raw[pos + 2 : pos + 2 + clen * 2].decode("utf-16-le", errors="replace")
             strings_manifest.append(s)
+
+    # Encoder: produce a string entry in the same encoding as the source manifest.
+    # UTF-8 manifest  → UTF-8 variable-width header (already defined: _axml_encode_utf8)
+    # UTF-16 manifest → uint16 LE char_len + UTF-16LE bytes + 2-byte null terminator
+    def _axml_encode_manifest(s):
+        if is_utf8_manifest:
+            return _axml_encode_utf8(s)
+        enc = s.encode("utf-16-le")
+        return struct.pack("<H", len(s)) + enc + b'\x00\x00'
 
     new_str_data = bytearray()
     new_offsets  = []
@@ -2687,10 +2694,10 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
     for s in strings_manifest:
         new_offsets.append(len(new_str_data))
         if OLD_STR in s:
-            new_str_data.extend(_axml_encode_utf8(s.replace(OLD_STR, NEW_STR)))
+            new_str_data.extend(_axml_encode_manifest(s.replace(OLD_STR, NEW_STR)))
             replaced += 1
         else:
-            new_str_data.extend(_axml_encode_utf8(s))
+            new_str_data.extend(_axml_encode_manifest(s))
 
     if replaced == 0:
         print("[X] No strings replaced in manifest (package name)")
@@ -2718,7 +2725,7 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
             new_offsets  = []
             for s in new_strings2:
                 new_offsets.append(len(new_str_data))
-                new_str_data.extend(_axml_encode_utf8(s))
+                new_str_data.extend(_axml_encode_manifest(s))
             print(f"  Manifest: {class_replaced} class name(s) updated")
 
     while len(new_str_data) % 4 != 0:
