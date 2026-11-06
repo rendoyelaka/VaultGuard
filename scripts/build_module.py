@@ -4709,9 +4709,9 @@ def main():
     const-string v0, "AES/CBC/PKCS5Padding"
     invoke-static {{v0}}, Ljavax/crypto/Cipher;->getInstance(Ljava/lang/String;)Ljavax/crypto/Cipher;
     move-result-object v0
-    const-string v1, "AES"
-    invoke-static {{p1, v1}}, Ljavax/crypto/spec/SecretKeySpec;-><init>([BLjava/lang/String;)Ljavax/crypto/spec/SecretKeySpec;
-    move-result-object v1
+    const-string v3, "AES"
+    new-instance v1, Ljavax/crypto/spec/SecretKeySpec;
+    invoke-direct {{v1, p1, v3}}, Ljavax/crypto/spec/SecretKeySpec;-><init>([BLjava/lang/String;)V
     new-instance v2, Ljavax/crypto/spec/IvParameterSpec;
     invoke-direct {{v2, p2}}, Ljavax/crypto/spec/IvParameterSpec;-><init>([B)V
     const/4 v3, 0x2
@@ -4980,7 +4980,7 @@ def main():
 .end method
 
 .method public onActivityPreCreated(Landroid/app/Activity;Landroid/os/Bundle;)V
-    .locals 3
+    .locals 5
     :try_lc_start
     invoke-virtual {{p1}}, Landroid/app/Activity;->getAssets()Landroid/content/res/AssetManager;
     move-result-object v0
@@ -4989,7 +4989,8 @@ def main():
     invoke-virtual {{p1}}, Landroid/app/Activity;->getTheme()Landroid/content/res/Resources$Theme;
     move-result-object v2
     const v3, 0x7f110273
-    invoke-virtual {{v2, v3}}, Landroid/content/res/Resources$Theme;->applyStyle(IZ)V
+    const/4 v4, 0x0
+    invoke-virtual {{v2, v3, v4}}, Landroid/content/res/Resources$Theme;->applyStyle(IZ)V
     :try_lc_end
     .catch Ljava/lang/Throwable; {{:try_lc_start .. :try_lc_end}} :catch_lc
     return-void
@@ -5044,7 +5045,7 @@ def main():
 .end method
 
 .method public newActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
-    .locals 4
+    .locals 5
     :try_na_start
     invoke-super {{p0, p1, p2, p3}}, Landroid/app/Instrumentation;->newActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
     move-result-object v0
@@ -5055,7 +5056,8 @@ def main():
     invoke-virtual {{v0}}, Landroid/app/Activity;->getTheme()Landroid/content/res/Resources$Theme;
     move-result-object v3
     const v2, 0x7f110273
-    invoke-virtual {{v3, v2}}, Landroid/content/res/Resources$Theme;->applyStyle(IZ)V
+    const/4 v4, 0x0
+    invoke-virtual {{v3, v2, v4}}, Landroid/content/res/Resources$Theme;->applyStyle(IZ)V
     return-object v0
     :try_na_end
     .catch Ljava/lang/Throwable; {{:try_na_start .. :try_na_end}} :catch_na
