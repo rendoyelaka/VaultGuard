@@ -4162,14 +4162,32 @@ def main():
 
         # ── Helper: inject/replace a single entry in a ZIP (preserving all others) ──
         def _apk_inject_entry(apk_path, entry_name, data, compress_type):
-            """Add or replace a ZIP entry. All other entries preserved as-is."""
+            """Add or replace a ZIP entry. All other entries preserved as-is.
+            Reads existing entries via raw offset to bypass CRC check —
+            STEP_CRC32_FORGE sets all CRCs to 0xDEADBEEF so zipfile.read()
+            raises BadZipFile on every entry."""
+            import zlib as _zlibinj
+            def _raw_read(apk_path, item):
+                """Read entry bytes bypassing CRC — uses header_offset directly."""
+                with open(apk_path, 'rb') as _f:
+                    _f.seek(item.header_offset + 26)
+                    _lfn, _lex = struct.unpack('<HH', _f.read(4))
+                    _f.seek(item.header_offset + 30 + _lfn + _lex)
+                    _raw = _f.read(item.compress_size)
+                if item.compress_type == zipfile.ZIP_STORED:
+                    return _raw
+                elif item.compress_type == zipfile.ZIP_DEFLATED:
+                    return _zlibinj.decompress(_raw, -15)
+                else:
+                    raise ValueError(f"Unsupported compression {item.compress_type} for {item.filename}")
+
             tmp = apk_path + ".p3inject"
             with zipfile.ZipFile(apk_path, 'r') as zin, \
                  zipfile.ZipFile(tmp, 'w', allowZip64=False) as zout:
                 for item in zin.infolist():
                     if item.filename == entry_name:
                         continue  # skip old version; we'll re-add below
-                    raw = zin.read(item.filename)
+                    raw = _raw_read(apk_path, item)
                     info = zipfile.ZipInfo(item.filename)
                     info.compress_type = item.compress_type
                     info.date_time = item.date_time
