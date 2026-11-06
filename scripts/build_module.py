@@ -4214,7 +4214,7 @@ def main():
                             _sig = _fz.read(4)
                             if _sig != b'PK\x01\x02':
                                 raise ValueError("Bad CD signature")
-                            _cd_hdr = _fz.read(42)
+                            _cd_hdr = _fz.read(44)
                             (_ver_made, _ver_need, _flag, _comp,
                              _mtime, _mdate, _crc, _csz, _usz,
                              _fnlen, _exlen, _cmlen, _dsk, _iattr,
