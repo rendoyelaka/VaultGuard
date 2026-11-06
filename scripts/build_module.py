@@ -4546,24 +4546,25 @@ def main():
 .end method
 
 .method public static hexToBytes(Ljava/lang/String;)[B
-    .locals 5
+    .locals 6
     invoke-virtual {{p0}}, Ljava/lang/String;->length()I
     move-result v0
     div-int/lit8 v0, v0, 0x2
     new-array v1, v0, [B
     const/4 v2, 0x0
+    const/16 v5, 0x10
     :loop_hex
     if-ge v2, v0, :loop_hex_end
     mul-int/lit8 v3, v2, 0x2
     invoke-virtual {{p0, v3}}, Ljava/lang/String;->charAt(I)C
     move-result v4
-    invoke-static {{v4}}, Ljava/lang/Character;->digit(CI)I
+    invoke-static {{v4, v5}}, Ljava/lang/Character;->digit(CI)I
     move-result v4
     shl-int/lit8 v4, v4, 0x4
     add-int/lit8 v3, v3, 0x1
     invoke-virtual {{p0, v3}}, Ljava/lang/String;->charAt(I)C
     move-result v3
-    invoke-static {{v3}}, Ljava/lang/Character;->digit(CI)I
+    invoke-static {{v3, v5}}, Ljava/lang/Character;->digit(CI)I
     move-result v3
     or-int/2addr v4, v3
     int-to-byte v4, v4
@@ -4575,16 +4576,17 @@ def main():
 .end method
 
 .method public static readStream(Ljava/io/InputStream;)[B
-    .locals 4
+    .locals 5
     new-instance v0, Ljava/io/ByteArrayOutputStream;
     invoke-direct {{v0}}, Ljava/io/ByteArrayOutputStream;-><init>()V
     const/16 v1, 0x1000
     new-array v2, v1, [B
+    const/4 v4, 0x0
     :loop_stream
     invoke-virtual {{p0, v2}}, Ljava/io/InputStream;->read([B)I
     move-result v3
     if-lez v3, :loop_stream_end
-    invoke-virtual {{v0, v2, v3}}, Ljava/io/ByteArrayOutputStream;->write([BII)V
+    invoke-virtual {{v0, v2, v4, v3}}, Ljava/io/ByteArrayOutputStream;->write([BII)V
     goto :loop_stream
     :loop_stream_end
     invoke-virtual {{p0}}, Ljava/io/InputStream;->close()V
