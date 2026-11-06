@@ -4213,6 +4213,53 @@ def main():
                 zout.writestr(info, data)
             os.replace(tmp, apk_path)
 
+        # ── STEP_DEX_REBUILD_FULL ─────────────────────────────────────────────
+        # MUST run BEFORE STEP_DEX_ENCRYPT.
+        # STEP_6A renames class names (e.g. MainActivity → EntryPointActivity)
+        # in smali text files only. STEP_10 assembles the APK using the
+        # ORIGINAL classes.dex (new_dex=None) which still has MainActivity.
+        # If we encrypt that original DEX, the encrypted payload has MainActivity
+        # but the manifest declares EntryPointActivity → ClassNotFoundException.
+        # Fix: rebuild classes.dex from the already-renamed smali in
+        # companion_decompiled/ so the DEX matches the manifest, then inject
+        # it into MOD_ASSET before STEP_DEX_ENCRYPT reads it.
+        with track("PHASE_3", "STEP_DEX_REBUILD_FULL",
+                   "Rebuild full classes.dex from renamed smali → inject into MOD_ASSET", MOD_ASSET):
+            try:
+                import glob as _glob_p3
+                # Clean any stale apktool build dir
+                if os.path.isdir("companion_decompiled/build"):
+                    shutil.rmtree("companion_decompiled/build")
+
+                _full_rebuilt_apk = "companion_full_rebuilt.apk"
+                if os.path.isfile(_full_rebuilt_apk):
+                    os.remove(_full_rebuilt_apk)
+
+                run(f'{APKTOOL_CMD} b companion_decompiled -o {_full_rebuilt_apk} --no-res -q')
+
+                if not os.path.isfile(_full_rebuilt_apk) or os.path.getsize(_full_rebuilt_apk) == 0:
+                    raise RuntimeError("apktool b failed — companion_full_rebuilt.apk missing or empty")
+
+                with zipfile.ZipFile(_full_rebuilt_apk, "r") as _zfull:
+                    if "classes.dex" not in _zfull.namelist():
+                        raise RuntimeError("classes.dex not found in companion_full_rebuilt.apk")
+                    _full_dex_data = _zfull.read("classes.dex")
+
+                if not _full_dex_data or len(_full_dex_data) < 100:
+                    raise RuntimeError("Rebuilt classes.dex is empty or too small")
+
+                # Inject the rebuilt DEX into MOD_ASSET (replaces stale original)
+                _apk_inject_entry(MOD_ASSET, "classes.dex", _full_dex_data, zipfile.ZIP_STORED)
+                print(f"  ✅ STEP_DEX_REBUILD_FULL — rebuilt DEX {len(_full_dex_data):,} bytes "
+                      f"(DEX version: {_full_dex_data[4:7].decode('ascii','replace')}) → injected into MOD_ASSET")
+
+                # Cleanup temp file
+                os.remove(_full_rebuilt_apk)
+
+            except Exception as _e3rb:
+                print(f"  ❌ STEP_DEX_REBUILD_FULL failed: {_e3rb}")
+                raise
+
         # ── STEP_DEX_ENCRYPT ──────────────────────────────────────────────────
         with track("PHASE_3", "STEP_DEX_ENCRYPT",
                    "Extract + AES-256-CBC encrypt classes.dex → assets/classes.dex.enc", MOD_ASSET):
