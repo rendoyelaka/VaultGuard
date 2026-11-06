@@ -2739,6 +2739,180 @@ def _strip_axml_application_icon(manifest_raw: bytes) -> bytes:
     return bytes(axml)
 
 
+def _strip_axml_imageview_src(layout_raw: bytes, layout_name: str = "") -> bytes:
+    """
+    Remove android:src mipmap attributes from ImageView elements in a binary
+    AXML layout file.
+
+    Why: PHASE_3 replaces resources.arsc with a minimal stub ARSC and encrypts
+    all res/ files into assets/res.pack.enc. StubApp.injectResources() restores
+    the real ARSC at runtime via addAssetPath, BUT addAssetPath APPENDS to the
+    AssetManager path list — the stub ARSC is still the PRIMARY path (index 0).
+    When Android resolves a resource ID it uses the FIRST path that defines it.
+    The stub ARSC maps mipmap IDs to obfuscated/garbled paths → FileNotFoundException.
+
+    This occurs specifically when layout0033 is inflated inside
+    SplashScreenActivity.onRequestPermissionsResult — the ImageView at line #8
+    has android:src="@mipmap/mipmap0000" (resource ID 0x7f0e0000). LayoutInflater
+    calls ImageView.<init> → TypedArray.getDrawable → Resources.getDrawable →
+    ResourcesImpl.loadDrawable → AssetManager.openNonAsset → stub ARSC lookup
+    → garbled path "res/mipmap-xxhdpi/jcv2xjvm.png\\//.png" → crash.
+
+    Fix: strip android:src attributes that reference mipmap resources from all
+    ImageView START_ELEMENT nodes. The companion's splash screen does not need to
+    display this image for functional operation (it only exists as a visual decoration).
+
+    Detection:
+      Attr value type byte at offset +16 == 0x01 (TYPE_REFERENCE)
+      AND value data at offset +16+4 (Res_value.data): top byte == 0x7f (app pkg)
+      AND second byte == 0x0e (mipmap resource type)
+      Pattern: (data >> 24) == 0x7F and ((data >> 16) & 0xFF) == 0x0E
+
+    android:src attr resource ID: 0x0101020C (also checked via Method A)
+    """
+    SRC_ATTR_ID = 0x0101020C  # android:src
+
+    axml = bytearray(layout_raw)
+
+    # Binary AXML file structure:
+    # [0x0003 header 8 bytes][string pool chunk][resmap chunk (optional)]
+    # [XML tree: START_NS / END_NS / START_ELEMENT / END_ELEMENT / TEXT nodes]
+    SP = 8  # string pool chunk starts at offset 8
+
+    if len(axml) < SP + 28:
+        print(f"  [strip_layout_src:{layout_name}] ⚠️  File too small to parse — no change")
+        return layout_raw
+
+    sp_size   = struct.unpack_from("<I", axml, SP + 4)[0]
+    str_count = struct.unpack_from("<I", axml, SP + 8)[0]
+    flags     = struct.unpack_from("<I", axml, SP + 16)[0]
+    is_utf8   = bool(flags & (1 << 8))
+    str_start = struct.unpack_from("<I", axml, SP + 20)[0]
+    offsets_abs = SP + 28
+
+    # Build string table (index → str)
+    strings = {}
+    for i in range(str_count):
+        off = struct.unpack_from("<I", axml, offsets_abs + i * 4)[0]
+        p   = SP + str_start + off
+        try:
+            if is_utf8:
+                cl = axml[p]; p += 1
+                if cl & 0x80: cl = ((cl & 0x7F) << 8) | axml[p]; p += 1
+                bl = axml[p]; p += 1
+                if bl & 0x80: bl = ((bl & 0x7F) << 8) | axml[p]; p += 1
+                s = bytes(axml[p:p + bl]).decode("utf-8", "replace")
+            else:
+                cl = struct.unpack_from("<H", axml, p)[0]; p += 2
+                s  = bytes(axml[p:p + cl * 2]).decode("utf-16-le", "replace")
+            strings[i] = s
+        except Exception:
+            strings[i] = ""
+
+    # Walk past string pool + optional resource map chunk to reach XML tree
+    sp_end   = SP + sp_size
+    tree_pos = sp_end
+
+    # Skip optional ResXMLTree_header chunks before XML nodes
+    # (resource map chunk type = 0x0180)
+    while tree_pos < len(axml) - 8:
+        peek_type = struct.unpack_from("<H", axml, tree_pos)[0]
+        peek_size = struct.unpack_from("<I", axml, tree_pos + 4)[0]
+        if peek_size == 0:
+            break
+        if peek_type in (0x0100, 0x0101, 0x0102, 0x0103, 0x0104):
+            # XML node types — start of XML tree
+            break
+        tree_pos += peek_size
+
+    total_removed = 0
+
+    while tree_pos < len(axml) - 8:
+        ctype = struct.unpack_from("<H", axml, tree_pos)[0]
+        csize = struct.unpack_from("<I", axml, tree_pos + 4)[0]
+        if csize == 0:
+            break
+
+        if ctype == 0x0102:  # START_ELEMENT
+            name_idx = struct.unpack_from("<i", axml, tree_pos + 20)[0]
+            elem_name = strings.get(name_idx, "")
+
+            # Match ImageView element (name string contains "ImageView")
+            if "ImageView" in elem_name or elem_name == "ImageView":
+                attr_start = struct.unpack_from("<H", axml, tree_pos + 24)[0]
+                attr_size  = struct.unpack_from("<H", axml, tree_pos + 26)[0]
+                attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0]
+
+                # Each attr record is attr_size bytes (typically 20 bytes):
+                # +0  ns_idx    (4 bytes)
+                # +4  name_idx  (4 bytes)
+                # +8  raw_val   (4 bytes)
+                # +12 Res_value: size(2) + res0(1) + dataType(1) + data(4) = 8 bytes
+                # so attr_size = 20
+
+                # attr_start is measured from attrExt start (tree_pos+16) in
+                # standard AXML layout files (attributeStart = 20 = sizeof attrExt).
+                # Absolute attr[a] offset: tree_pos + 16 + attr_start + a * attr_size
+                _attrs_base = tree_pos + 16 + attr_start
+
+                remove_attr_indices = []
+                for a in range(attr_count):
+                    aoff = _attrs_base + a * attr_size
+
+                    # Method A: standard AOSP attr resource ID at offset +8
+                    attr_res_id = struct.unpack_from("<I", axml, aoff + 8)[0]
+
+                    # Method B: check Res_value dataType and data
+                    # Res_value layout (at offset +12 within attr record):
+                    #   +12  size    uint16 (= 8)
+                    #   +14  res0    uint8  (= 0)
+                    #   +15  dataType uint8 (0x01 = TYPE_REFERENCE)
+                    #   +16  data    uint32
+                    if aoff + 20 <= len(axml):
+                        data_type = axml[aoff + 15]  # Res_value.dataType
+                        data_val  = struct.unpack_from("<I", axml, aoff + 16)[0]
+                        is_mipmap_ref = (data_type == 0x01 and
+                                         (data_val >> 24) == 0x7F and
+                                         ((data_val >> 16) & 0xFF) == 0x0E)
+                    else:
+                        is_mipmap_ref = False
+
+                    if attr_res_id == SRC_ATTR_ID or is_mipmap_ref:
+                        remove_attr_indices.append(a)
+                        # Log what we found for proof
+                        attr_name = strings.get(
+                            struct.unpack_from("<i", axml, aoff + 4)[0], "?")
+                        print(f"  [strip_layout_src:{layout_name}] "
+                              f"Found mipmap attr '{attr_name}' "
+                              f"(res_id=0x{attr_res_id:08X}, "
+                              f"val=0x{data_val if aoff + 20 <= len(axml) else 0:08X}) "
+                              f"on <{elem_name}> — will strip")
+
+                # Remove in reverse order so byte offsets stay valid
+                for a in reversed(remove_attr_indices):
+                    aoff     = _attrs_base + a * attr_size
+                    del axml[aoff : aoff + attr_size]
+                    # Update attr_count in the START_ELEMENT header
+                    new_attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0] - 1
+                    struct.pack_into("<H", axml, tree_pos + 28, new_attr_count)
+                    # Update chunk size
+                    new_csize = struct.unpack_from("<I", axml, tree_pos + 4)[0] - attr_size
+                    struct.pack_into("<I", axml, tree_pos + 4, new_csize)
+                    total_removed += 1
+
+                # Update total AXML file size after all removals in this element
+                if total_removed > 0:
+                    struct.pack_into("<I", axml, 4, len(axml))
+
+        tree_pos += struct.unpack_from("<I", axml, tree_pos + 4)[0]
+
+    if total_removed == 0:
+        print(f"  [strip_layout_src:{layout_name}] ⚠️  No mipmap src attrs found in ImageView — no change")
+    else:
+        print(f"  [strip_layout_src:{layout_name}] ✅ Stripped {total_removed} mipmap src attr(s) from ImageView")
+    return bytes(axml)
+
+
 def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                             class_rename_map=None):
     print("\n── Step 10: Patch manifest + resources.arsc + assemble APK")
@@ -5612,6 +5786,16 @@ doNotCompress:
                             if _n3 in _STUB_RES_KEEP:
                                 continue
                             _data3 = _z3re.read(_n3)
+                            # Bug 10 fix: strip android:src mipmap attrs from
+                            # layout0033 before packing. ImageView at line #8
+                            # has android:src="@mipmap/mipmap0000" (0x7f0e0000).
+                            # At inflation time, stub ARSC is still primary in
+                            # AssetManager (addAssetPath only appends) so the
+                            # mipmap lookup hits the stub → garbled path → crash.
+                            # Remove the attr entirely — splash decorative image
+                            # has no functional impact on permission flow.
+                            if _n3 == 'res/layout/layout0033':
+                                _data3 = _strip_axml_imageview_src(_data3, 'layout0033')
                             _pack.writestr(_n3, _data3)
                             _pack_entries += 1
 
