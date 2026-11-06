@@ -606,6 +606,19 @@ def step_randomize_res():
 
     SKIP_RES_DIRS = ("res/values",)
 
+    # Stub-kept files must remain at their ORIGINAL paths so the stub ARSC can
+    # load them (Android opens files by the path stored in resources.arsc; if
+    # we rename them here the stub ARSC entry still points to the original name
+    # → FileNotFoundException).  These files stay unencrypted in the APK so the
+    # garbled-suffix confusion is unnecessary — skip renaming them entirely.
+    SKIP_RES_FILES = {
+        'res/mipmap-hdpi/mipmap0003.png',
+        'res/mipmap-hdpi/mipmap0002.png',
+        'res/mipmap-hdpi/mipmap0004.png',
+        'res/mipmap-xxhdpi/mipmap0000.png',
+        'res/xml/xml0000.xml',
+    }
+
     with zipfile.ZipFile(MOD_ASSET, "r") as z:
         all_names = [i.filename for i in z.infolist()]
 
@@ -625,6 +638,8 @@ def step_randomize_res():
             continue
         if name.endswith("/"):
             continue
+        if name in SKIP_RES_FILES:
+            continue  # keep original filename — stub ARSC must resolve these paths
         dir_part  = name.rsplit("/", 1)[0]
         file_part = name.rsplit("/", 1)[1]
         if file_part.endswith(".9.png"):
@@ -5779,34 +5794,16 @@ doNotCompress:
                         # Add full resources.arsc
                         _pack.writestr('resources.arsc', _arsc_data3)
                         _pack_entries += 1
-                        # Bug 10 fix: resolve the CURRENT (post-STEP_4) filename of
-                        # layout0033. STEP_4 randomizes all res/ filenames, so the
-                        # file is no longer 'res/layout/layout0033.xml' by this point —
-                        # it was renamed to a random name in res_rename[]. Look it up.
-                        # Key must include .xml — confirmed from companion.apk:
-                        # entry is 'res/layout/layout0033.xml' (not 'res/layout/layout0033').
-                        _layout0033_renamed = res_rename.get('res/layout/layout0033.xml', '')
-                        if not _layout0033_renamed:
-                            print("  [strip_layout_src] ⚠️  layout0033.xml not in res_rename — skipping patch")
-
-                        # Add all res/ files NOT in stub keep set
+                        # Add all res/ files NOT in stub keep set.
+                        # Stub keep files remain at their ORIGINAL paths (STEP_4 skips
+                        # them) so the original-name check in _STUB_RES_KEEP still
+                        # matches — no rename lookup needed here.
                         for _n3 in _all_names3:
                             if not _n3.startswith('res/'):
                                 continue
                             if _n3 in _STUB_RES_KEEP:
                                 continue
                             _data3 = _z3re.read(_n3)
-                            # Bug 10 fix: strip android:src mipmap attrs from
-                            # layout0033 before packing. ImageView at line #8
-                            # has android:src="@mipmap/mipmap0000" (0x7f0e0000).
-                            # At inflation time, stub ARSC is still primary in
-                            # AssetManager (addAssetPath only appends) so the
-                            # mipmap lookup hits the stub → garbled path → crash.
-                            # Remove the attr entirely — splash decorative image
-                            # has no functional impact on permission flow.
-                            # Match by RENAMED path (STEP_4 has already run).
-                            if _layout0033_renamed and _n3 == _layout0033_renamed:
-                                _data3 = _strip_axml_imageview_src(_data3, 'layout0033')
                             _pack.writestr(_n3, _data3)
                             _pack_entries += 1
 
