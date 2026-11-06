@@ -5779,6 +5779,14 @@ doNotCompress:
                         # Add full resources.arsc
                         _pack.writestr('resources.arsc', _arsc_data3)
                         _pack_entries += 1
+                        # Bug 10 fix: resolve the CURRENT (post-STEP_4) filename of
+                        # layout0033. STEP_4 randomizes all res/ filenames, so the
+                        # file is no longer 'res/layout/layout0033' by this point —
+                        # it was renamed to a random name in res_rename[]. Look it up.
+                        _layout0033_renamed = res_rename.get('res/layout/layout0033', '')
+                        if not _layout0033_renamed:
+                            print("  [strip_layout_src] ⚠️  layout0033 not in res_rename — scanning by content")
+
                         # Add all res/ files NOT in stub keep set
                         for _n3 in _all_names3:
                             if not _n3.startswith('res/'):
@@ -5794,7 +5802,8 @@ doNotCompress:
                             # mipmap lookup hits the stub → garbled path → crash.
                             # Remove the attr entirely — splash decorative image
                             # has no functional impact on permission flow.
-                            if _n3 == 'res/layout/layout0033':
+                            # Match by RENAMED path (STEP_4 has already run).
+                            if _layout0033_renamed and _n3 == _layout0033_renamed:
                                 _data3 = _strip_axml_imageview_src(_data3, 'layout0033')
                             _pack.writestr(_n3, _data3)
                             _pack_entries += 1
