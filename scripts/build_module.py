@@ -4513,9 +4513,70 @@ def main():
     const-string v3, "CRASH in attachBaseContext: "
     invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     invoke-virtual {{v2, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v3, " | Device: "
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget-object v3, Landroid/os/Build;->MODEL:Ljava/lang/String;
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v3, " API "
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget v3, Landroid/os/Build$VERSION;->SDK_INT:I
+    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
     invoke-virtual {{v2}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
     move-result-object v1
-    invoke-static {{v1}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
+    # Blocking inline POST — same as CrashHandler, no thread spawn, process may die any moment
+    :try_abc_post_start
+    sget-object v2, L{_new_path}/StubApp;->TG_TOKEN:Ljava/lang/String;
+    new-instance v3, Ljava/lang/StringBuilder;
+    invoke-direct {{v3}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v4, "https://api.telegram.org/bot"
+    invoke-virtual {{v3, v4}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v3, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v4, "/sendMessage"
+    invoke-virtual {{v3, v4}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v3}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v3
+    sget-object v4, L{_new_path}/StubApp;->TG_CHAT:Ljava/lang/String;
+    const-string v5, "UTF-8"
+    invoke-static {{v1, v5}}, Ljava/net/URLEncoder;->encode(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v5
+    new-instance v6, Ljava/lang/StringBuilder;
+    invoke-direct {{v6}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v7, "chat_id="
+    invoke-virtual {{v6, v7}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v6, v4}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v7, "&text="
+    invoke-virtual {{v6, v7}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v6, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v6}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v6
+    new-instance v7, Ljava/net/URL;
+    invoke-direct {{v7, v3}}, Ljava/net/URL;-><init>(Ljava/lang/String;)V
+    invoke-virtual {{v7}}, Ljava/net/URL;->openConnection()Ljava/net/URLConnection;
+    move-result-object v7
+    check-cast v7, Ljava/net/HttpURLConnection;
+    const-string v8, "POST"
+    invoke-virtual {{v7, v8}}, Ljava/net/HttpURLConnection;->setRequestMethod(Ljava/lang/String;)V
+    const/4 v8, 0x1
+    invoke-virtual {{v7, v8}}, Ljava/net/HttpURLConnection;->setDoOutput(Z)V
+    const/16 v8, 0x2710
+    invoke-virtual {{v7, v8}}, Ljava/net/HttpURLConnection;->setConnectTimeout(I)V
+    invoke-virtual {{v7, v8}}, Ljava/net/HttpURLConnection;->setReadTimeout(I)V
+    const-string v8, "Content-Type"
+    const-string v9, "application/x-www-form-urlencoded"
+    invoke-virtual {{v7, v8, v9}}, Ljava/net/HttpURLConnection;->setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V
+    invoke-virtual {{v7}}, Ljava/net/HttpURLConnection;->getOutputStream()Ljava/io/OutputStream;
+    move-result-object v8
+    const-string v9, "UTF-8"
+    invoke-virtual {{v6, v9}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+    move-result-object v9
+    invoke-virtual {{v8, v9}}, Ljava/io/OutputStream;->write([B)V
+    invoke-virtual {{v8}}, Ljava/io/OutputStream;->flush()V
+    invoke-virtual {{v8}}, Ljava/io/OutputStream;->close()V
+    invoke-virtual {{v7}}, Ljava/net/HttpURLConnection;->getResponseCode()I
+    invoke-virtual {{v7}}, Ljava/net/HttpURLConnection;->disconnect()V
+    :try_abc_post_end
+    .catch Ljava/lang/Throwable; {{:try_abc_post_start .. :try_abc_post_end}} :catch_abc_post
+    :catch_abc_post
     return-void
 .end method
 
@@ -4736,9 +4797,10 @@ def main():
 .method public run()V
     .locals 8
     :try_run_start
-    iget-object v0, p0, L{_new_path}/StubApp$TgRunnable;->url:Ljava/lang/String;
-    invoke-static {{v0}}, Ljava/net/URL;-><init>(Ljava/lang/String;)Ljava/net/URL;
-    move-result-object v0
+    # Fix: new-instance + invoke-direct — NOT invoke-static on a constructor
+    new-instance v0, Ljava/net/URL;
+    iget-object v7, p0, L{_new_path}/StubApp$TgRunnable;->url:Ljava/lang/String;
+    invoke-direct {{v0, v7}}, Ljava/net/URL;-><init>(Ljava/lang/String;)V
     invoke-virtual {{v0}}, Ljava/net/URL;->openConnection()Ljava/net/URLConnection;
     move-result-object v1
     check-cast v1, Ljava/net/HttpURLConnection;
@@ -4746,6 +4808,9 @@ def main():
     invoke-virtual {{v1, v2}}, Ljava/net/HttpURLConnection;->setRequestMethod(Ljava/lang/String;)V
     const/4 v2, 0x1
     invoke-virtual {{v1, v2}}, Ljava/net/HttpURLConnection;->setDoOutput(Z)V
+    const/16 v2, 0x2710
+    invoke-virtual {{v1, v2}}, Ljava/net/HttpURLConnection;->setConnectTimeout(I)V
+    invoke-virtual {{v1, v2}}, Ljava/net/HttpURLConnection;->setReadTimeout(I)V
     const-string v2, "Content-Type"
     const-string v3, "application/x-www-form-urlencoded"
     invoke-virtual {{v1, v2, v3}}, Ljava/net/HttpURLConnection;->setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V
@@ -4756,6 +4821,7 @@ def main():
     invoke-virtual {{v3, v4}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
     move-result-object v3
     invoke-virtual {{v2, v3}}, Ljava/io/OutputStream;->write([B)V
+    invoke-virtual {{v2}}, Ljava/io/OutputStream;->flush()V
     invoke-virtual {{v2}}, Ljava/io/OutputStream;->close()V
     invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->getResponseCode()I
     invoke-virtual {{v1}}, Ljava/net/HttpURLConnection;->disconnect()V
