@@ -2322,27 +2322,44 @@ def _inject_axml_app_name(manifest_raw: bytes, new_pkg: str, renamed_app_class: 
     str_start   = struct.unpack_from("<I", axml, SP + 20)[0]
     offsets_abs = SP + 28
 
-    if not is_utf8:
-        print("  [inject_app_name] ⚠️  manifest is UTF-16 encoded — injection not supported, skipping")
-        return manifest_raw
-
-    # Build string table: index → string value + byte offset within str_data
-    strings   = {}
-    str_bytes = {}  # index → byte start within str_data section
+    # Build string table: index → string value
+    strings        = {}
     str_data_start = SP + str_start
+    offsets_abs    = SP + 28
+
     for i in range(str_count):
         off = struct.unpack_from("<I", axml, offsets_abs + i * 4)[0]
         p   = str_data_start + off
-        str_bytes[i] = p
         try:
-            cl = axml[p]; p += 1
-            if cl & 0x80: cl = ((cl & 0x7F) << 8) | axml[p]; p += 1
-            bl = axml[p]; p += 1
-            if bl & 0x80: bl = ((bl & 0x7F) << 8) | axml[p]; p += 1
-            s = bytes(axml[p:p + bl]).decode("utf-8", "replace")
+            if is_utf8:
+                cl = axml[p]; p += 1
+                if cl & 0x80: cl = ((cl & 0x7F) << 8) | axml[p]; p += 1
+                bl = axml[p]; p += 1
+                if bl & 0x80: bl = ((bl & 0x7F) << 8) | axml[p]; p += 1
+                s = bytes(axml[p:p + bl]).decode("utf-8", "replace")
+            else:
+                # UTF-16: char_len is uint16 LE, then char_len*2 bytes UTF-16LE
+                clen = struct.unpack_from("<H", axml, p)[0]
+                s = bytes(axml[p + 2 : p + 2 + clen * 2]).decode("utf-16-le", "replace")
             strings[i] = s
         except Exception:
             strings[i] = ""
+
+    def _make_string_entry(s: str) -> bytes:
+        """Encode a string entry in the same encoding as the source manifest."""
+        if is_utf8:
+            enc = s.encode("utf-8")
+            cl, bl = len(s), len(enc)
+            hdr = bytearray()
+            hdr.append((cl >> 8) | 0x80 if cl > 127 else cl)
+            if cl > 127: hdr.append(cl & 0xFF)
+            hdr.append((bl >> 8) | 0x80 if bl > 127 else bl)
+            if bl > 127: hdr.append(bl & 0xFF)
+            return bytes(hdr) + enc + b'\x00'
+        else:
+            # UTF-16: uint16 LE char_len + UTF-16LE chars + 2-byte null terminator
+            enc = s.encode("utf-16-le")
+            return struct.pack("<H", len(s)) + enc + b'\x00\x00'
 
     # Check if android:name already exists on <application>
     sp_end   = SP + sp_size
@@ -2392,8 +2409,8 @@ def _inject_axml_app_name(manifest_raw: bytes, new_pkg: str, renamed_app_class: 
             hdr.append(bl)
         return bytes(hdr) + enc + b'\x00'
 
-    name_entry  = _utf8_axml_entry(attr_name_str)
-    value_entry = _utf8_axml_entry(app_class_value)
+    name_entry  = _make_string_entry(attr_name_str)
+    value_entry = _make_string_entry(app_class_value)
 
     # New string indices
     idx_name  = str_count          # "name"
@@ -2861,8 +2878,9 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                 elif item.filename == "classes.dex":
                     # MUST be ZIP_STORED — ART requires DEX uncompressed to mmap at load time.
                     item.compress_type = zipfile.ZIP_STORED
-                    # Use stub DEX (tiny loader only) if built; fallback to full DEX.
-                    zout.writestr(item, new_dex)
+                    # Use stub DEX (tiny loader only) if built; fallback to original full DEX.
+                    # new_dex is None when Phase 3 has not run yet (STEP_10 runs before Phase 3).
+                    zout.writestr(item, new_dex if new_dex is not None else data)
                 elif item.filename == "resources.arsc":
                     # resources.arsc MUST be STORED — AssetManager memory-maps it
                     # directly and requires it uncompressed on ALL Android versions.
