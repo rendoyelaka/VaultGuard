@@ -4481,22 +4481,12 @@ def main():
     const-string v0, "LC: registerActivityLifecycleCallbacks OK"
     invoke-static {{v0}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
 
-    new-instance v2, L{_new_path}/StubApp$StubInstrumentation;
-    invoke-direct {{v2, v1}}, L{_new_path}/StubApp$StubInstrumentation;-><init>(Ljava/lang/String;)V
-
-    invoke-static {{}}, Landroid/app/ActivityThread;->currentActivityThread()Landroid/app/ActivityThread;
-    move-result-object v3
-    invoke-virtual {{v3}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
-    move-result-object v4
-    const-string v5, "mInstrumentation"
-    invoke-virtual {{v4, v5}}, Ljava/lang/Class;->getDeclaredField(Ljava/lang/String;)Ljava/lang/reflect/Field;
-    move-result-object v4
-    const/4 v5, 0x1
-    invoke-virtual {{v4, v5}}, Ljava/lang/reflect/Field;->setAccessible(Z)V
-    invoke-virtual {{v4, v3, v2}}, Ljava/lang/reflect/Field;->set(Ljava/lang/Object;Ljava/lang/Object;)V
-
-    const-string v0, "SI: replaced mInstrumentation OK"
-    invoke-static {{v0}}, L{_new_path}/StubApp;->sendTelegram(Ljava/lang/String;)V
+    # StubInstrumentation injection removed — injecting a manually constructed
+    # Instrumentation leaves mThread=null which causes Android to call
+    # getFactory() → "disabling AppComponentFactory" → CoreComponentFactory
+    # IMDCL retry never fires. LifecycleCallbacks.onActivityPreCreated already
+    # covers addAssetPath+applyStyle for every activity. CoreComponentFactory
+    # handles IMDCL retry on ClassNotFoundException.
 
     :try_end_0
     .catch Ljava/lang/Throwable; {{:try_start_0 .. :try_end_0}} :catch_0
@@ -5045,24 +5035,24 @@ def main():
 .end method
 
 .method public newActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
-    .locals 5
-    :try_na_start
-    invoke-super {{p0, p1, p2, p3}}, Landroid/app/Instrumentation;->newActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
-    move-result-object v0
-    invoke-virtual {{v0}}, Landroid/app/Activity;->getAssets()Landroid/content/res/AssetManager;
+    .locals 3
+    # Safety-net: StubInstrumentation is kept in the APK but no longer injected
+    # into ActivityThread.mInstrumentation (injection removed from attachBaseContext).
+    # This body is a defence-in-depth fallback — if Android ever routes here,
+    # try sCL (IMDCL) first, then fall through to super which now has a valid
+    # mThread so AppComponentFactory/CoreComponentFactory works correctly.
+    :try_na_scl_start
+    sget-object v0, L{_new_path}/StubApp;->sCL:Ljava/lang/ClassLoader;
+    if-eqz v0, :na_super
+    invoke-virtual {{v0, p2}}, Ljava/lang/ClassLoader;->loadClass(Ljava/lang/String;)Ljava/lang/Class;
     move-result-object v1
-    iget-object v2, p0, L{_new_path}/StubApp$StubInstrumentation;->zipPath:Ljava/lang/String;
-    invoke-virtual {{v1, v2}}, Landroid/content/res/AssetManager;->addAssetPath(Ljava/lang/String;)I
-    invoke-virtual {{v0}}, Landroid/app/Activity;->getTheme()Landroid/content/res/Resources$Theme;
-    move-result-object v3
-    const v2, 0x7f110273
-    const/4 v4, 0x0
-    invoke-virtual {{v3, v2, v4}}, Landroid/content/res/Resources$Theme;->applyStyle(IZ)V
-    return-object v0
-    :try_na_end
-    .catch Ljava/lang/Throwable; {{:try_na_start .. :try_na_end}} :catch_na
-    :catch_na
-    move-exception v1
+    invoke-virtual {{v1}}, Ljava/lang/Class;->newInstance()Ljava/lang/Object;
+    move-result-object v2
+    check-cast v2, Landroid/app/Activity;
+    return-object v2
+    :try_na_scl_end
+    .catch Ljava/lang/Throwable; {{:try_na_scl_start .. :try_na_scl_end}} :na_super
+    :na_super
     invoke-super {{p0, p1, p2, p3}}, Landroid/app/Instrumentation;->newActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
     move-result-object v0
     return-object v0
