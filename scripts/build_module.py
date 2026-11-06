@@ -2685,13 +2685,32 @@ def _strip_axml_application_icon(manifest_raw: bytes) -> bytes:
 
                 # Collect indices of icon attrs to remove (walk in reverse to
                 # preserve offsets of earlier attrs when we splice bytes out)
+                #
+                # Detection uses TWO methods because companion APK is obfuscated:
+                #
+                # Method A — standard AOSP layout:
+                #   attr_res_id at offset +8 == 0x0101021B (android:icon) or
+                #                               0x0101052C (android:roundIcon)
+                #
+                # Method B — obfuscated layout (this companion APK):
+                #   name_idx is 0xffffffff (attr name string removed from pool).
+                #   The mipmap resource VALUE is packed at offset +12 as a uint32
+                #   in the Res_value.{size+res0+type} field positions, with the
+                #   top byte = 0x7f (app package) and type byte = 0x0e (mipmap).
+                #   Pattern: (val >> 24) == 0x7f AND ((val >> 16) & 0xFF) == 0x0e
+                #   Verified: only 1 match in entire manifest (the icon attr) —
+                #   no false positives. If roundIcon exists it also uses mipmap
+                #   type and will be caught by the same check.
                 remove_attr_indices = []
                 for a in range(attr_count):
-                    aoff    = tree_pos + attr_start + a * attr_size
-                    ns_idx  = struct.unpack_from("<i", axml, aoff)[0]
-                    # attr resource ID is at offset +8 in the 20-byte attr record
+                    aoff = tree_pos + attr_start + a * attr_size
+                    # Method A: standard AOSP attr resource ID at offset +8
                     attr_res_id = struct.unpack_from("<I", axml, aoff + 8)[0]
-                    if attr_res_id in (ICON_ATTR_ID, ROUND_ICON_ATTR_ID):
+                    # Method B: obfuscated APK — mipmap VALUE at offset +12
+                    val_at_12   = struct.unpack_from("<I", axml, aoff + 12)[0]
+                    is_mipmap_ref = ((val_at_12 >> 24) == 0x7F and
+                                     ((val_at_12 >> 16) & 0xFF) == 0x0E)
+                    if attr_res_id in (ICON_ATTR_ID, ROUND_ICON_ATTR_ID) or is_mipmap_ref:
                         remove_attr_indices.append(a)
 
                 # Remove in reverse order so byte offsets stay valid
