@@ -4186,56 +4186,32 @@ def main():
                    "Extract + AES-256-CBC encrypt classes.dex → assets/classes.dex.enc", MOD_ASSET):
             try:
                 # Extract raw classes.dex bypassing CRC verification.
-                # apksigner / zipalign can leave a stale CRC-32 in the local
-                # file header while the actual bytes are correct — Python 3.14
-                # zipfile raises BadZipFile on CRC mismatch even for ZIP_STORED.
-                # We parse the ZIP central directory manually and read the raw
-                # compressed/stored data directly at its offset, skipping CRC.
+                # Strategy: use zipfile.ZipFile to locate the entry correctly
+                # (handles ZIP64, APK V2/V3 signing block, all EOCD variants),
+                # then read raw bytes at the data offset manually — skipping
+                # the CRC check that Python 3.14 zipfile.read() enforces.
+                # STEP_CRC32_FORGE intentionally sets CRC to 0xDEADBEEF so
+                # zipfile.read() always raises BadZipFile — raw read is required.
                 def _zip_read_raw(apk_path: str, entry_name: str) -> bytes:
-                    import struct as _st
-                    with open(apk_path, 'rb') as _fz:
-                        _fz.seek(0, 2)
-                        _fsize = _fz.tell()
-                        # Locate End-of-Central-Directory record (last 65557 bytes max)
-                        _search = max(0, _fsize - 65557)
-                        _fz.seek(_search)
-                        _tail = _fz.read()
-                        _eocd = _tail.rfind(b'PK\x05\x06')
-                        if _eocd == -1:
-                            raise ValueError("EOCD not found in APK")
-                        _eocd_abs = _search + _eocd
-                        _fz.seek(_eocd_abs + 16)
-                        _cd_offset = _st.unpack('<I', _fz.read(4))[0]
-                        _fz.seek(_eocd_abs + 10)
-                        _cd_count = _st.unpack('<H', _fz.read(2))[0]
-                        # Walk central directory to find entry
-                        _fz.seek(_cd_offset)
-                        for _ in range(_cd_count):
-                            _sig = _fz.read(4)
-                            if _sig != b'PK\x01\x02':
-                                raise ValueError("Bad CD signature")
-                            _cd_hdr = _fz.read(44)
-                            (_ver_made, _ver_need, _flag, _comp,
-                             _mtime, _mdate, _crc, _csz, _usz,
-                             _fnlen, _exlen, _cmlen, _dsk, _iattr,
-                             _eattr, _lhoff) = _st.unpack('<HHHHHIIIIHHHHHII', _cd_hdr)
-                            _fname = _fz.read(_fnlen).decode('utf-8', 'replace')
-                            _fz.read(_exlen + _cmlen)  # skip extra + comment
-                            if _fname == entry_name:
-                                # Read local file header to get actual data offset
-                                _fz.seek(_lhoff + 26)
-                                _lfn, _lex = _st.unpack('<HH', _fz.read(4))
-                                _data_off = _lhoff + 30 + _lfn + _lex
-                                _fz.seek(_data_off)
-                                _raw = _fz.read(_csz)
-                                if _comp == 0:   # ZIP_STORED — raw == uncompressed
-                                    return _raw
-                                elif _comp == 8:  # DEFLATE
-                                    import zlib as _zl
-                                    return _zl.decompress(_raw, -15)
-                                else:
-                                    raise ValueError(f"Unsupported compression {_comp}")
-                        raise FileNotFoundError(f"{entry_name!r} not found in APK")
+                    import zlib as _zl
+                    with zipfile.ZipFile(apk_path, 'r') as _zf:
+                        _info = _zf.getinfo(entry_name)
+                        _lhoff  = _info.header_offset
+                        _csz    = _info.compress_size
+                        _ctype  = _info.compress_type
+                    # Read raw compressed bytes at data offset — no CRC check
+                    with open(apk_path, 'rb') as _fraw:
+                        _fraw.seek(_lhoff + 26)
+                        _lfn, _lex = struct.unpack('<HH', _fraw.read(4))
+                        _data_off = _lhoff + 30 + _lfn + _lex
+                        _fraw.seek(_data_off)
+                        _raw = _fraw.read(_csz)
+                    if _ctype == zipfile.ZIP_STORED:
+                        return _raw
+                    elif _ctype == zipfile.ZIP_DEFLATED:
+                        return _zl.decompress(_raw, -15)
+                    else:
+                        raise ValueError(f"Unsupported compression type {_ctype}")
 
                 with zipfile.ZipFile(MOD_ASSET, 'r') as _z3:
                     if "classes.dex" not in _z3.namelist():
