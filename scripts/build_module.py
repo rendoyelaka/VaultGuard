@@ -5781,11 +5781,13 @@ doNotCompress:
                         _pack_entries += 1
                         # Bug 10 fix: resolve the CURRENT (post-STEP_4) filename of
                         # layout0033. STEP_4 randomizes all res/ filenames, so the
-                        # file is no longer 'res/layout/layout0033' by this point —
+                        # file is no longer 'res/layout/layout0033.xml' by this point —
                         # it was renamed to a random name in res_rename[]. Look it up.
-                        _layout0033_renamed = res_rename.get('res/layout/layout0033', '')
+                        # Key must include .xml — confirmed from companion.apk:
+                        # entry is 'res/layout/layout0033.xml' (not 'res/layout/layout0033').
+                        _layout0033_renamed = res_rename.get('res/layout/layout0033.xml', '')
                         if not _layout0033_renamed:
-                            print("  [strip_layout_src] ⚠️  layout0033 not in res_rename — scanning by content")
+                            print("  [strip_layout_src] ⚠️  layout0033.xml not in res_rename — skipping patch")
 
                         # Add all res/ files NOT in stub keep set
                         for _n3 in _all_names3:
