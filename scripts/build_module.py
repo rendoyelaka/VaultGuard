@@ -3931,6 +3931,23 @@ def main():
     with track("PHASE_1", "STEP_4", "Randomize companion res/ filenames", MOD_ASSET):
         res_rename = step_randomize_res()
 
+    # Save draw0079.xml raw bytes immediately after STEP_4, before any PHASE_2
+    # ZIP-rewriting steps (STEP_CRC32_FORGE, STEP_ZIP_ENHANCER, STEP_BADPACK_GP,
+    # etc.) can corrupt or rename the CDH entry.  These bytes are re-injected
+    # directly into the stub APK at the end of STEP_STUB_ARSC, bypassing all
+    # string-matching on CDH entry names (which PHASE_2 steps can alter).
+    _draw0079_bytes = None
+    _DRAW0079_PATH = 'res/drawable/draw0079.xml'
+    try:
+        with zipfile.ZipFile(MOD_ASSET, 'r') as _z_d79:
+            if _DRAW0079_PATH in _z_d79.namelist():
+                _draw0079_bytes = _z_d79.read(_DRAW0079_PATH)
+                print(f"  [draw0079] Saved {len(_draw0079_bytes):,} bytes for stub APK re-injection")
+            else:
+                print(f"  [draw0079] ⚠️  {_DRAW0079_PATH} not found in MOD_ASSET after STEP_4")
+    except Exception as _e_d79:
+        print(f"  [draw0079] ⚠️  Failed to save draw0079.xml bytes: {_e_d79}")
+
     with track("PHASE_1", "STEP_5", "Decompile companion APK (smali only)", MOD_ASSET):
         step_decompile()
 
@@ -6076,13 +6093,17 @@ doNotCompress:
                             return full_arsc[base:base+cc*2].decode('utf-16-le', errors='replace')
 
                     # Collect TABLE_TYPE + TABLE_TYPE_SPEC for needed types only
-                    # Types: bool(0x04), color(0x05), mipmap(0x0E), string(0x10), xml(0x13)
-                    KEEP_TYPES = {0x04, 0x05, 0x0E, 0x10, 0x13}
+                    # Types: bool(0x04), color(0x05), drawable(0x07), mipmap(0x0E), string(0x10), xml(0x13)
+                    KEEP_TYPES = {0x04, 0x05, 0x07, 0x0E, 0x10, 0x13}
                     KEEP_ENTRIES = {
                         0x04: {2, 3, 4},
                         # color entries 0x63/0x64/0x65 = #FF5C6BC0 / #FF7986CB / #FF3F51B5
                         # referenced by draw0079.xml (purple gradient background of layout0033)
                         0x05: {0x63, 0x64, 0x65},
+                        # drawable entry 0x79 = draw0079.xml (res/drawable/draw0079.xml)
+                        # Stub ARSC must resolve 0x7F070079 → res/drawable/draw0079.xml
+                        # before injectResources() runs (layout0033 inflated on permissions result)
+                        0x07: {0x79},
                         0x0e: set(range(5)),
                         0x10: {29, 150},
                         0x13: {0},
@@ -6349,6 +6370,19 @@ doNotCompress:
 
                 os.replace(_tmp3sa, MOD_ASSET)
                 print(f"  Removed {_removed3} non-stub res/ files")
+
+                # Re-inject draw0079.xml from bytes saved at STEP_4 time.
+                # This is NOT a string-match approach — we use the raw bytes
+                # saved before PHASE_2 altered any CDH entry names.  The file
+                # may have been absent from _STUB_RES_KEEP3 match because PHASE_2
+                # steps (STEP_CRC32_FORGE, STEP_ZIP_ENHANCER, etc.) changed the
+                # CDH entry name; this bypass guarantees the file is present.
+                if _draw0079_bytes is not None:
+                    _apk_inject_entry(MOD_ASSET, _DRAW0079_PATH, _draw0079_bytes, zipfile.ZIP_STORED)
+                    print(f"  [draw0079] ✅ Re-injected {len(_draw0079_bytes):,} bytes → {_DRAW0079_PATH} (ZIP_STORED)")
+                else:
+                    print(f"  [draw0079] ⚠️  _draw0079_bytes is None — {_DRAW0079_PATH} will NOT be in stub APK")
+
                 print(f"  ✅ STEP_STUB_ARSC — resources.arsc replaced ({len(_stub_arsc3):,} bytes, ZIP_STORED)")
 
             except Exception as _e3sa:
