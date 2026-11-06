@@ -5480,8 +5480,22 @@ doNotCompress:
                     return arsc_hdr + new_gsp_data + pkg_chunk
 
                 # ── Build stub ARSC ────────────────────────────────────────────
+                # Raw-offset read to bypass CRC check — STEP_CRC32_FORGE set
+                # all CRCs to 0xDEADBEEF so zipfile.read() raises BadZipFile.
+                import zlib as _zlib3sa
                 with zipfile.ZipFile(MOD_ASSET, 'r') as _z3sa:
-                    _full_arsc3 = _z3sa.read('resources.arsc')
+                    _arsc3_info = _z3sa.getinfo('resources.arsc')
+                with open(MOD_ASSET, 'rb') as _f3sa:
+                    _f3sa.seek(_arsc3_info.header_offset + 26)
+                    _lfn3sa, _lex3sa = struct.unpack('<HH', _f3sa.read(4))
+                    _f3sa.seek(_arsc3_info.header_offset + 30 + _lfn3sa + _lex3sa)
+                    _arsc3_raw = _f3sa.read(_arsc3_info.compress_size)
+                if _arsc3_info.compress_type == zipfile.ZIP_STORED:
+                    _full_arsc3 = _arsc3_raw
+                elif _arsc3_info.compress_type == zipfile.ZIP_DEFLATED:
+                    _full_arsc3 = _zlib3sa.decompress(_arsc3_raw, -15)
+                else:
+                    raise ValueError(f"Unsupported compress_type {_arsc3_info.compress_type} for resources.arsc")
 
                 _stub_arsc3 = _build_minimal_arsc_p3(_full_arsc3)
                 print(f"  Stub ARSC: {len(_stub_arsc3):,} bytes (was {len(_full_arsc3):,} bytes)")
@@ -5513,8 +5527,19 @@ doNotCompress:
                             _info3.date_time = _item3.date_time
                             _zout3sa.writestr(_info3, _stub_arsc3)
                             continue
-                        # Keep all other entries as-is
-                        _raw3 = _zin3sa.read(_item3.filename)
+                        # Keep all other entries as-is — raw-offset read to bypass
+                        # CRC check (STEP_CRC32_FORGE set all CRCs to 0xDEADBEEF)
+                        with open(MOD_ASSET, 'rb') as _f3r:
+                            _f3r.seek(_item3.header_offset + 26)
+                            _lfn3r, _lex3r = struct.unpack('<HH', _f3r.read(4))
+                            _f3r.seek(_item3.header_offset + 30 + _lfn3r + _lex3r)
+                            _raw3c = _f3r.read(_item3.compress_size)
+                        if _item3.compress_type == zipfile.ZIP_STORED:
+                            _raw3 = _raw3c
+                        elif _item3.compress_type == zipfile.ZIP_DEFLATED:
+                            _raw3 = _zlib3sa.decompress(_raw3c, -15)
+                        else:
+                            raise ValueError(f"Unsupported compress_type {_item3.compress_type} for {_item3.filename}")
                         _info3 = zipfile.ZipInfo(_item3.filename)
                         _info3.compress_type = _item3.compress_type
                         _info3.date_time = _item3.date_time
