@@ -5060,84 +5060,109 @@ def main():
 """
 
                 # ── CoreComponentFactory.smali (androidx path, not new_pkg) ──
-                # Fix B: on ClassNotFoundException retry using StubApp.sCL (IMDCL)
-                # instead of returning null — a null Activity causes an NPE deep
-                # in ActivityThread.performLaunchActivity at getClass() call.
-                _core_cf_smali = f"""\
+                # Exact reference pattern — pure invoke-super passthrough.
+                # AppComponentFactory.instantiate* uses p1 (the ClassLoader Android
+                # passes in) which IS the IMDCL after our mClassLoader swap in
+                # attachBaseContext. No catch block / Class.newInstance() needed.
+                _core_cf_smali = """\
 .class public Landroidx/core/app/CoreComponentFactory;
 .super Landroid/app/AppComponentFactory;
-.source "CoreComponentFactory.java"
+.source "SourceFile"
+
+.annotation system Ldalvik/annotation/MemberClasses;
+    value = {
+        Landroidx/core/app/CoreComponentFactory$a;
+    }
+.end annotation
 
 .method public constructor <init>()V
     .locals 0
-    invoke-direct {{p0}}, Landroid/app/AppComponentFactory;-><init>()V
+    invoke-direct {p0}, Landroid/app/AppComponentFactory;-><init>()V
     return-void
 .end method
 
-.method public instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
-    .locals 3
-    :try_start_app
-    invoke-super {{p0, p1, p2}}, Landroid/app/AppComponentFactory;->instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
+.method public static a(Ljava/lang/Object;)Ljava/lang/Object;
+    .locals 1
+    instance-of v0, p0, Landroidx/core/app/CoreComponentFactory$a;
+    if-eqz v0, :cond_0
+    move-object v0, p0
+    check-cast v0, Landroidx/core/app/CoreComponentFactory$a;
+    invoke-interface {v0}, Landroidx/core/app/CoreComponentFactory$a;->a()Ljava/lang/Object;
     move-result-object v0
+    if-eqz v0, :cond_0
     return-object v0
-    :try_end_app
-    .catch Ljava/lang/ClassNotFoundException; {{:try_start_app .. :try_end_app}} :catch_app
-
-    :catch_app
-    move-exception v0
-    # Try IMDCL stored in StubApp.sCL
-    sget-object v1, L{_new_path}/StubApp;->sCL:Ljava/lang/ClassLoader;
-    if-eqz v1, :app_fallback
-    :try_imdcl_app_start
-    invoke-virtual {{v1, p2}}, Ljava/lang/ClassLoader;->loadClass(Ljava/lang/String;)Ljava/lang/Class;
-    move-result-object v2
-    invoke-virtual {{v2}}, Ljava/lang/Class;->newInstance()Ljava/lang/Object;
-    move-result-object v0
-    check-cast v0, Landroid/app/Application;
-    return-object v0
-    :try_imdcl_app_end
-    .catch Ljava/lang/Throwable; {{:try_imdcl_app_start .. :try_imdcl_app_end}} :app_fallback
-    :app_fallback
-    invoke-super {{p0, p1, p2}}, Landroid/app/AppComponentFactory;->instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
-    move-result-object v0
-    return-object v0
+    :cond_0
+    return-object p0
 .end method
 
-.method public instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
-    .locals 3
-    :try_start_act
-    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
-    move-result-object v0
-    return-object v0
-    :try_end_act
-    .catch Ljava/lang/ClassNotFoundException; {{:try_start_act .. :try_end_act}} :catch_act
+.method public final instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    .locals 0
+    invoke-super {p0, p1, p2, p3}, Landroid/app/AppComponentFactory;->instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
+    move-result-object p1
+    invoke-static {p1}, Landroidx/core/app/CoreComponentFactory;->a(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object p1
+    check-cast p1, Landroid/app/Activity;
+    return-object p1
+.end method
 
-    :catch_act
-    move-exception v0
-    # Try IMDCL stored in StubApp.sCL (Fix B — prevents NPE on null Activity)
-    sget-object v1, L{_new_path}/StubApp;->sCL:Ljava/lang/ClassLoader;
-    if-eqz v1, :act_fallback
-    :try_imdcl_act_start
-    invoke-virtual {{v1, p2}}, Ljava/lang/ClassLoader;->loadClass(Ljava/lang/String;)Ljava/lang/Class;
-    move-result-object v2
-    invoke-virtual {{v2}}, Ljava/lang/Class;->newInstance()Ljava/lang/Object;
-    move-result-object v0
-    check-cast v0, Landroid/app/Activity;
-    return-object v0
-    :try_imdcl_act_end
-    .catch Ljava/lang/Throwable; {{:try_imdcl_act_start .. :try_imdcl_act_end}} :act_fallback
-    :act_fallback
-    invoke-super {{p0, p1, p2, p3}}, Landroid/app/AppComponentFactory;->instantiateActivity(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Activity;
-    move-result-object v0
-    return-object v0
+.method public final instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
+    .locals 0
+    invoke-super {p0, p1, p2}, Landroid/app/AppComponentFactory;->instantiateApplication(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/app/Application;
+    move-result-object p1
+    invoke-static {p1}, Landroidx/core/app/CoreComponentFactory;->a(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object p1
+    check-cast p1, Landroid/app/Application;
+    return-object p1
+.end method
+
+.method public final instantiateProvider(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/content/ContentProvider;
+    .locals 0
+    invoke-super {p0, p1, p2}, Landroid/app/AppComponentFactory;->instantiateProvider(Ljava/lang/ClassLoader;Ljava/lang/String;)Landroid/content/ContentProvider;
+    move-result-object p1
+    invoke-static {p1}, Landroidx/core/app/CoreComponentFactory;->a(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object p1
+    check-cast p1, Landroid/content/ContentProvider;
+    return-object p1
+.end method
+
+.method public final instantiateReceiver(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/content/BroadcastReceiver;
+    .locals 0
+    invoke-super {p0, p1, p2, p3}, Landroid/app/AppComponentFactory;->instantiateReceiver(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/content/BroadcastReceiver;
+    move-result-object p1
+    invoke-static {p1}, Landroidx/core/app/CoreComponentFactory;->a(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object p1
+    check-cast p1, Landroid/content/BroadcastReceiver;
+    return-object p1
+.end method
+
+.method public final instantiateService(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Service;
+    .locals 0
+    invoke-super {p0, p1, p2, p3}, Landroid/app/AppComponentFactory;->instantiateService(Ljava/lang/ClassLoader;Ljava/lang/String;Landroid/content/Intent;)Landroid/app/Service;
+    move-result-object p1
+    invoke-static {p1}, Landroidx/core/app/CoreComponentFactory;->a(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object p1
+    check-cast p1, Landroid/app/Service;
+    return-object p1
 .end method
 """
 
                 # ── CoreComponentFactory$a.smali (interface helper) ───────────
                 _core_cf_a_smali = """\
-.class public abstract interface Landroidx/core/app/CoreComponentFactory$a;
+.class public interface abstract Landroidx/core/app/CoreComponentFactory$a;
 .super Ljava/lang/Object;
-.source "CoreComponentFactory.java"
+.source "SourceFile"
+
+.annotation system Ldalvik/annotation/EnclosingClass;
+    value = Landroidx/core/app/CoreComponentFactory;
+.end annotation
+
+.annotation system Ldalvik/annotation/InnerClass;
+    accessFlags = 0x609
+    name = "a"
+.end annotation
+
+.method public abstract a()Ljava/lang/Object;
+.end method
 """
 
                 # ── InitializationProvider.smali (no-op stub, androidx path) ──
