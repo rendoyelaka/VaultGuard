@@ -6055,6 +6055,9 @@ doNotCompress:
                             if _n3 in _STUB_RES_KEEP:
                                 continue
                             _data3 = _z3re.read(_n3)
+                            # Apply AppBarLayout black-bar fix before encrypting
+                            if _n3.endswith('layout0033.xml'):
+                                _data3 = _remove_axml_appbarlayout(_data3)
                             _pack.writestr(_n3, _data3)
                             _pack_entries += 1
 
