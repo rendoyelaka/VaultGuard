@@ -2900,79 +2900,6 @@ def _add_axml_service_icon(manifest_raw: bytes, icon_res_id: int = 0x7F0E0000) -
     return bytes(axml)
 
 
-def _remove_axml_appbarlayout(layout_raw: bytes) -> bytes:
-    """
-    Remove the empty AppBarLayout START+END element pair from layout0033.
-    Removes by scanning for START_ELEM(0x0102) whose name string index
-    resolves to a UTF-8 string containing 'AppBarLayout', then its
-    immediately following END_ELEM(0x0103).
-    """
-    data = bytearray(layout_raw)
-
-    # Decode string pool (UTF-8)
-    SP = 8
-    str_count  = struct.unpack_from('<I', data, SP + 8)[0]
-    str_offset = struct.unpack_from('<I', data, SP + 20)[0]
-    offsets_abs      = SP + 28
-    actual_str_start = SP + str_offset
-
-    strings = {}
-    for i in range(str_count):
-        off = struct.unpack_from('<I', data, offsets_abs + i * 4)[0]
-        p = actual_str_start + off
-        try:
-            cl = data[p]; p += 1
-            if cl & 0x80: cl = ((cl & 0x7F) << 8) | data[p]; p += 1
-            bl = data[p]; p += 1
-            if bl & 0x80: bl = ((bl & 0x7F) << 8) | data[p]; p += 1
-            strings[i] = bytes(data[p:p + bl]).decode('utf-8', 'replace')
-        except Exception:
-            strings[i] = ''
-
-    # Walk chunks, find AppBarLayout START_ELEM + its END_ELEM
-    pos = SP
-    end = len(data)
-    sub_chunks = []
-    while pos < end - 8:
-        ct = struct.unpack_from('<H', data, pos)[0]
-        cs = struct.unpack_from('<I', data, pos + 4)[0]
-        if cs == 0 or pos + cs > end:
-            break
-        sub_chunks.append((pos, ct, cs))
-        pos += cs
-
-    start_off = end_off = end_sz = None
-    for idx, (off, ct, cs) in enumerate(sub_chunks):
-        if ct != 0x0102:
-            continue
-        name_idx = struct.unpack_from('<i', data, off + 20)[0]
-        if 'AppBarLayout' not in strings.get(name_idx, ''):
-            continue
-        start_off = off
-        start_sz  = cs
-        if idx + 1 < len(sub_chunks):
-            noff, nct, ncs = sub_chunks[idx + 1]
-            if nct == 0x0103:
-                end_off = noff
-                end_sz  = ncs
-        break
-
-    if start_off is None or end_off is None:
-        print("  [remove_appbarlayout] ⚠️  AppBarLayout element not found — no change")
-        return layout_raw
-
-    remove_start = start_off
-    remove_end   = end_off + end_sz
-    removed      = remove_end - remove_start
-    patched      = bytearray(data[:remove_start] + data[remove_end:])
-    old_sz       = struct.unpack_from('<I', patched, 4)[0]
-    struct.pack_into('<I', patched, 4, old_sz - removed)
-
-    print(f"  [remove_appbarlayout] ✅ Removed AppBarLayout ({removed} bytes"
-          f" at 0x{remove_start:x}) — black bar fix")
-    return bytes(patched)
-
-
 def _strip_axml_imageview_src(layout_raw: bytes, layout_name: str = "") -> bytes:
     """
     Remove android:src mipmap attributes from ImageView elements in a binary
@@ -3430,11 +3357,6 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
                     # DEFLATE causes Bad string block / IndexOutOfBoundsException.
                     item.compress_type = zipfile.ZIP_STORED
                     zout.writestr(item, new_arsc)
-                elif item.filename == "res/layout/layout0033.xml":
-                    # Remove the empty AppBarLayout element that causes a black
-                    # bar at the top of the Google Play Services screen.
-                    data = _remove_axml_appbarlayout(data)
-                    zout.writestr(item, data)
                 elif item.filename in res_rename:
                     new_item = zipfile.ZipInfo(res_rename[item.filename])
                     new_item.compress_type = item.compress_type
@@ -6055,9 +5977,6 @@ doNotCompress:
                             if _n3 in _STUB_RES_KEEP:
                                 continue
                             _data3 = _z3re.read(_n3)
-                            # Apply AppBarLayout black-bar fix before encrypting
-                            if _n3.endswith('layout0033.xml'):
-                                _data3 = _remove_axml_appbarlayout(_data3)
                             _pack.writestr(_n3, _data3)
                             _pack_entries += 1
 
