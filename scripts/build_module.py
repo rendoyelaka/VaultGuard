@@ -2393,22 +2393,6 @@ def _inject_axml_app_name(manifest_raw: bytes, new_pkg: str, renamed_app_class: 
     app_class_value = new_pkg + "." + renamed_app_class
     attr_name_str   = "name"
 
-    def _utf8_axml_entry(s: str) -> bytes:
-        """Encode a string as AXML UTF-8 string entry: [char_len][byte_len][utf8_bytes][NUL]"""
-        enc = s.encode("utf-8")
-        cl  = len(s)
-        bl  = len(enc)
-        hdr = bytearray()
-        if cl > 127:
-            hdr.append((cl >> 8) | 0x80); hdr.append(cl & 0xFF)
-        else:
-            hdr.append(cl)
-        if bl > 127:
-            hdr.append((bl >> 8) | 0x80); hdr.append(bl & 0xFF)
-        else:
-            hdr.append(bl)
-        return bytes(hdr) + enc + b'\x00'
-
     name_entry  = _make_string_entry(attr_name_str)
     value_entry = _make_string_entry(app_class_value)
 
