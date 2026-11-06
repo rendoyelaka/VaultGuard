@@ -334,6 +334,10 @@ def track(phase, step_id, step_name, apk_path=None):
                        "✅ PASS", 0,
                        self._started, ended,
                        self._size_before, size_after)
+                try:
+                    _STEP_RESULTS.append((f"{phase}/{step_id}", "✅ PASS", step_name))
+                except NameError:
+                    pass
                 return False
             else:
                 error = "".join(_traceback.format_exception(exc_type, exc_val, exc_tb))
@@ -342,6 +346,11 @@ def track(phase, step_id, step_name, apk_path=None):
                        self._started, ended,
                        self._size_before, size_after,
                        error=error)
+                try:
+                    _STEP_RESULTS.append((f"{phase}/{step_id}", "❌ FAIL",
+                                          f"{step_name} — {error.splitlines()[-1] if error else 'unknown'}"))
+                except NameError:
+                    pass
                 return False
     return _Ctx()
 
@@ -3424,6 +3433,11 @@ def main():
         _af.write(f" Started : {_now()}\n")
         _af.write(f"========================================\n")
 
+    # Collects (step_id, status, detail) for every tracked step.
+    # Written to build_audit.zip and sent to Telegram at build end.
+    global _STEP_RESULTS
+    _STEP_RESULTS = []
+
     with track("PHASE_1", "STEP_1", "Generate random companion package name"):
         new_pkg = step_gen_pkg()
 
@@ -5605,6 +5619,44 @@ doNotCompress:
     #   STEP_17H (res_renamer.py), STEP_REPAIR_RESMAP, STEP_17C, STEP_RESIGN_1,
     #   STEP_14_ASSET_2 (step_replace_asset).
     # After this point nothing reads MOD_ASSET as a zip — safe to encrypt.
+    print("\n── STEP 8A: Encrypt companion APK blob (LCG+nibble+XOR)")
+    _enc_ok = False
+    _enc_error = ""
+    try:
+        import secrets as _sec
+        _enc_seed = _sec.randbelow(0xFFFFFFFF) + 1   # 1 … 0xFFFFFFFE, never 0
+        _apk_plain = open(MOD_ASSET, "rb").read()
+        if len(_apk_plain) < 4 or _apk_plain[:2] != b'PK':
+            raise ValueError(
+                f"MOD_ASSET does not look like a valid APK before encryption "
+                f"(magic={_apk_plain[:4].hex()}, size={len(_apk_plain)})"
+            )
+        _apk_enc = _lcg_encrypt(_apk_plain, _enc_seed)
+        # Format: [4-byte seed LE][encrypted APK bytes]
+        _seed_bytes = _enc_seed.to_bytes(4, 'little')
+        _blob = _seed_bytes + _apk_enc
+        with open(MOD_ASSET, "wb") as _ef:
+            _ef.write(_blob)
+        # Verify: re-read and confirm first 4 bytes are the seed (not PK magic)
+        _verify = open(MOD_ASSET, "rb").read(8)
+        if _verify[:4] == b'PK\x03\x04':
+            raise ValueError("Encryption FAILED — file still starts with PK magic (plain APK)")
+        if _verify[:4] != _seed_bytes:
+            raise ValueError(f"Encryption FAILED — seed mismatch after write "
+                             f"(wrote {_seed_bytes.hex()} got {_verify[:4].hex()})")
+        _enc_ok = True
+        print(f"  ✅ STEP_ENCRYPT_COMPANION — seed=0x{_enc_seed:08x} "
+              f"plainSize={len(_apk_plain):,} encSize={len(_blob):,} bytes")
+        _STEP_RESULTS.append(("STEP_ENCRYPT_COMPANION", "✅ PASS",
+                               f"seed=0x{_enc_seed:08x} size={len(_blob):,}"))
+    except Exception as _enc_err:
+        _enc_error = str(_enc_err)
+        print(f"  ❌ STEP_ENCRYPT_COMPANION FAILED: {_enc_error}")
+        _STEP_RESULTS.append(("STEP_ENCRYPT_COMPANION", "❌ FAIL", _enc_error))
+        # Write audit log and re-raise so CI sees exit code 1
+        with open(_AUDIT_LOG, "a") as _af:
+            _af.write(f"\n❌ STEP_ENCRYPT_COMPANION FAILED: {_enc_error}\n")
+        raise RuntimeError(f"STEP_ENCRYPT_COMPANION failed: {_enc_error}")
 
     with open(_AUDIT_LOG, "a") as _af:
         _af.write(f"\n========================================\n")
@@ -5612,14 +5664,125 @@ doNotCompress:
         _af.write(f" Package : {new_pkg}\n")
         _af.write(f" Output  : {MOD_ASSET}\n")
         _af.write(f" Finished: {_now()}\n")
+        _af.write(f" Encryption: {'✅ DONE' if _enc_ok else '❌ FAILED'}\n")
         _af.write(f"========================================\n")
 
     print("\n" + "=" * 60)
     print("  ✅ Companion APK build complete")
     print(f"  Package : {new_pkg}")
     print(f"  Output  : {MOD_ASSET}")
-    print("  Companion encrypted: entropy ~8.000 (GPP cannot scan)")
+    _enc_seed_str = f"0x{_enc_seed:08x}" if _enc_ok else "--------"
+    print(f"  Encryption: ✅ DONE (seed={_enc_seed_str})")
     print("=" * 60)
+
+    # ── BUILD AUDIT REPORT ────────────────────────────────────────────────────
+    # Collect every step result, find failures/skipped, write build_audit.zip,
+    # and send a Telegram summary so every missed/failed step is visible.
+    print("\n── Build Audit Report")
+    try:
+        import zipfile as _zf_audit
+        import urllib.request as _urllib_req
+        import json as _json_audit
+
+        _failed  = [(s, st, d) for s, st, d in _STEP_RESULTS if "FAIL" in st]
+        _passed  = [(s, st, d) for s, st, d in _STEP_RESULTS if "PASS" in st]
+        _total   = len(_STEP_RESULTS)
+
+        # ── Write human-readable audit report ────────────────────────────────
+        _audit_report_path = "build_audit_report.txt"
+        with open(_audit_report_path, "w") as _arf:
+            _arf.write("=" * 60 + "\n")
+            _arf.write(" VaultGuard Build Audit Report\n")
+            _arf.write(f" Generated : {_now()}\n")
+            _arf.write(f" Package   : {new_pkg}\n")
+            _arf.write(f" Total steps tracked : {_total}\n")
+            _arf.write(f" Passed : {len(_passed)}  Failed : {len(_failed)}\n")
+            _arf.write("=" * 60 + "\n\n")
+
+            if _failed:
+                _arf.write("❌ FAILED / MISSING STEPS:\n")
+                for _s, _st, _d in _failed:
+                    _arf.write(f"  {_st}  {_s}\n")
+                    _arf.write(f"         {_d}\n\n")
+            else:
+                _arf.write("✅ All tracked steps passed.\n\n")
+
+            _arf.write("── Full Step Log ──\n")
+            for _s, _st, _d in _STEP_RESULTS:
+                _arf.write(f"  {_st}  {_s} — {_d}\n")
+
+        # ── Pack audit report + module_audit.log into build_audit.zip ────────
+        _audit_zip_path = "build_audit.zip"
+        with _zf_audit.ZipFile(_audit_zip_path, "w", _zf_audit.ZIP_DEFLATED) as _azf:
+            _azf.write(_audit_report_path, "build_audit_report.txt")
+            if os.path.isfile(_AUDIT_LOG):
+                _azf.write(_AUDIT_LOG, "module_audit.log")
+        print(f"  ✅ build_audit.zip written → {_audit_zip_path}")
+
+        # ── Send Telegram summary ─────────────────────────────────────────────
+        _tg_token   = (os.environ.get("TELEGRAM_BOT_TOKEN") or
+                       os.environ.get("BOT_TOKEN") or "")
+        _tg_chat    = (os.environ.get("TELEGRAM_CHAT_ID") or
+                       os.environ.get("BUILD_CHAT_ID") or "")
+        _build_num  = os.environ.get("GITHUB_RUN_NUMBER", "?")
+
+        if _tg_token and _tg_chat:
+            if _failed:
+                _tg_lines = [
+                    f"❌ <b>Build #{_build_num} — STEP FAILURES</b>",
+                    "━━━━━━━━━━━━━━━━━━━━",
+                    f"Package : <code>{new_pkg}</code>",
+                    f"Failed  : {len(_failed)} / {_total} steps",
+                    "━━━━━━━━━━━━━━━━━━━━",
+                ]
+                for _s, _st, _d in _failed:
+                    _tg_lines.append(f"⛔ <b>{_s}</b>")
+                    # Truncate detail to 200 chars to avoid Telegram 4096 limit
+                    _tg_lines.append(f"   {_d[:200]}")
+                _tg_lines.append("━━━━━━━━━━━━━━━━━━━━")
+                _tg_lines.append("Download build_audit.zip from GitHub Actions artifacts.")
+            else:
+                _tg_lines = [
+                    f"✅ <b>Build #{_build_num} — ALL STEPS PASSED</b>",
+                    "━━━━━━━━━━━━━━━━━━━━",
+                    f"Package : <code>{new_pkg}</code>",
+                    f"Steps   : {_total} / {_total} passed",
+                    f"Encryption: ✅ DONE (seed={_enc_seed_str})",
+                ]
+            _tg_text    = "\n".join(_tg_lines)
+            _tg_payload = _json_audit.dumps({
+                "chat_id":    _tg_chat,
+                "text":       _tg_text,
+                "parse_mode": "HTML",
+            }).encode("utf-8")
+            _tg_req = _urllib_req.Request(
+                f"https://api.telegram.org/bot{_tg_token}/sendMessage",
+                data=_tg_payload,
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with _urllib_req.urlopen(_tg_req, timeout=15) as _tg_resp:
+                    _tg_rc = _json_audit.loads(_tg_resp.read()).get("ok", False)
+                    print(f"  ✅ Telegram audit summary sent (ok={_tg_rc})")
+            except Exception as _tg_e:
+                print(f"  ⚠️  Telegram audit send failed: {_tg_e}")
+        else:
+            print("  ⚠️  TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping Telegram audit")
+
+    except Exception as _audit_rep_err:
+        print(f"  ⚠️  Build audit report failed: {_audit_rep_err}")
+
+    # ── Add build_audit.zip to GitHub Actions artifact list ──────────────────
+    # GitHub Actions picks up any file listed in the upload-artifact step.
+    # We write the path to GITHUB_OUTPUT so the workflow step can reference it.
+    _ga_output = os.environ.get("GITHUB_OUTPUT", "")
+    if _ga_output:
+        try:
+            with open(_ga_output, "a") as _go:
+                _go.write(f"build_audit_zip=build_audit.zip\n")
+            print("  ✅ build_audit_zip path written to GITHUB_OUTPUT")
+        except Exception as _go_err:
+            print(f"  ⚠️  GITHUB_OUTPUT write failed: {_go_err}")
 
 
 if __name__ == "__main__":

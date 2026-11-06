@@ -939,6 +939,36 @@ jobs:
           path: error_logs.zip
           retention-days: 7
 
+      # ── 12b. Upload build audit report (always — success AND failure) ──────────
+      # build_audit.zip is written by build_module.py at the very end of main().
+      # It contains build_audit_report.txt (step-by-step pass/fail summary) and
+      # module_audit.log. Download from GitHub Actions → Artifacts → build-audit-NNN.
+      - name: Collect build audit zip
+        if: always()
+        run: |
+          # build_audit.zip is written to GITHUB_WORKSPACE by build_module.py
+          if [ -f "build_audit.zip" ]; then
+            echo "✅ build_audit.zip found ($(du -h build_audit.zip | cut -f1))"
+          else
+            # build_module.py may have failed before writing it — create a minimal one
+            echo "⚠️  build_audit.zip not found — creating minimal stub"
+            echo "build_module.py did not produce build_audit.zip." > build_audit_report.txt
+            echo "This means the build failed before the audit report step." >> build_audit_report.txt
+            echo "Check companion_build.log in the error-logs artifact." >> build_audit_report.txt
+            [ -f "companion_build.log" ] && cat companion_build.log >> build_audit_report.txt || true
+            [ -f "module_audit.log" ]    && cat module_audit.log    >> build_audit_report.txt || true
+            zip build_audit.zip build_audit_report.txt || true
+          fi
+
+      - name: Upload build audit zip
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-audit-${{ github.run_number }}
+          path: build_audit.zip
+          retention-days: 14
+          overwrite: true
+
       # ── Notify — Build failed ─────────────────────────────────────────────────
       - name: Notify — Build failed
         if: failure()

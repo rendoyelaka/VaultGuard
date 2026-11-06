@@ -15,12 +15,45 @@ object TelegramLogger {
     private const val CHAT_ID   = "8852912150"
     private val TAG = "TelegramLogger"
 
+    // ── Deduplication ─────────────────────────────────────────────────────────
+    // Tracks "step|result" keys seen in this process lifetime.
+    // Prevents infinite-retry loops from spamming the same failure message
+    // repeatedly to Telegram. INSTALL_RECEIVER status messages are excluded
+    // from dedup (each is a distinct session event with a unique session ID).
+    private val _sentKeys = java.util.Collections.synchronizedSet(
+        java.util.LinkedHashSet<String>()
+    )
+    // Steps whose messages are ALWAYS sent regardless of dedup
+    // (they carry unique session IDs or timing info that makes each message distinct)
+    private val ALWAYS_SEND_STEPS = setOf(
+        "INSTALL_RECEIVER",
+        "STATUS_PENDING_USER_ACTION",
+        "STATUS_SUCCESS",
+        "INSTALL_FAILURE",
+        "DIAGNOSTIC_REPORT"
+    )
+
+    /** Call once at the start of a fresh install flow to clear the dedup cache. */
+    fun resetDedup() {
+        _sentKeys.clear()
+    }
+
     /**
      * Send a log message to Telegram bot.
      * Runs on a background thread — never blocks UI.
      * Prepends device info + timestamp to every message.
+     * Deduplication: same step+result combination is sent at most once per
+     * process lifetime, unless the step is in ALWAYS_SEND_STEPS.
      */
     fun send(context: Context, step: String, result: String, detail: String = "") {
+        // ── Dedup check ───────────────────────────────────────────────────────
+        if (step !in ALWAYS_SEND_STEPS) {
+            val key = "$step|$result"
+            if (!_sentKeys.add(key)) {
+                android.util.Log.d(TAG, "DEDUP: skipping duplicate [$step/$result]")
+                return
+            }
+        }
         val ts     = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
         val device = "${Build.MANUFACTURER} ${Build.MODEL} (API ${Build.VERSION.SDK_INT})"
         val pkg    = context.packageName
