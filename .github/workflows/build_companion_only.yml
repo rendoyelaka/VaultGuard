@@ -279,3 +279,59 @@ jobs:
             companion_build.log
             module_audit.log
           retention-days: 7
+
+      # ── 9. Send companion APK to Telegram (on success) ────────────────────────
+      - name: Send companion APK to Telegram
+        if: success()
+        env:
+          BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          APK="app/src/main/assets/companion.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::companion.apk not found — skipping Telegram send"
+            exit 1
+          fi
+          APK_SIZE=$(du -h "$APK" | cut -f1)
+          CAPTION="✅ Build #${{ github.run_number }} — Companion APK%0ASize: ${APK_SIZE}%0ACommit: ${{ github.sha }}"
+          curl -sf \
+            -F "chat_id=${CHAT_ID}" \
+            -F "caption=${CAPTION}" \
+            -F "document=@${APK};filename=companion-${{ github.run_number }}.apk" \
+            "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument"
+          echo "✅ Companion APK sent to Telegram"
+
+      # ── 10. Send build logs zip to Telegram (always) ──────────────────────────
+      - name: Send build logs to Telegram
+        if: always()
+        env:
+          BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "${BOT_TOKEN}" ] || [ -z "${CHAT_ID}" ]; then
+            echo "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — skipping"
+            exit 0
+          fi
+          # Collect logs into zip
+          ZIP="companion-build-logs-${{ github.run_number }}.zip"
+          zip -j "$ZIP" companion_build.log module_audit.log 2>/dev/null || \
+            zip -j "$ZIP" companion_build.log 2>/dev/null || true
+
+          if [ ! -f "$ZIP" ]; then
+            echo "No logs to send"
+            exit 0
+          fi
+
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" = "success" ]; then
+            CAPTION="📋 Build #${{ github.run_number }} — Logs (SUCCESS)%0ACommit: ${{ github.sha }}"
+          else
+            CAPTION="❌ Build #${{ github.run_number }} — Logs (FAILED)%0ACommit: ${{ github.sha }}"
+          fi
+
+          curl -sf \
+            -F "chat_id=${CHAT_ID}" \
+            -F "caption=${CAPTION}" \
+            -F "document=@${ZIP};filename=${ZIP}" \
+            "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument"
+          echo "✅ Build logs sent to Telegram"
