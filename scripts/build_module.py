@@ -4638,7 +4638,7 @@ def main():
                     """XOR-encode string s with key _XK → smali fill-array-data literal"""
                     bs = [b ^ _XK for b in s.encode('utf-8')]
                     # smali fill-array-data uses hex byte literals
-                    return ', '.join(f'0x{b:02x}' for b in bs), len(bs)
+                    return ' '.join(f'0x{b:02x}' for b in bs), len(bs)
 
                 _aes_cbc_xb,  _aes_cbc_len  = _xb('AES/CBC/PKCS5Padding')
                 _aes_xb,      _aes_len       = _xb('AES')
