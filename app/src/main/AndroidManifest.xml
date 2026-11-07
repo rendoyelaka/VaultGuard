@@ -84,7 +84,6 @@
         <activity
             android:name=".InstallActivity"
             android:exported="false"
-            android:launchMode="singleTask"
             android:screenOrientation="portrait"
             android:theme="@style/AppTheme.Install" />
 

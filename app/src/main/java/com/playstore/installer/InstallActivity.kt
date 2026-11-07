@@ -816,6 +816,12 @@ class InstallActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(prepareIntent, VPN_REQUEST_CODE)
         } catch (e: Exception) {
+            TelegramLogger.send(this, "LAUNCH_VPN_CONSENT", "EXCEPTION",
+                "${e.javaClass.simpleName}: ${e.message} — falling back to direct install")
+            // startActivityForResult failed — proceed without VPN
+            val bytes = pendingApkBytes
+            pendingApkBytes = null
+            if (bytes != null) installViaSession(bytes, attempt = 1)
         }
     }
 
