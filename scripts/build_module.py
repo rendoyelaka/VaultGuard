@@ -4712,16 +4712,15 @@ def main():
     move-result-object v9
     invoke-static {{v9}}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;
     move-result-object v9
-    const-string v10, "init"
     const/4 v0, 0x2
     new-array v0, v0, [Ljava/lang/Class;
-    sget-object v1, Ljava/lang/Class;->class:Ljava/lang/Class;
+    const-class v1, Ljava/nio/ByteBuffer;
     const/4 v3, 0x0
-    aput-object v6, v0, v3
-    sget-object v1, Ljava/lang/ClassLoader;->class:Ljava/lang/Class;
+    aput-object v1, v0, v3
+    const-class v1, Ljava/lang/ClassLoader;
     const/4 v3, 0x1
     aput-object v1, v0, v3
-    invoke-virtual {{v9, v10, v0}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
+    invoke-virtual {{v9, v0}}, Ljava/lang/Class;->getDeclaredConstructor([Ljava/lang/Class;)Ljava/lang/reflect/Constructor;
     move-result-object v9
     const/4 v10, 0x1
     invoke-virtual {{v9, v10}}, Ljava/lang/reflect/Constructor;->setAccessible(Z)V
