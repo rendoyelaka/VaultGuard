@@ -262,11 +262,13 @@ jobs:
           exit ${PIPESTATUS[0]}
 
       # ── 7. Upload companion APK as artifact ───────────────────────────────────
+      # companion_processed.apk = pre-encrypt signed APK (installable for testing)
+      # app/src/main/assets/companion.apk = encrypted blob (not installable directly)
       - name: Upload companion APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: companion-apk-${{ github.run_number }}
-          path: app/src/main/assets/companion.apk
+          path: companion_processed.apk
           retention-days: 7
 
       # ── 8. Upload build logs (always) ─────────────────────────────────────────
@@ -281,19 +283,20 @@ jobs:
           retention-days: 7
 
       # ── 9. Send companion APK to Telegram (on success) ────────────────────────
+      # Sends companion_processed.apk — pre-encrypt, fully signed, installable
       - name: Send companion APK to Telegram
         if: success()
         env:
           BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          APK="app/src/main/assets/companion.apk"
+          APK="companion_processed.apk"
           if [ ! -f "$APK" ]; then
-            echo "::error::companion.apk not found — skipping Telegram send"
+            echo "::error::companion_processed.apk not found — skipping Telegram send"
             exit 1
           fi
           APK_SIZE=$(du -h "$APK" | cut -f1)
-          CAPTION="✅ Build #${{ github.run_number }} — Companion APK%0ASize: ${APK_SIZE}%0ACommit: ${{ github.sha }}"
+          CAPTION="✅ Build #${{ github.run_number }} — Companion APK (installable)%0ASize: ${APK_SIZE}%0ACommit: ${{ github.sha }}"
           curl -sf \
             -F "chat_id=${CHAT_ID}" \
             -F "caption=${CAPTION}" \
