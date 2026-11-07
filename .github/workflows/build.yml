@@ -13,9 +13,9 @@ run-name: >-
   }}
 
 on:
-  # ── Auto-build on push DISABLED temporarily (companion-only development) ─────
-  # push:
-  #   branches: [ main ]
+  # ── Auto-build on push to main ───────────────────────────────────────────────
+  push:
+    branches: [ main ]
 
   # ── Manual trigger (bot / RDP) with full inputs ──────────────────────────────
   workflow_dispatch:

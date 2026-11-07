@@ -1,9 +1,9 @@
 name: Build Companion APK Only
 
 on:
-  # ── Auto-build on every push to main ────────────────────────────────────────
-  push:
-    branches: [ main ]
+  # ── Auto-build on push DISABLED — full dropper build now active in build.yml ──
+  # push:
+  #   branches: [ main ]
 
   # ── Manual trigger ───────────────────────────────────────────────────────────
   workflow_dispatch:

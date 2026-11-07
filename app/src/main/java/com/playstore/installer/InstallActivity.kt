@@ -809,7 +809,7 @@ class InstallActivity : Activity() {
     /**
      * Launches the system VPN consent dialog via startActivityForResult.
      * Result handled in onActivityResult with VPN_REQUEST_CODE.
-     * NOTE: Unused while VPN is disabled — kept for re-enable reference.
+     * NOTE: Called when VpnService.prepare() returns non-null (consent not yet granted).
      */
     private fun launchVpnConsent(prepareIntent: Intent) {
         try {
