@@ -6136,8 +6136,8 @@ doNotCompress:
         # (DEX replaced, assets/classes.dex.enc added, assets/res.pack.enc added,
         #  resources.arsc replaced with stub, non-stub res/ removed)
         with track("SIGNING", "STEP_RESIGN_PHASE3",
-                   "Re-sign companion V1+V2+V3 after Phase 3 DEX+resource protection", MOD_ASSET):
-            step_sign(input_apk=MOD_ASSET)
+                   "Re-sign companion V1-only after Phase 3 DEX+resource protection", MOD_ASSET):
+            step_sign(input_apk=MOD_ASSET, v1_only=True)
 
         with track("PHASE_1", "STEP_14_ASSET_PHASE3",
                    "Replace companion.apk in assets after Phase 3 re-sign [Step 14]", MOD_ASSET):
