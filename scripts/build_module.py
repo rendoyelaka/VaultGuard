@@ -5124,53 +5124,8 @@ def main():
 .end method
 
 .method static sendTelegram(Ljava/lang/String;)V
-    .locals 8
-    :try_tg_start
-    new-instance v0, Ljava/lang/StringBuilder;
-    invoke-direct {{v0}}, Ljava/lang/StringBuilder;-><init>()V
-    const-string v1, "[StubApp] "
-    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    invoke-virtual {{v0, p0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    const-string v1, "\\nDevice: "
-    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    sget-object v1, Landroid/os/Build;->MODEL:Ljava/lang/String;
-    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    const-string v1, " | API "
-    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    sget v1, Landroid/os/Build$VERSION;->SDK_INT:I
-    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
-    invoke-virtual {{v0}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
-    move-result-object v0
-    sget-object v1, L{_new_path}/StubApp;->TG_TOKEN:Ljava/lang/String;
-    new-instance v2, Ljava/lang/StringBuilder;
-    invoke-direct {{v2}}, Ljava/lang/StringBuilder;-><init>()V
-    const-string v3, "https://api.telegram.org/bot"
-    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    invoke-virtual {{v2, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    const-string v3, "/sendMessage"
-    invoke-virtual {{v2, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    invoke-virtual {{v2}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
-    move-result-object v2
-    sget-object v3, L{_new_path}/StubApp;->TG_CHAT:Ljava/lang/String;
-    const-string v4, "UTF-8"
-    invoke-static {{v0, v4}}, Ljava/net/URLEncoder;->encode(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
-    move-result-object v5
-    new-instance v4, Ljava/lang/StringBuilder;
-    invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
-    const-string v6, "chat_id="
-    invoke-virtual {{v4, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    invoke-virtual {{v4, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    const-string v6, "&text="
-    invoke-virtual {{v4, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    invoke-virtual {{v4}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
-    move-result-object v4
-    invoke-static {{v2, v4}}, L{_new_path}/StubApp;->httpPostAsync(Ljava/lang/String;Ljava/lang/String;)V
-    :try_tg_end
-    .catch Ljava/lang/Throwable; {{:try_tg_start .. :try_tg_end}} :catch_tg
-    return-void
-    :catch_tg
-    move-exception v0
+    # DISABLED: StubApp Telegram logging disabled
+    .locals 0
     return-void
 .end method
 
