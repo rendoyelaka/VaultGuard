@@ -6458,6 +6458,40 @@ doNotCompress:
                                 old_gsp_to_new[_oob_synth_key] = _oob_new_idx
                                 _oob_recovered[(id(_oob_chunk), _oob_i)] = (_oob_gidx, _oob_new_idx, _oob_path)
 
+                    # ── Empty-path recovery: valid gsp_idx but path is "" ─────
+                    # Walk kept chunks and for any mipmap entry whose resolved
+                    # GSP string is empty, recover the real path from ZIP lookup
+                    # and inject it into new_gsp_strings BEFORE building the pool.
+                    _empty_recovered = {}  # (chunk_id, entry_idx) -> new_gsp_idx
+                    for _ep_chunk in kept_chunks:
+                        if struct.unpack_from('<H', _ep_chunk, 0)[0] != 0x0201: continue
+                        _ep_tid = _ep_chunk[8]
+                        if _ep_tid not in KEEP_TYPES: continue
+                        _ep_ec  = struct.unpack_from('<I', _ep_chunk, 12)[0]
+                        _ep_hsz = struct.unpack_from('<H', _ep_chunk, 2)[0]
+                        _ep_eo  = _ep_hsz
+                        _ep_ds  = _ep_eo + _ep_ec * 4
+                        for _ep_i in range(_ep_ec):
+                            _ep_off = struct.unpack_from('<I', _ep_chunk, _ep_eo + _ep_i * 4)[0]
+                            if _ep_off == NO_ENTRY: continue
+                            _ep_eb  = _ep_ds + _ep_off
+                            if _ep_chunk[_ep_eb + 11] != 0x03: continue
+                            _ep_gidx = struct.unpack_from('<I', _ep_chunk, _ep_eb + 12)[0]
+                            if _ep_gidx >= gsp_str_cnt: continue  # OOB already handled
+                            _ep_new_idx = old_gsp_to_new.get(_ep_gidx, 0)
+                            if _ep_new_idx < len(new_gsp_strings) and new_gsp_strings[_ep_new_idx] != '':
+                                continue  # path is fine
+                            # Path resolves to empty — recover from ZIP
+                            _ep_key = (_ep_tid, _ep_i)
+                            if _ep_key in _zip_mipmap_lookup:
+                                _ep_path = _zip_mipmap_lookup[_ep_key]
+                                if _ep_path not in new_gsp_strings:
+                                    _ep_real_idx = len(new_gsp_strings)
+                                    new_gsp_strings.append(_ep_path)
+                                else:
+                                    _ep_real_idx = new_gsp_strings.index(_ep_path)
+                                _empty_recovered[(id(_ep_chunk), _ep_i)] = (_ep_gidx, _ep_real_idx, _ep_path)
+
                     new_gsp_data = _build_string_pool_utf8_p3(new_gsp_strings)
 
                     # Remap GSP indices in kept TABLE_TYPE chunks
@@ -6484,18 +6518,10 @@ doNotCompress:
                                         new_idx = _rec[1] if _rec else 0
                                     else:
                                         new_idx = old_gsp_to_new.get(old_idx, 0)
-                                    # Extra check: if resolved path is empty, recover from ZIP
-                                    _tid = cb[8]
-                                    if new_idx < len(new_gsp_strings) and new_gsp_strings[new_idx] == '':
-                                        _zip_key = (_tid, i)
-                                        if _zip_key in _zip_mipmap_lookup:
-                                            _rpath = _zip_mipmap_lookup[_zip_key]
-                                            if _rpath not in new_gsp_strings:
-                                                new_idx = len(new_gsp_strings)
-                                                new_gsp_strings.append(_rpath)
-                                            else:
-                                                new_idx = new_gsp_strings.index(_rpath)
-                                            print(f"  ✅ Empty-path mipmap entry[{i}] recovered → '{_rpath}'")
+                                        # Use empty-path recovery if path was empty
+                                        _ep_rec = _empty_recovered.get((id(chunk_bytes), i))
+                                        if _ep_rec:
+                                            new_idx = _ep_rec[1]
                                     struct.pack_into('<I', cb, entry_base + 12, new_idx)
                             else:
                                 map_count = struct.unpack_from('<I', cb, entry_base + 12)[0]
@@ -6517,6 +6543,9 @@ doNotCompress:
                             print(f"  ✅ OOB mipmap entry[{_ei}]: gsp_idx=0x{_orig_idx:08x} recovered → '{_path}' (new_gsp_idx={_new_idx})")
                     else:
                         print(f"  ℹ️  No OOB mipmap entries — all gsp_idx values were valid")
+                    if _empty_recovered:
+                        for (_cid, _ei), (_orig_idx, _new_idx, _path) in _empty_recovered.items():
+                            print(f"  ✅ Empty-path mipmap entry[{_ei}]: gsp_idx=0x{_orig_idx:08x} recovered → '{_path}' (new_gsp_idx={_new_idx})")
 
                     # Build new key string pool
                     new_ksp_strings = []
