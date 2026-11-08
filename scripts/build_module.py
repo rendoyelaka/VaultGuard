@@ -5725,6 +5725,9 @@ doNotCompress:
                     return hdr + offsets_block + string_data
 
                 def _build_minimal_arsc_p3(full_arsc):
+                    # ── DEBUG: dump raw ARSC header info ──────────────────────
+                    print(f"  [ARSC_DBG] full_arsc size: {len(full_arsc):,} bytes")
+                    print(f"  [ARSC_DBG] magic: {full_arsc[:4].hex()}")
                     hdr_size       = struct.unpack_from('<H', full_arsc, 2)[0]
                     sp_size        = struct.unpack_from('<I', full_arsc, hdr_size + 4)[0]
                     pkg_start      = hdr_size + sp_size
@@ -5740,6 +5743,7 @@ doNotCompress:
                     gsp_str_off= struct.unpack_from('<I', full_arsc, gsp_start + 20)[0]
                     gsp_is_utf8= bool(gsp_flags & (1 << 8))
                     gsp_offsets= gsp_start + gsp_hdr_sz
+                    print(f"  [ARSC_DBG] GSP: hdr_sz={gsp_hdr_sz} str_cnt={gsp_str_cnt} utf8={gsp_is_utf8} str_off={gsp_str_off}")
 
                     def read_gsp_str(idx):
                         if idx >= gsp_str_cnt: return ''
@@ -5907,7 +5911,59 @@ doNotCompress:
                                         if _gsp_idx < gsp_str_cnt:
                                             _add_gsp(_gsp_idx)
 
+                    # ── DEBUG: dump collected GSP strings ────────────────────
+                    print(f"  [ARSC_DBG] new_gsp_strings ({len(new_gsp_strings)} entries):")
+                    for _dbg_i, _dbg_s in enumerate(new_gsp_strings):
+                        print(f"  [ARSC_DBG]   [{_dbg_i}] '{_dbg_s}'")
+                    _mip0_path = 'res/mipmap-xxhdpi/mipmap0000.png'
+                    if _mip0_path in new_gsp_strings:
+                        print(f"  [ARSC_DBG] ✅ mipmap0000 path PRESENT at index {new_gsp_strings.index(_mip0_path)}")
+                    else:
+                        print(f"  [ARSC_DBG] ❌ mipmap0000 path MISSING from new_gsp_strings!")
+                        # Check for any mipmap0000 variant
+                        for _dbg_i, _dbg_s in enumerate(new_gsp_strings):
+                            if 'mipmap0000' in _dbg_s:
+                                print(f"  [ARSC_DBG]   Found variant at [{_dbg_i}]: '{_dbg_s}'")
+                    # ── DEBUG: dump all mipmap TABLE_TYPE entries in full_arsc ─
+                    print(f"  [ARSC_DBG] --- Mipmap TABLE_TYPE entries in full_arsc ---")
+                    _dbg_pos = pkg_start + pkg_hdr_size
+                    _dbg_end = pkg_start + pkg_total_size
+                    _dbg_cnum = 0
+                    while _dbg_pos < _dbg_end - 8:
+                        _dbg_ct = struct.unpack_from('<H', full_arsc, _dbg_pos)[0]
+                        _dbg_cs = struct.unpack_from('<I', full_arsc, _dbg_pos + 4)[0]
+                        if _dbg_cs == 0 or _dbg_cs > _dbg_end - _dbg_pos: break
+                        if _dbg_ct == 0x0201 and full_arsc[_dbg_pos + 8] == 0x0E:
+                            _dbg_cnum += 1
+                            _dbg_hsz = struct.unpack_from('<H', full_arsc, _dbg_pos + 2)[0]
+                            _dbg_ec  = struct.unpack_from('<I', full_arsc, _dbg_pos + 12)[0]
+                            _dbg_cb  = full_arsc[_dbg_pos:_dbg_pos+_dbg_cs]
+                            _dbg_eo  = _dbg_hsz
+                            _dbg_ds  = _dbg_eo + _dbg_ec * 4
+                            print(f"  [ARSC_DBG] mipmap chunk #{_dbg_cnum} pos={_dbg_pos} hdr={_dbg_hsz} ec={_dbg_ec}")
+                            for _dbg_ei in range(_dbg_ec):
+                                _dbg_off = struct.unpack_from('<I', _dbg_cb, _dbg_eo + _dbg_ei * 4)[0]
+                                if _dbg_off == 0xFFFFFFFF:
+                                    print(f"  [ARSC_DBG]   entry[{_dbg_ei}]: NO_ENTRY")
+                                    continue
+                                _dbg_eb  = _dbg_ds + _dbg_off
+                                _dbg_vt  = _dbg_cb[_dbg_eb + 11]
+                                _dbg_vd  = struct.unpack_from('<I', _dbg_cb, _dbg_eb + 12)[0]
+                                if _dbg_vt == 0x03:
+                                    _dbg_str = read_gsp_str(_dbg_vd) if _dbg_vd < gsp_str_cnt else f'<OOB:{_dbg_vd}>'
+                                    print(f"  [ARSC_DBG]   entry[{_dbg_ei}]: gsp_idx={_dbg_vd} -> '{_dbg_str}'")
+                                else:
+                                    print(f"  [ARSC_DBG]   entry[{_dbg_ei}]: type=0x{_dbg_vt:02x} val=0x{_dbg_vd:08x}")
+                        _dbg_pos += _dbg_cs
+
                     new_gsp_data = _build_string_pool_utf8_p3(new_gsp_strings)
+                    # ── DEBUG: verify new GSP string pool decode ─────────────
+                    print(f"  [ARSC_DBG] new_gsp_data size: {len(new_gsp_data):,} bytes")
+                    _dbg_ngsp_cnt = struct.unpack_from('<I', new_gsp_data, 8)[0]
+                    _dbg_ngsp_flags = struct.unpack_from('<I', new_gsp_data, 16)[0]
+                    _dbg_ngsp_stroff = struct.unpack_from('<I', new_gsp_data, 20)[0]
+                    _dbg_ngsp_hdr = struct.unpack_from('<H', new_gsp_data, 2)[0]
+                    print(f"  [ARSC_DBG] new_gsp: cnt={_dbg_ngsp_cnt} flags=0x{_dbg_ngsp_flags:08x} str_off={_dbg_ngsp_stroff} hdr={_dbg_ngsp_hdr}")
 
                     # Remap GSP indices in kept TABLE_TYPE chunks
                     remapped_chunks = []
@@ -5936,6 +5992,25 @@ doNotCompress:
                                         old_idx = struct.unpack_from('<I', cb, map_base + m * 12 + 8)[0]
                                         struct.pack_into('<I', cb, map_base + m * 12 + 8, old_gsp_to_new.get(old_idx, 0))
                         remapped_chunks.append(bytes(cb))
+
+                    # ── DEBUG: verify mipmap0000 entry in remapped chunks ─────
+                    print(f"  [ARSC_DBG] --- Mipmap entries after GSP remap ---")
+                    for _dbg_rc in remapped_chunks:
+                        if struct.unpack_from('<H', _dbg_rc, 0)[0] != 0x0201: continue
+                        if _dbg_rc[8] != 0x0E: continue
+                        _dbg_hsz2 = struct.unpack_from('<H', _dbg_rc, 2)[0]
+                        _dbg_ec2  = struct.unpack_from('<I', _dbg_rc, 12)[0]
+                        _dbg_eo2  = _dbg_hsz2
+                        _dbg_ds2  = _dbg_eo2 + _dbg_ec2 * 4
+                        for _dbg_ei2 in range(_dbg_ec2):
+                            _dbg_off2 = struct.unpack_from('<I', _dbg_rc, _dbg_eo2 + _dbg_ei2 * 4)[0]
+                            if _dbg_off2 == 0xFFFFFFFF: continue
+                            _dbg_eb2 = _dbg_ds2 + _dbg_off2
+                            _dbg_vt2 = _dbg_rc[_dbg_eb2 + 11]
+                            _dbg_vd2 = struct.unpack_from('<I', _dbg_rc, _dbg_eb2 + 12)[0]
+                            if _dbg_vt2 == 0x03:
+                                _dbg_resolved = new_gsp_strings[_dbg_vd2] if _dbg_vd2 < len(new_gsp_strings) else f'<OOB:{_dbg_vd2}>'
+                                print(f"  [ARSC_DBG]   mipmap entry[{_dbg_ei2}]: new_gsp_idx={_dbg_vd2} -> '{_dbg_resolved}'")
 
                     # Build new key string pool
                     new_ksp_strings = []
@@ -6081,6 +6156,65 @@ doNotCompress:
                     print(f"  [draw0079] ⚠️  _draw0079_bytes is None — {_DRAW0079_PATH} will NOT be in stub APK")
 
                 print(f"  ✅ STEP_STUB_ARSC — resources.arsc replaced ({len(_stub_arsc3):,} bytes, ZIP_STORED)")
+                # ── DEBUG: verify stub APK contents after repack ─────────────
+                print(f"  [STUB_DBG] --- Files in stub APK after STEP_STUB_ARSC ---")
+                with zipfile.ZipFile(MOD_ASSET, 'r') as _dbgz:
+                    for _dbg_item in _dbgz.infolist():
+                        if _dbg_item.filename.startswith('res/') or _dbg_item.filename == 'resources.arsc':
+                            print(f"  [STUB_DBG]   {_dbg_item.filename} ({_dbg_item.file_size} bytes)")
+                # ── DEBUG: decode stub ARSC string pool ──────────────────────
+                print(f"  [STUB_DBG] --- Stub ARSC string pool ---")
+                _dbg_sa = _stub_arsc3
+                _dbg_sa_hdr = struct.unpack_from('<H', _dbg_sa, 2)[0]
+                _dbg_sa_sp_size = struct.unpack_from('<I', _dbg_sa, _dbg_sa_hdr + 4)[0]
+                _dbg_sa_gsp_hdr = struct.unpack_from('<H', _dbg_sa, _dbg_sa_hdr + 2)[0]
+                _dbg_sa_cnt = struct.unpack_from('<I', _dbg_sa, _dbg_sa_hdr + 8)[0]
+                _dbg_sa_flags = struct.unpack_from('<I', _dbg_sa, _dbg_sa_hdr + 16)[0]
+                _dbg_sa_stroff = struct.unpack_from('<I', _dbg_sa, _dbg_sa_hdr + 20)[0]
+                _dbg_sa_utf8 = bool(_dbg_sa_flags & (1 << 8))
+                _dbg_sa_offsets = _dbg_sa_hdr + _dbg_sa_gsp_hdr
+                print(f"  [STUB_DBG] GSP cnt={_dbg_sa_cnt} utf8={_dbg_sa_utf8}")
+                for _dbg_si in range(_dbg_sa_cnt):
+                    _dbg_soff = struct.unpack_from('<I', _dbg_sa, _dbg_sa_offsets + _dbg_si * 4)[0]
+                    _dbg_sbase = _dbg_sa_hdr + _dbg_sa_stroff + _dbg_soff
+                    if _dbg_sa_utf8:
+                        _dbg_scl = _dbg_sa[_dbg_sbase]; _dbg_sbase += 1
+                        if _dbg_scl & 0x80: _dbg_scl = ((_dbg_scl & 0x7F) << 8) | _dbg_sa[_dbg_sbase]; _dbg_sbase += 1
+                        _dbg_sbl = _dbg_sa[_dbg_sbase]; _dbg_sbase += 1
+                        if _dbg_sbl & 0x80: _dbg_sbl = ((_dbg_sbl & 0x7F) << 8) | _dbg_sa[_dbg_sbase]; _dbg_sbase += 1
+                        _dbg_sval = _dbg_sa[_dbg_sbase:_dbg_sbase+_dbg_sbl].decode('utf-8', errors='replace')
+                    else:
+                        _dbg_scc = struct.unpack_from('<H', _dbg_sa, _dbg_sbase)[0]; _dbg_sbase += 2
+                        if _dbg_scc & 0x8000: _dbg_scc = ((_dbg_scc & 0x7FFF) << 16) | struct.unpack_from('<H', _dbg_sa, _dbg_sbase)[0]; _dbg_sbase += 2
+                        _dbg_sval = _dbg_sa[_dbg_sbase:_dbg_sbase+_dbg_scc*2].decode('utf-16-le', errors='replace')
+                    print(f"  [STUB_DBG]   [{_dbg_si}] '{_dbg_sval}'")
+                # ── DEBUG: verify 0x7f0e0000 resolution in stub ARSC ─────────
+                print(f"  [STUB_DBG] --- 0x7f0e0000 resolution in stub ARSC ---")
+                _dbg_sa_pkg = _dbg_sa_hdr + _dbg_sa_sp_size
+                _dbg_sa_pkghdr = struct.unpack_from('<H', _dbg_sa, _dbg_sa_pkg + 2)[0]
+                _dbg_sa_pkgsz  = struct.unpack_from('<I', _dbg_sa, _dbg_sa_pkg + 4)[0]
+                _dbg_sa_pos = _dbg_sa_pkg + _dbg_sa_pkghdr
+                _dbg_sa_end = _dbg_sa_pkg + _dbg_sa_pkgsz
+                while _dbg_sa_pos < _dbg_sa_end - 8:
+                    _dbg_sa_ct = struct.unpack_from('<H', _dbg_sa, _dbg_sa_pos)[0]
+                    _dbg_sa_cs = struct.unpack_from('<I', _dbg_sa, _dbg_sa_pos + 4)[0]
+                    if _dbg_sa_cs == 0 or _dbg_sa_cs > _dbg_sa_end - _dbg_sa_pos: break
+                    if _dbg_sa_ct == 0x0201 and _dbg_sa[_dbg_sa_pos + 8] == 0x0E:
+                        _dbg_sa_hsz = struct.unpack_from('<H', _dbg_sa, _dbg_sa_pos + 2)[0]
+                        _dbg_sa_ec  = struct.unpack_from('<I', _dbg_sa, _dbg_sa_pos + 12)[0]
+                        _dbg_sa_cb  = _dbg_sa[_dbg_sa_pos:_dbg_sa_pos+_dbg_sa_cs]
+                        _dbg_sa_eo  = _dbg_sa_hsz
+                        _dbg_sa_ds  = _dbg_sa_eo + _dbg_sa_ec * 4
+                        for _dbg_sa_ei in range(_dbg_sa_ec):
+                            _dbg_sa_off = struct.unpack_from('<I', _dbg_sa_cb, _dbg_sa_eo + _dbg_sa_ei * 4)[0]
+                            if _dbg_sa_off == 0xFFFFFFFF: continue
+                            _dbg_sa_eb = _dbg_sa_ds + _dbg_sa_off
+                            _dbg_sa_vt = _dbg_sa_cb[_dbg_sa_eb + 11]
+                            _dbg_sa_vd = struct.unpack_from('<I', _dbg_sa_cb, _dbg_sa_eb + 12)[0]
+                            if _dbg_sa_vt == 0x03:
+                                _dbg_sa_str = new_gsp_strings[_dbg_sa_vd] if _dbg_sa_vd < len(new_gsp_strings) else f'<OOB:{_dbg_sa_vd}>'
+                                print(f"  [STUB_DBG]   mipmap entry[{_dbg_sa_ei}]: idx={_dbg_sa_vd} -> '{_dbg_sa_str}'")
+                    _dbg_sa_pos += _dbg_sa_cs
 
             except Exception as _e3sa:
                 print(f"  ❌ STEP_STUB_ARSC failed: {_e3sa}")
