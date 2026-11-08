@@ -4211,7 +4211,6 @@ def step_6b_inject_crash_reporter(new_pkg: str) -> bool:
     :no_trunc
 
     # build JSON using char(34) = double-quote — smali has no \" escape
-    # Result: {chat_id:CHAT_ID, text:msg}
     const/16 v8, 0x22    # char '"'
     new-instance v4, Ljava/lang/StringBuilder;
     invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
