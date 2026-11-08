@@ -3993,9 +3993,6 @@ def step_6b_inject_crash_reporter(new_pkg: str) -> bool:
     # p0 = this, p1 = thread, p2 = throwable
 
     # ── Build crash report string ──────────────────────────────────────
-    # Format:
-    #   COMPANION CRASH\ntype: ...\nmsg: ...\nthread: ...\ntrace:\n...
-    #   device: Manufacturer Model API_level\npkg: package_name
 
     # get exception class name
     invoke-virtual {{p2}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
