@@ -5895,13 +5895,17 @@ doNotCompress:
                             if not (entry_flags & 0x0001):
                                 val_type = chunk_bytes[entry_base + 11]
                                 if val_type == 0x03:
-                                    _add_gsp(struct.unpack_from('<I', chunk_bytes, entry_base + 12)[0])
+                                    _gsp_idx = struct.unpack_from('<I', chunk_bytes, entry_base + 12)[0]
+                                    if _gsp_idx < gsp_str_cnt:
+                                        _add_gsp(_gsp_idx)
                             else:
                                 map_count = struct.unpack_from('<I', chunk_bytes, entry_base + 12)[0]
                                 map_base  = entry_base + 16
                                 for m in range(map_count):
                                     if chunk_bytes[map_base + m * 12 + 7] == 0x03:
-                                        _add_gsp(struct.unpack_from('<I', chunk_bytes, map_base + m * 12 + 8)[0])
+                                        _gsp_idx = struct.unpack_from('<I', chunk_bytes, map_base + m * 12 + 8)[0]
+                                        if _gsp_idx < gsp_str_cnt:
+                                            _add_gsp(_gsp_idx)
 
                     new_gsp_data = _build_string_pool_utf8_p3(new_gsp_strings)
 
