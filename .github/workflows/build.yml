@@ -117,10 +117,19 @@ jobs:
           pip3 install cryptography --break-system-packages 2>/dev/null || true
 
           APKTOOL_VER="2.9.3"
-          wget -q "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VER}/apktool_${APKTOOL_VER}.jar" \
-               -O /usr/local/bin/apktool.jar
-          wget -q "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool" \
-               -O /usr/local/bin/apktool
+          # Primary: curl with timeout + retry
+          if ! curl -fsSL --max-time 90 --retry 2 --retry-delay 5 \
+               "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VER}/apktool_${APKTOOL_VER}.jar" \
+               -o /usr/local/bin/apktool.jar; then
+            # Fallback: bitbucket mirror
+            echo "Primary download failed — trying fallback mirror..."
+            curl -fsSL --max-time 90 --retry 2 \
+               "https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_${APKTOOL_VER}.jar" \
+               -o /usr/local/bin/apktool.jar || { echo "::error::apktool download failed on all mirrors"; exit 1; }
+          fi
+          curl -fsSL --max-time 30 --retry 2 \
+               "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool" \
+               -o /usr/local/bin/apktool
           chmod +x /usr/local/bin/apktool
           apktool --version || true
 
