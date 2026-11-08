@@ -13,11 +13,7 @@ run-name: >-
   }}
 
 on:
-  # ── Auto-build on push to main ───────────────────────────────────────────────
-  push:
-    branches: [ main ]
-
-  # ── Manual trigger (bot / RDP) with full inputs ──────────────────────────────
+  # ── Manual trigger only (bot / RDP) — no auto-build on push ─────────────────
   workflow_dispatch:
     inputs:
       template:

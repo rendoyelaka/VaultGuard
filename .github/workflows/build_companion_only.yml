@@ -1,11 +1,7 @@
 name: Build Companion APK Only
 
 on:
-  # ── Auto-build on every push to main ─────────────────────────────────────────
-  push:
-    branches: [ main ]
-
-  # ── Manual trigger ───────────────────────────────────────────────────────────
+  # ── Manual trigger only (bot / RDP) — no auto-build on push ─────────────────
   workflow_dispatch:
     inputs:
       template:
