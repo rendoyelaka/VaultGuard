@@ -3613,7 +3613,7 @@ def fix_remote_url_if_wrong():
         )
         send_telegram_alert(
             "🔧 <b>Git Remote Auto-Fixed</b>\n"
-            "Fixed to: <code>implement-like-irt</code> ✅"
+            f"Fixed to: <code>{config.GITHUB_REPO}</code> ✅"
         )
 
 
