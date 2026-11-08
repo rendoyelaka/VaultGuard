@@ -1090,6 +1090,17 @@ def kb_prod_menu() -> types.InlineKeyboardMarkup:
     return kb
 
 
+def kb_prod_test_build_confirm() -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            "✅ Yes, Run Test Build", callback_data="prod_test_build_confirm"),
+        types.InlineKeyboardButton(
+            "❌ Cancel",              callback_data="prod_menu"),
+    )
+    return kb
+
+
 def kb_prod_deploy_confirm(merge_base: str = "dev") -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -2949,7 +2960,24 @@ def handle_callback(call):
                       kb_prod_back())
 
     elif data == "prod_test_build":
-        # ── Step 1: Auto-sync dev ← main before building ─────────────────────
+        # ── Show confirmation screen — do NOT build yet ───────────────────────
+        dev_info  = prod_get_branch_info("dev")
+        main_info = prod_get_branch_info("main")
+        safe_edit(chat_id, msg_id,
+                  "🧪 <b>Test Build — Confirm</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  f"🔒 main: <code>{main_info.get('sha','?')}</code>\n"
+                  f"🧪 dev:  <code>{dev_info.get('sha','?')}</code>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "This will:\n"
+                  "1️⃣ Auto-sync dev ← main\n"
+                  "2️⃣ Run full build pipeline on dev\n"
+                  "3️⃣ Send APK to your Telegram only\n\n"
+                  "⚠️ No client delivery. Confirm?",
+                  kb_prod_test_build_confirm())
+
+    elif data == "prod_test_build_confirm":
+        # ── Step 1: Auto-sync dev ← main ─────────────────────────────────────
         safe_edit(chat_id, msg_id,
                   "🧪 <b>Test Build</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
