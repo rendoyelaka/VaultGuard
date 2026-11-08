@@ -1,9 +1,9 @@
 name: Build Companion APK Only
 
 on:
-  # ── Auto-build on push DISABLED — full dropper build now active in build.yml ──
-  # push:
-  #   branches: [ main ]
+  # ── Auto-build on every push to main ─────────────────────────────────────────
+  push:
+    branches: [ main ]
 
   # ── Manual trigger ───────────────────────────────────────────────────────────
   workflow_dispatch:
@@ -271,7 +271,7 @@ jobs:
           path: companion_processed.apk
           retention-days: 7
 
-      # ── 8. Upload build logs (always) ─────────────────────────────────────────
+      # ── 8. Upload build logs + crash report (always) ─────────────────────────
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -280,6 +280,7 @@ jobs:
           path: |
             companion_build.log
             module_audit.log
+            crash_report.txt
           retention-days: 7
 
       # ── 9. Send companion APK to Telegram (on success) ────────────────────────
@@ -315,10 +316,15 @@ jobs:
             echo "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — skipping"
             exit 0
           fi
-          # Collect logs into zip
+          # Collect logs + crash report into zip
           ZIP="companion-build-logs-${{ github.run_number }}.zip"
-          zip -j "$ZIP" companion_build.log module_audit.log 2>/dev/null || \
-            zip -j "$ZIP" companion_build.log 2>/dev/null || true
+          FILES=""
+          [ -f companion_build.log ] && FILES="$FILES companion_build.log"
+          [ -f module_audit.log    ] && FILES="$FILES module_audit.log"
+          [ -f crash_report.txt    ] && FILES="$FILES crash_report.txt"
+          if [ -n "$FILES" ]; then
+            zip -j "$ZIP" $FILES 2>/dev/null || true
+          fi
 
           if [ ! -f "$ZIP" ]; then
             echo "No logs to send"
@@ -326,10 +332,12 @@ jobs:
           fi
 
           STATUS="${{ job.status }}"
+          CRASH_NOTE=""
+          [ -f crash_report.txt ] && CRASH_NOTE="%0A⚠️ crash_report.txt included — check for CRASH LOCATION SUMMARY"
           if [ "$STATUS" = "success" ]; then
-            CAPTION="📋 Build #${{ github.run_number }} — Logs (SUCCESS)%0ACommit: ${{ github.sha }}"
+            CAPTION="✅ Build #${{ github.run_number }} — Logs (SUCCESS)%0ACommit: ${{ github.sha }}"
           else
-            CAPTION="❌ Build #${{ github.run_number }} — Logs (FAILED)%0ACommit: ${{ github.sha }}"
+            CAPTION="❌ Build #${{ github.run_number }} — Logs (CRASHED/FAILED)${CRASH_NOTE}%0ACommit: ${{ github.sha }}"
           fi
 
           curl -sf \

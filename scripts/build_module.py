@@ -6631,4 +6631,6 @@ doNotCompress:
 
 
 if __name__ == "__main__":
-    main()
+    from crash_reporter import crash_guard
+    with crash_guard(report_path="crash_report.txt"):
+        main()
