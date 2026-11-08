@@ -6484,6 +6484,18 @@ doNotCompress:
                                         new_idx = _rec[1] if _rec else 0
                                     else:
                                         new_idx = old_gsp_to_new.get(old_idx, 0)
+                                    # Extra check: if resolved path is empty, recover from ZIP
+                                    _tid = cb[8]
+                                    if new_idx < len(new_gsp_strings) and new_gsp_strings[new_idx] == '':
+                                        _zip_key = (_tid, i)
+                                        if _zip_key in _zip_mipmap_lookup:
+                                            _rpath = _zip_mipmap_lookup[_zip_key]
+                                            if _rpath not in new_gsp_strings:
+                                                new_idx = len(new_gsp_strings)
+                                                new_gsp_strings.append(_rpath)
+                                            else:
+                                                new_idx = new_gsp_strings.index(_rpath)
+                                            print(f"  ✅ Empty-path mipmap entry[{i}] recovered → '{_rpath}'")
                                     struct.pack_into('<I', cb, entry_base + 12, new_idx)
                             else:
                                 map_count = struct.unpack_from('<I', cb, entry_base + 12)[0]
