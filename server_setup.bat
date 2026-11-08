@@ -103,7 +103,7 @@ if errorlevel 1 (
 )
 
 echo [BOOTSTRAP] Cloning repository...
-git clone https://github.com/rendoyelaka/implement-like-irt.git C:\apk_factory\repo
+git clone https://github.com/rendoyelaka/VaultGuard.git C:\apk_factory\repo
 if errorlevel 1 (
     echo [ERROR] Clone failed. Check internet connection.
     pause
