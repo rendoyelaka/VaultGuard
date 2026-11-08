@@ -2940,24 +2940,50 @@ def handle_callback(call):
                       kb_prod_back())
 
     elif data == "prod_test_build":
+        # ── Step 1: Auto-sync dev ← main before building ─────────────────────
         safe_edit(chat_id, msg_id,
                   "🧪 <b>Test Build</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
-                  "Triggering test build from <b>dev</b> branch…\n"
-                  "APK will be sent to you only — no client delivery.",
+                  "🔃 Step 1/2 — Auto-syncing dev ← main…",
+                  kb_prod_back())
+        sync_ok, sync_result = prod_sync_dev_from_main()
+        if not sync_ok:
+            safe_edit(chat_id, msg_id,
+                      "❌ <b>Test Build Aborted</b>\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      f"Auto-sync dev ← main failed:\n{sync_result}\n\n"
+                      "Fix sync issue then try again.",
+                      kb_prod_back())
+            return
+
+        if sync_result == "already-synced":
+            sync_note = "✅ dev already in sync with main"
+        else:
+            sync_note = f"✅ Synced — merge commit <code>{sync_result}</code>"
+
+        # ── Step 2: Trigger full pipeline on dev ──────────────────────────────
+        safe_edit(chat_id, msg_id,
+                  f"🧪 <b>Test Build</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  f"🔃 Step 1/2 — Sync: {sync_note}\n"
+                  f"🏗 Step 2/2 — Triggering build on dev branch…\n"
+                  f"APK will be sent to you only — no client delivery.",
                   kb_prod_back())
         ok = prod_trigger_dev_build(chat_id, msg_id)
         if ok:
             safe_edit(chat_id, msg_id,
-                      "🧪 <b>Test Build Triggered</b> ✅\n"
-                      "━━━━━━━━━━━━━━━━━━━━\n"
-                      "Building from <b>dev</b> branch.\n"
-                      "Watch GitHub Actions for progress.",
+                      f"🧪 <b>Test Build Triggered</b> ✅\n"
+                      f"━━━━━━━━━━━━━━━━━━━━\n"
+                      f"🔃 Sync: {sync_note}\n"
+                      f"🏗 Build: running on <b>dev</b> branch\n"
+                      f"📱 APK will arrive here when done.\n"
+                      f"No client delivery — admin only.",
                       kb_prod_back())
         else:
             safe_edit(chat_id, msg_id,
                       "❌ <b>Test Build Failed</b>\n"
-                      "Could not trigger GitHub Actions.\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      "Sync succeeded but GitHub Actions trigger failed.\n"
                       "Check GITHUB_TOKEN permissions.",
                       kb_prod_back())
 
