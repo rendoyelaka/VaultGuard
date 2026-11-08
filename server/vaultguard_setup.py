@@ -46,17 +46,17 @@ import zipfile
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-BASE_DIR    = r"C:\apk_factory"
-REPO_DIR    = r"C:\apk_factory\repo"
-SERVER_DIR  = r"C:\apk_factory\repo\server"
-TOOLS_DIR   = r"C:\apk_factory\tools"
-LOGS_DIR    = r"C:\apk_factory\logs"
-KEYS_DIR    = r"C:\apk_factory\keys"
-CONFIG_FILE = r"C:\apk_factory\repo\server\config.py"
-DB_FILE     = r"C:\apk_factory\repo\server\bot.db"
-BACKUP_FILE = r"C:\apk_factory\keys\vaultguard_backup.enc"
-LOG_FILE    = r"C:\apk_factory\logs\vaultguard_setup.log"
-LOCK_FILE   = r"C:\apk_factory\vaultguard_setup.lock"
+BASE_DIR    = r"C:\VaultGuard"
+REPO_DIR    = r"C:\VaultGuard\repo"
+SERVER_DIR  = r"C:\VaultGuard\repo\server"
+TOOLS_DIR   = r"C:\VaultGuard\tools"
+LOGS_DIR    = r"C:\VaultGuard\logs"
+KEYS_DIR    = r"C:\VaultGuard\keys"
+CONFIG_FILE = r"C:\VaultGuard\repo\server\config.py"
+DB_FILE     = r"C:\VaultGuard\repo\server\bot.db"
+BACKUP_FILE = r"C:\VaultGuard\keys\vaultguard_backup.enc"
+LOG_FILE    = r"C:\VaultGuard\logs\vaultguard_setup.log"
+LOCK_FILE   = r"C:\VaultGuard\vaultguard_setup.lock"
 
 # ── GitHub repo ───────────────────────────────────────────────────────────────
 GITHUB_REPO   = "https://github.com/rendoyelaka/implement-like-irt.git"
@@ -533,11 +533,11 @@ def collect_config_interactively(mode: str) -> dict:
     vals["CORRECT_REMOTE_URL"]    = (
         f"https://{token}@github.com/{owner}/{repo}.git")
     vals["CORRECT_MUTATION_PATH"] = (
-        r"C:\apk_factory\repo\server\update_server.py")
+        r"C:\VaultGuard\repo\server\update_server.py")
     vals["REPO_DIR"]              = REPO_DIR
     vals["DB_PATH"]               = DB_FILE
     vals["STRINGPOOL_PATH"]       = (
-        r"C:\apk_factory\repo\app\src\main")
+        r"C:\VaultGuard\repo\app\src\main")
 
     return vals
 
@@ -558,7 +558,7 @@ def step2_create_folders():
     folders = [
         BASE_DIR, REPO_DIR, SERVER_DIR,
         TOOLS_DIR, LOGS_DIR, KEYS_DIR,
-        r"C:\apk_factory\downloads",
+        r"C:\VaultGuard\downloads",
     ]
     for folder in folders:
         if os.path.exists(folder):
@@ -618,7 +618,7 @@ def step4_install_nssm():
 
     # Fallback 1: Download from nssm.cc
     installing("Fallback 1: Downloading nssm from nssm.cc ...")
-    nssm_zip = r"C:\apk_factory\downloads\nssm.zip"
+    nssm_zip = r"C:\VaultGuard\downloads\nssm.zip"
     if download("https://nssm.cc/release/nssm-2.24.zip",
                 nssm_zip, "nssm-2.24.zip"):
         try:
@@ -706,7 +706,7 @@ def step6_install_git():
 
     # Fallback 1: Download installer
     installing("Fallback 1: Downloading Git installer ...")
-    git_exe = r"C:\apk_factory\downloads\git_setup.exe"
+    git_exe = r"C:\VaultGuard\downloads\git_setup.exe"
     url     = ("https://github.com/git-for-windows/git/releases/download"
                "/v2.43.0.windows.1/Git-2.43.0-64-bit.exe")
     if download(url, git_exe, "Git-2.43.0-64-bit.exe"):
@@ -749,7 +749,7 @@ def step7_install_java():
 
     # Fallback 1: Download from Adoptium
     installing("Fallback 1: Downloading Java 17 from Adoptium ...")
-    java_zip = r"C:\apk_factory\downloads\java17.zip"
+    java_zip = r"C:\VaultGuard\downloads\java17.zip"
     url      = ("https://github.com/adoptium/temurin17-binaries/releases"
                 "/download/jdk-17.0.9%2B9/"
                 "OpenJDK17U-jdk_x64_windows_hotspot_17.0.9_9.zip")
@@ -1017,9 +1017,9 @@ def _get_keystore_base64() -> str:
     Searches common locations.
     """
     candidates = [
-        r"C:\apk_factory\keys\platform.jks",
-        r"C:\apk_factory\repo\platform.jks",
-        r"C:\apk_factory\tools\platform.jks",
+        r"C:\VaultGuard\keys\platform.jks",
+        r"C:\VaultGuard\repo\platform.jks",
+        r"C:\VaultGuard\tools\platform.jks",
         os.path.join(KEYS_DIR, "platform.jks"),
     ]
     for path in candidates:
@@ -1166,7 +1166,7 @@ def step10c_verify_keystore():
     if not ks_b64:
         fail("Cannot push KEYSTORE_BASE64 — platform.jks not found on RDP")
         fail("Build will fail without keystore — add platform.jks to "
-             "C:\\apk_factory\\keys\\")
+             "C:\\VaultGuard\\keys\\")
         return
 
     installing("Getting repo public key ...")

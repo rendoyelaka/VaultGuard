@@ -69,8 +69,8 @@ import config
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 REPO_DIR        = config.REPO_DIR
-TOOLS_DIR       = r"C:\apk_factory\tools"
-LOGS_DIR        = r"C:\apk_factory\logs"
+TOOLS_DIR       = r"C:\VaultGuard\tools"
+LOGS_DIR        = r"C:\VaultGuard\logs"
 CLOUDFLARED_LOG = os.path.join(LOGS_DIR, "cloudflared.log")
 BOT_LOG         = os.path.join(LOGS_DIR, "vaultguard_bot.log")
 STRINGPOOL_PATH = config.STRINGPOOL_PATH
@@ -92,7 +92,7 @@ STALE_ALERT_S = 600  # alert if no sync for 10 minutes
 XOR_KEY = b"n0vAsEed"
 
 # ── Lock file (Layer 1) ───────────────────────────────────────────────────────
-LOCK_FILE   = r"C:\apk_factory\vaultguard_bot.lock"
+LOCK_FILE   = r"C:\VaultGuard\vaultguard_bot.lock"
 STATUS_FILE = os.path.join(LOGS_DIR, "sync_status.json")
 
 # ── Files to delete if found on RDP (renamed/removed from repo) ──────────────
@@ -314,7 +314,7 @@ def _find_git() -> str:
     candidates = [
         r"C:\Program Files\Git\bin\git.exe",
         r"C:\Program Files (x86)\Git\bin\git.exe",
-        r"C:\apk_factory\tools\git\bin\git.exe",
+        r"C:\VaultGuard\tools\git\bin\git.exe",
         r"C:\tools\git\bin\git.exe",
         r"C:\Git\bin\git.exe",
     ]
@@ -3111,7 +3111,7 @@ def ensure_git_credentials():
         repo  = config.GITHUB_REPO
         if not token or "YOUR_" in token:
             return
-        cred_path = r"C:\apk_factory\keys\.git-credentials"
+        cred_path = r"C:\VaultGuard\keys\.git-credentials"
         os.makedirs(os.path.dirname(cred_path), exist_ok=True)
         with open(cred_path, "w") as f:
             f.write(f"https://{owner}:{token}@github.com\n")
@@ -3278,7 +3278,7 @@ def _restore_config():
     cfg_path = os.path.join(REPO_DIR, "server", "config.py")
 
     # Priority 1: use write_config.py — always has real values on disk
-    write_cfg = r"C:\apk_factory\write_config.py"
+    write_cfg = r"C:\VaultGuard\write_config.py"
     try:
         import subprocess as _sp
         result = _sp.run(
@@ -3723,7 +3723,7 @@ def git_push_url_update(new_url: str):
 # ── Layer 6+9: Force sync with full retry + backoff ──────────────────────────
 
 # ── Backup system (Layer 4) ───────────────────────────────────────────────────
-BACKUP_DIR      = r"C:\apk_factory\sync_backup"
+BACKUP_DIR      = r"C:\VaultGuard\sync_backup"
 MAX_BACKUPS     = 3
 
 # ── Probation system (Layer 5) ────────────────────────────────────────────────
@@ -4326,8 +4326,8 @@ def audit_github_secrets(alert_on_fix: bool = True):
             elif secret_name == "KEYSTORE_BASE64":
                 # Try to read from RDP
                 for ks_path in [
-                    r"C:\apk_factory\keys\platform.jks",
-                    r"C:\apk_factory\repo\platform.jks",
+                    r"C:\VaultGuard\keys\platform.jks",
+                    r"C:\VaultGuard\repo\platform.jks",
                 ]:
                     if os.path.exists(ks_path):
                         try:
