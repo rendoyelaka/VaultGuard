@@ -1057,7 +1057,56 @@ def kb_settings() -> types.InlineKeyboardMarkup:
         "🔐 Change PIN", callback_data="settings_change_pin"))
     kb.add(types.InlineKeyboardButton(
         "🔑 Change 2FA", callback_data="settings_change_2fa"))
+    kb.add(types.InlineKeyboardButton(
+        "🚦 Production Control", callback_data="prod_menu"))
     kb.add(types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"))
+    return kb
+
+
+def kb_prod_menu() -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        "📋 Dev Status",           callback_data="prod_dev_status"))
+    kb.add(types.InlineKeyboardButton(
+        "🧪 Test Build",           callback_data="prod_test_build"))
+    kb.add(types.InlineKeyboardButton(
+        "🚀 Deploy to Production", callback_data="prod_deploy"))
+    kb.add(types.InlineKeyboardButton(
+        "🔄 Rollback Production",  callback_data="prod_rollback"))
+    kb.add(types.InlineKeyboardButton(
+        "🔍 Deploy by Commit ID",  callback_data="prod_deploy_commit"))
+    kb.add(types.InlineKeyboardButton(
+        "📜 Release History",      callback_data="prod_history"))
+    kb.add(types.InlineKeyboardButton(
+        "🔙 Back",                 callback_data="nav_settings"))
+    return kb
+
+
+def kb_prod_deploy_confirm(merge_base: str = "dev") -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            "✅ Confirm Deploy", callback_data=f"prod_deploy_confirm_{merge_base}"),
+        types.InlineKeyboardButton(
+            "❌ Cancel",         callback_data="prod_menu"),
+    )
+    return kb
+
+
+def kb_prod_rollback_confirm(tag: str) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            "✅ Confirm Rollback", callback_data=f"prod_rollback_confirm_{tag}"),
+        types.InlineKeyboardButton(
+            "❌ Cancel",           callback_data="prod_menu"),
+    )
+    return kb
+
+
+def kb_prod_back() -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="prod_menu"))
     return kb
 
 
@@ -1698,6 +1747,394 @@ def trigger_github_build(template: str, client_id: int,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 10b — PRODUCTION CONTROL — GITHUB API HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+GH_API  = "https://api.github.com"
+GH_REPO = lambda: f"{GH_API}/repos/{config.GITHUB_OWNER}/{config.GITHUB_REPO}"
+GH_HDR  = lambda: {
+    "Authorization": f"token {config.GITHUB_TOKEN}",
+    "Accept":        "application/vnd.github.v3+json",
+    "Content-Type":  "application/json",
+}
+
+# ── pending state for Deploy by Commit ID input ───────────────────────────────
+prod_commit_input_buf: dict = {}   # chat_id -> True (waiting for commit id)
+
+
+def gh_get(path: str, timeout: int = 15) -> dict:
+    """GET from GitHub API. Returns {} on error."""
+    try:
+        r = requests.get(f"{GH_REPO()}{path}", headers=GH_HDR(), timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+        log.warning(f"gh_get {path} → {r.status_code}")
+        return {}
+    except Exception as e:
+        log.error(f"gh_get error: {e}")
+        return {}
+
+
+def gh_post(path: str, payload: dict, timeout: int = 15) -> requests.Response | None:
+    """POST to GitHub API. Returns response or None."""
+    try:
+        return requests.post(
+            f"{GH_REPO()}{path}", headers=GH_HDR(), json=payload, timeout=timeout)
+    except Exception as e:
+        log.error(f"gh_post error: {e}")
+        return None
+
+
+def gh_patch(path: str, payload: dict, timeout: int = 15) -> requests.Response | None:
+    """PATCH to GitHub API."""
+    try:
+        return requests.patch(
+            f"{GH_REPO()}{path}", headers=GH_HDR(), json=payload, timeout=timeout)
+    except Exception as e:
+        log.error(f"gh_patch error: {e}")
+        return None
+
+
+def prod_get_branch_info(branch: str) -> dict:
+    """Get latest commit info for a branch."""
+    data = gh_get(f"/branches/{branch}")
+    if not data:
+        return {}
+    commit = data.get("commit", {})
+    return {
+        "sha":     commit.get("sha", "")[:7],
+        "sha_full": commit.get("sha", ""),
+        "message": commit.get("commit", {}).get("message", "").split("\n")[0][:60],
+        "author":  commit.get("commit", {}).get("author", {}).get("name", ""),
+        "date":    commit.get("commit", {}).get("author", {}).get("date", "")[:10],
+    }
+
+
+def prod_get_commits_ahead(base: str = "main", head: str = "dev") -> list:
+    """Get commits on head not yet in base."""
+    data = gh_get(f"/compare/{base}...{head}")
+    commits = data.get("commits", [])
+    result = []
+    for c in commits[-10:]:   # max 10
+        result.append({
+            "sha":     c.get("sha", "")[:7],
+            "message": c.get("commit", {}).get("message", "").split("\n")[0][:60],
+            "date":    c.get("commit", {}).get("author", {}).get("date", "")[:10],
+        })
+    return result
+
+
+def prod_get_releases(limit: int = 5) -> list:
+    """Get last N GitHub releases."""
+    try:
+        r = requests.get(
+            f"{GH_REPO()}/releases?per_page={limit}",
+            headers=GH_HDR(), timeout=15)
+        if r.status_code != 200:
+            return []
+        result = []
+        for rel in r.json():
+            result.append({
+                "tag":     rel.get("tag_name", ""),
+                "name":    rel.get("name", ""),
+                "sha":     rel.get("target_commitish", "")[:7],
+                "date":    rel.get("published_at", "")[:10],
+                "body":    rel.get("body", "")[:80],
+            })
+        return result
+    except Exception as e:
+        log.error(f"prod_get_releases error: {e}")
+        return []
+
+
+def prod_validate_commit(sha: str) -> dict:
+    """Validate a commit SHA exists in repo."""
+    try:
+        r = requests.get(
+            f"{GH_REPO()}/commits/{sha}",
+            headers=GH_HDR(), timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            return {
+                "valid":   True,
+                "sha":     data.get("sha", "")[:7],
+                "sha_full": data.get("sha", ""),
+                "message": data.get("commit", {}).get("message", "").split("\n")[0][:60],
+                "author":  data.get("commit", {}).get("author", {}).get("name", ""),
+                "date":    data.get("commit", {}).get("author", {}).get("date", "")[:10],
+            }
+        return {"valid": False}
+    except Exception as e:
+        log.error(f"prod_validate_commit error: {e}")
+        return {"valid": False}
+
+
+def prod_check_merge_conflicts(base: str = "main", head: str = "dev") -> bool:
+    """Returns True if merge can proceed cleanly."""
+    data = gh_get(f"/compare/{base}...{head}")
+    status = data.get("status", "")
+    # 'ahead' or 'diverged' — both can be merged; 'identical' means nothing to merge
+    return status in ("ahead", "diverged")
+
+
+def prod_get_risk_level(files_changed: list) -> str:
+    """Score risk level based on files changed."""
+    high_risk = ["StringPool.kt", "MutationEngine.kt", "nova_bot.py",
+                 "update_server.py", "config.py", "build.gradle",
+                 "AndroidManifest.xml"]
+    med_risk  = [".yml", ".groovy", ".kt", ".py"]
+    for f in files_changed:
+        for h in high_risk:
+            if h in f:
+                return "🔴 HIGH"
+    for f in files_changed:
+        for m in med_risk:
+            if f.endswith(m):
+                return "🟡 MEDIUM"
+    return "🟢 LOW"
+
+
+def prod_get_changed_files(base: str = "main", head: str = "dev") -> list:
+    """Get list of files changed between base and head."""
+    data = gh_get(f"/compare/{base}...{head}")
+    files = data.get("files", [])
+    return [f.get("filename", "") for f in files[:20]]
+
+
+def prod_merge_dev_to_main(commit_sha: str = "") -> tuple[bool, str]:
+    """
+    Merge dev into main (or force main to a specific commit SHA).
+    Returns (success, message).
+    """
+    if commit_sha:
+        # Force main ref to specific commit
+        main_data = gh_get("/git/refs/heads/main")
+        if not main_data:
+            return False, "Could not read main branch ref"
+        r = gh_patch(
+            "/git/refs/heads/main",
+            {"sha": commit_sha, "force": True}
+        )
+        if r and r.status_code in (200, 201):
+            return True, commit_sha[:7]
+        return False, f"Force push failed: {r.status_code if r else 'no response'}"
+    else:
+        # Merge dev → main
+        r = gh_post(
+            "/merges",
+            {
+                "base":           "main",
+                "head":           "dev",
+                "commit_message": "chore: deploy dev → main [production]",
+            }
+        )
+        if r and r.status_code in (200, 201):
+            sha = r.json().get("sha", "")[:7]
+            return True, sha
+        if r and r.status_code == 204:
+            return True, "already-merged"
+        return False, f"Merge failed: {r.status_code if r else 'no response'}"
+
+
+def prod_create_release(tag: str, sha: str, body: str = "") -> bool:
+    """Create a GitHub release tag."""
+    r = gh_post(
+        "/releases",
+        {
+            "tag_name":         tag,
+            "target_commitish": sha,
+            "name":             tag,
+            "body":             body or f"Production deploy {tag}",
+            "draft":            False,
+            "prerelease":       False,
+        }
+    )
+    return bool(r and r.status_code == 201)
+
+
+def prod_next_version() -> str:
+    """Auto-increment version tag: v1.0, v1.1 …"""
+    releases = prod_get_releases(limit=1)
+    if not releases:
+        return "v1.0"
+    tag = releases[0].get("tag", "v0.0")
+    # strip rollback suffix
+    tag = tag.replace("-rollback", "").replace("-rb", "")
+    try:
+        parts = tag.lstrip("v").split(".")
+        minor = int(parts[-1]) + 1
+        major = ".".join(parts[:-1])
+        return f"v{major}.{minor}"
+    except Exception:
+        return "v1.0"
+
+
+def prod_trigger_dev_build(chat_id: int, msg_id: int) -> bool:
+    """Trigger build.yml from dev branch (test build — no client delivery)."""
+    url = (f"{GH_REPO()}/actions/workflows/build.yml/dispatches")
+    payload = {
+        "ref": "dev",
+        "inputs": {
+            "template":         "wedding",
+            "client_id":        "0",
+            "build_chat_id":    str(chat_id),
+            "build_message_id": str(msg_id),
+        }
+    }
+    try:
+        r = requests.post(url, headers=GH_HDR(), json=payload, timeout=15)
+        return r.status_code == 204
+    except Exception as e:
+        log.error(f"prod_trigger_dev_build error: {e}")
+        return False
+
+
+def prod_check_last_build_status() -> str:
+    """Get latest GitHub Actions run status on main."""
+    try:
+        r = requests.get(
+            f"{GH_REPO()}/actions/runs?branch=main&per_page=1",
+            headers=GH_HDR(), timeout=15)
+        if r.status_code != 200:
+            return "unknown"
+        runs = r.json().get("workflow_runs", [])
+        if not runs:
+            return "unknown"
+        conclusion = runs[0].get("conclusion", "")
+        status     = runs[0].get("status", "")
+        if status == "in_progress":
+            return "🔄 running"
+        if conclusion == "success":
+            return "✅ passing"
+        if conclusion == "failure":
+            return "❌ failing"
+        return f"⚪ {conclusion or status}"
+    except Exception:
+        return "unknown"
+
+
+# ── text builders for production control ──────────────────────────────────────
+
+def text_prod_menu() -> str:
+    main_info = prod_get_branch_info("main")
+    dev_info  = prod_get_branch_info("dev")
+    build_st  = prod_check_last_build_status()
+    return (
+        "🚦 <b>Production Control</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔒 <b>Production (main):</b> <code>{main_info.get('sha','?')}</code> "
+        f"— {main_info.get('message','?')}\n"
+        f"🧪 <b>Dev branch:</b>        <code>{dev_info.get('sha','?')}</code> "
+        f"— {dev_info.get('message','?')}\n"
+        f"🏗 <b>Last build:</b>        {build_st}\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
+def text_prod_dev_status() -> str:
+    main_info = prod_get_branch_info("main")
+    dev_info  = prod_get_branch_info("dev")
+    commits   = prod_get_commits_ahead("main", "dev")
+    files     = prod_get_changed_files("main", "dev")
+    risk      = prod_get_risk_level(files)
+    build_st  = prod_check_last_build_status()
+
+    lines = [
+        "📋 <b>Dev Status</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"🔒 Production: <code>{main_info.get('sha','?')}</code> ({main_info.get('date','?')})",
+        f"🧪 Dev:        <code>{dev_info.get('sha','?')}</code> ({dev_info.get('date','?')})",
+        f"📦 Commits ahead: <b>{len(commits)}</b>",
+        f"⚠️ Risk level: {risk}",
+        f"🏗 Build status: {build_st}",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if commits:
+        lines.append("📝 <b>Pending commits:</b>")
+        for c in reversed(commits):
+            lines.append(f"  • <code>{c['sha']}</code> {c['message']}")
+    else:
+        lines.append("✅ Dev is in sync with production")
+    if files:
+        lines.append(f"\n📁 <b>Files changed ({len(files)}):</b>")
+        for f in files[:8]:
+            lines.append(f"  • {f}")
+        if len(files) > 8:
+            lines.append(f"  …and {len(files)-8} more")
+    return "\n".join(lines)
+
+
+def text_prod_deploy_preview() -> str:
+    commits = prod_get_commits_ahead("main", "dev")
+    files   = prod_get_changed_files("main", "dev")
+    risk    = prod_get_risk_level(files)
+    version = prod_next_version()
+
+    if not commits:
+        return (
+            "✅ <b>Nothing to deploy</b>\n"
+            "Dev is already in sync with production."
+        )
+    lines = [
+        "🚀 <b>Deploy to Production</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"📦 <b>{len(commits)} commit(s)</b> will merge dev → main",
+        f"🏷 Release tag: <b>{version}</b>",
+        f"⚠️ Risk: {risk}",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "📝 <b>Commits:</b>",
+    ]
+    for c in reversed(commits):
+        lines.append(f"  • <code>{c['sha']}</code> {c['message']}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("Confirm to merge and trigger production build.")
+    return "\n".join(lines)
+
+
+def text_prod_rollback_list() -> str:
+    releases = prod_get_releases(limit=5)
+    if not releases:
+        return "📜 No releases found.\nDeploy to production first."
+    lines = [
+        "🔄 <b>Rollback Production</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "Select a version to rollback to:",
+        "",
+    ]
+    for rel in releases:
+        lines.append(
+            f"<b>{rel['tag']}</b> — <code>{rel['sha']}</code> — {rel['date']}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("Tap the tag name below to rollback.")
+    return "\n".join(lines)
+
+
+def kb_prod_rollback_list(releases: list) -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for rel in releases:
+        kb.add(types.InlineKeyboardButton(
+            f"{rel['tag']} — {rel['date']}",
+            callback_data=f"prod_rollback_select_{rel['tag']}"))
+    kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="prod_menu"))
+    return kb
+
+
+def text_prod_history() -> str:
+    releases = prod_get_releases(limit=5)
+    if not releases:
+        return "📜 <b>Release History</b>\n\nNo releases yet."
+    lines = ["📜 <b>Release History</b>", "━━━━━━━━━━━━━━━━━━━━"]
+    for i, rel in enumerate(releases):
+        marker = " ← current" if i == 0 else ""
+        lines.append(
+            f"<b>{rel['tag']}</b>{marker}\n"
+            f"  Commit: <code>{rel['sha']}</code> | {rel['date']}\n"
+            f"  {rel['body'][:60]}"
+        )
+    return "\n\n".join(lines[:1] + ["\n".join(lines[1:])])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 11 — BOT HANDLERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2050,6 +2487,49 @@ def handle_server_config_key(message):
 
 
 @bot.message_handler(
+    func=lambda m: prod_commit_input_buf.get(str(m.chat.id)) is not None)
+def handle_prod_commit_input(message):
+    """Handle commit ID typed by user for Deploy by Commit ID."""
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id) or not session_valid(message.chat.id):
+        return
+    buf    = prod_commit_input_buf.pop(chat_id, {})
+    msg_id = buf.get("msg_id") or nav_state.get(chat_id, {}).get("message_id")
+    sha    = message.text.strip()
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    if not msg_id:
+        return
+    safe_edit(chat_id, msg_id,
+              f"🔍 Validating commit <code>{sha}</code>…", kb_prod_back())
+    info = prod_validate_commit(sha)
+    if not info.get("valid"):
+        prod_commit_input_buf[chat_id] = {"msg_id": msg_id}
+        safe_edit(
+            chat_id, msg_id,
+            f"❌ <b>Commit not found:</b> <code>{sha}</code>\n\n"
+            "Try again — send a valid commit hash:",
+            kb_prod_back()
+        )
+        return
+    safe_edit(
+        chat_id, msg_id,
+        f"🔍 <b>Deploy by Commit ID</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ Commit found:\n"
+        f"  Hash:    <code>{info['sha']}</code>\n"
+        f"  Message: {info['message']}\n"
+        f"  Author:  {info['author']}\n"
+        f"  Date:    {info['date']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Deploy this commit to production?",
+        kb_prod_deploy_confirm(info["sha_full"])
+    )
+
+
+@bot.message_handler(
     func=lambda m: add_client_buf.get(str(m.chat.id)) is not None)
 def handle_add_client_input(message):
     chat_id = str(message.chat.id)
@@ -2371,6 +2851,182 @@ def handle_callback(call):
             "4. Restart nova_telegram service.",
             kb_settings()
         )
+
+    # ── Production Control ────────────────────────────────────────────────────
+
+    elif data == "prod_menu":
+        safe_edit(chat_id, msg_id, text_prod_menu(), kb_prod_menu())
+
+    elif data == "prod_dev_status":
+        safe_edit(chat_id, msg_id,
+                  "⏳ Fetching dev status…", kb_prod_back())
+        safe_edit(chat_id, msg_id,
+                  text_prod_dev_status(), kb_prod_back())
+
+    elif data == "prod_test_build":
+        safe_edit(chat_id, msg_id,
+                  "🧪 <b>Test Build</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "Triggering test build from <b>dev</b> branch…\n"
+                  "APK will be sent to you only — no client delivery.",
+                  kb_prod_back())
+        ok = prod_trigger_dev_build(chat_id, msg_id)
+        if ok:
+            safe_edit(chat_id, msg_id,
+                      "🧪 <b>Test Build Triggered</b> ✅\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      "Building from <b>dev</b> branch.\n"
+                      "Watch GitHub Actions for progress.",
+                      kb_prod_back())
+        else:
+            safe_edit(chat_id, msg_id,
+                      "❌ <b>Test Build Failed</b>\n"
+                      "Could not trigger GitHub Actions.\n"
+                      "Check GITHUB_TOKEN permissions.",
+                      kb_prod_back())
+
+    elif data == "prod_deploy":
+        safe_edit(chat_id, msg_id,
+                  "⏳ Checking dev branch…", kb_prod_back())
+        preview = text_prod_deploy_preview()
+        commits = prod_get_commits_ahead("main", "dev")
+        if not commits:
+            safe_edit(chat_id, msg_id, preview, kb_prod_back())
+        else:
+            # Auto health check
+            files = prod_get_changed_files("main", "dev")
+            risk  = prod_get_risk_level(files)
+            safe_edit(chat_id, msg_id, preview,
+                      kb_prod_deploy_confirm("dev"))
+
+    elif data.startswith("prod_deploy_confirm_"):
+        ref = data.replace("prod_deploy_confirm_", "")
+        safe_edit(chat_id, msg_id,
+                  "🚀 <b>Deploying…</b>\n"
+                  "Merging dev → main…", kb_prod_back())
+        # Determine if ref is a commit SHA or branch name
+        is_sha = len(ref) >= 7 and all(c in "0123456789abcdef" for c in ref)
+        if is_sha:
+            # Validate commit first
+            info = prod_validate_commit(ref)
+            if not info.get("valid"):
+                safe_edit(chat_id, msg_id,
+                          f"❌ Commit <code>{ref}</code> not found.",
+                          kb_prod_back())
+                return
+            ok, result = prod_merge_dev_to_main(commit_sha=info["sha_full"])
+        else:
+            ok, result = prod_merge_dev_to_main()
+
+        if ok:
+            version = prod_next_version()
+            prod_create_release(version, result if not is_sha else ref,
+                                f"Production deploy {version}")
+            # Trigger production build
+            trigger_github_build("wedding", 0, chat_id, msg_id)
+            safe_edit(
+                chat_id, msg_id,
+                f"🔒 <b>Production Locked</b> ✅\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🏷 Release: <b>{version}</b>\n"
+                f"📦 Commit:  <code>{result}</code>\n"
+                f"🏗 Production build triggered.\n"
+                f"Watch @TheVaultGuardBot for build progress.",
+                kb_prod_back()
+            )
+        else:
+            safe_edit(chat_id, msg_id,
+                      f"❌ <b>Deploy Failed</b>\n{result}",
+                      kb_prod_back())
+
+    elif data == "prod_rollback":
+        safe_edit(chat_id, msg_id,
+                  "⏳ Fetching releases…", kb_prod_back())
+        releases = prod_get_releases(limit=5)
+        if not releases:
+            safe_edit(chat_id, msg_id,
+                      "📜 No releases found. Deploy to production first.",
+                      kb_prod_back())
+        else:
+            safe_edit(chat_id, msg_id,
+                      text_prod_rollback_list(),
+                      kb_prod_rollback_list(releases))
+
+    elif data.startswith("prod_rollback_select_"):
+        tag = data.replace("prod_rollback_select_", "")
+        releases = prod_get_releases(limit=10)
+        rel = next((r for r in releases if r["tag"] == tag), None)
+        if not rel:
+            safe_edit(chat_id, msg_id,
+                      f"❌ Release <b>{tag}</b> not found.",
+                      kb_prod_back())
+            return
+        safe_edit(
+            chat_id, msg_id,
+            f"⚠️ <b>Confirm Rollback</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Rolling back production to:\n"
+            f"🏷 <b>{rel['tag']}</b> — <code>{rel['sha']}</code>\n"
+            f"📅 {rel['date']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ Clients will get APKs from this older build.",
+            kb_prod_rollback_confirm(tag)
+        )
+
+    elif data.startswith("prod_rollback_confirm_"):
+        tag = data.replace("prod_rollback_confirm_", "")
+        releases = prod_get_releases(limit=10)
+        rel = next((r for r in releases if r["tag"] == tag), None)
+        if not rel:
+            safe_edit(chat_id, msg_id,
+                      f"❌ Release <b>{tag}</b> not found.",
+                      kb_prod_back())
+            return
+        safe_edit(chat_id, msg_id,
+                  f"⏳ Rolling back to <b>{tag}</b>…", kb_prod_back())
+        # Need full SHA — fetch from release tag
+        info = prod_validate_commit(rel["sha"])
+        if not info.get("valid"):
+            safe_edit(chat_id, msg_id,
+                      f"❌ Could not resolve commit for <b>{tag}</b>.",
+                      kb_prod_back())
+            return
+        ok, result = prod_merge_dev_to_main(commit_sha=info["sha_full"])
+        if ok:
+            rb_tag = f"{tag}-rollback"
+            prod_create_release(rb_tag, info["sha_full"],
+                                f"Rollback to {tag}")
+            trigger_github_build("wedding", 0, chat_id, msg_id)
+            safe_edit(
+                chat_id, msg_id,
+                f"⏪ <b>Rollback Complete</b> ✅\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Production rolled back to <b>{tag}</b>\n"
+                f"Commit: <code>{rel['sha']}</code>\n"
+                f"🏗 Production build triggered.",
+                kb_prod_back()
+            )
+        else:
+            safe_edit(chat_id, msg_id,
+                      f"❌ <b>Rollback Failed</b>\n{result}",
+                      kb_prod_back())
+
+    elif data == "prod_deploy_commit":
+        prod_commit_input_buf[str(chat_id)] = {"msg_id": msg_id}
+        safe_edit(
+            chat_id, msg_id,
+            "🔍 <b>Deploy by Commit ID</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Send the commit hash (full or short 7-char):\n\n"
+            "<i>Example: abc1234</i>",
+            kb_prod_back()
+        )
+
+    elif data == "prod_history":
+        safe_edit(chat_id, msg_id,
+                  "⏳ Fetching history…", kb_prod_back())
+        safe_edit(chat_id, msg_id,
+                  text_prod_history(), kb_prod_back())
 
     elif data.startswith("search_devices_"):
         safe_edit(
@@ -3790,6 +4446,83 @@ def secret_health_loop():
         time.sleep(6 * 3600)  # 6 hours
 
 
+# ── Auto-rollback monitor ─────────────────────────────────────────────────────
+
+_last_seen_run_id   = None   # track last checked GitHub Actions run
+_last_deploy_sha    = None   # SHA of last production deploy
+_rollback_alerted   = False  # prevent duplicate alerts
+
+def prod_build_monitor_loop():
+    """
+    Thread 6: Monitors production builds on main.
+    If a build fails after a deploy, alerts admin with one-tap rollback option.
+    Checks every 3 minutes.
+    """
+    global _last_seen_run_id, _rollback_alerted
+    log_w.info("Production build monitor started (Layer 10 — 3min interval)")
+    time.sleep(120)  # wait 2 min on startup
+    while True:
+        try:
+            r = requests.get(
+                f"{GH_REPO()}/actions/runs?branch=main&per_page=1",
+                headers=GH_HDR(), timeout=15)
+            if r.status_code != 200:
+                time.sleep(180)
+                continue
+            runs = r.json().get("workflow_runs", [])
+            if not runs:
+                time.sleep(180)
+                continue
+            run     = runs[0]
+            run_id  = run.get("id")
+            status  = run.get("status", "")
+            conclusion = run.get("conclusion", "")
+
+            # New run detected
+            if run_id != _last_seen_run_id:
+                _last_seen_run_id = run_id
+                _rollback_alerted = False
+
+            # Alert only once per failed run
+            if (status == "completed" and conclusion == "failure"
+                    and not _rollback_alerted):
+                _rollback_alerted = True
+                releases = prod_get_releases(limit=2)
+                prev = releases[1] if len(releases) > 1 else None
+                run_url = run.get("html_url", "")
+                msg = (
+                    "⚠️ <b>Production Build Failed!</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Run: <a href='{run_url}'>View on GitHub</a>\n"
+                )
+                if prev:
+                    msg += (
+                        f"\nRollback to last good release?\n"
+                        f"<b>{prev['tag']}</b> — <code>{prev['sha']}</code> "
+                        f"— {prev['date']}"
+                    )
+                    kb = types.InlineKeyboardMarkup(row_width=2)
+                    kb.add(
+                        types.InlineKeyboardButton(
+                            f"⏪ Rollback to {prev['tag']}",
+                            callback_data=f"prod_rollback_select_{prev['tag']}"),
+                        types.InlineKeyboardButton(
+                            "❌ Keep Failed",
+                            callback_data="prod_menu"),
+                    )
+                else:
+                    kb = kb_prod_back()
+                try:
+                    bot.send_message(
+                        config.MASTER_CHAT_ID, msg,
+                        parse_mode="HTML", reply_markup=kb)
+                except Exception as e:
+                    log_w.error(f"Build monitor alert failed: {e}")
+        except Exception as e:
+            log_w.error(f"Build monitor loop error: {e}")
+        time.sleep(180)  # check every 3 minutes
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 14 — MAIN ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3873,8 +4606,12 @@ if __name__ == "__main__":
             target=secret_health_loop,
             daemon=True, name="SecretHealth"
         ).start()
+        threading.Thread(
+            target=prod_build_monitor_loop,
+            daemon=True, name="ProdBuildMonitor"
+        ).start()
 
-        log.info("5 watchdog threads started ✅")
+        log.info("6 watchdog threads started ✅")
         log.info("Starting Telegram bot polling ...")
 
         # Bot polling — blocks main thread (keeps process alive)
