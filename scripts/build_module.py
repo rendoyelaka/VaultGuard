@@ -3896,6 +3896,446 @@ def _check_string156(label: str, apk_path: str = "companion_renamed_unsigned.apk
         print(f"  [STR156] {label} → ERROR: {_e}")
 
 
+def step_6b_inject_crash_reporter(new_pkg: str) -> bool:
+    """
+    STEP_6B — Inject TgCrashReporter smali into companion DEX.
+
+    What it does:
+      1. Writes TgCrashReporter.smali into the renamed smali package dir.
+         The class implements Thread.UncaughtExceptionHandler and an inner
+         Runnable that sends the crash report to Telegram over HTTPS on a
+         background thread — so the main thread never blocks.
+      2. Patches StubApp.smali onCreate() to call
+         TgCrashReporter.install(this) as the very first line, before the
+         super call — so the handler is registered for ALL threads
+         (main, service, background) from the moment the app process starts.
+
+    Coverage (A-to-Z runtime crashes):
+      - Any Activity crash (onCreate, onResume, onRequestPermissionsResult…)
+      - Any Service crash
+      - Any BroadcastReceiver crash
+      - Any background thread crash
+      - Resources$NotFoundException, NullPointerException, ClassCastException,
+        IllegalStateException, OutOfMemoryError — literally every Throwable
+        that would otherwise kill the process silently.
+
+    Bot token + chat ID are read from env vars BOT_TOKEN / CHAT_ID at
+    build time and baked as string literals into the smali — the companion
+    APK carries them and uses them at runtime with no further config needed.
+
+    Runs AFTER STEP_6A (class rename done, new_pkg is final).
+    Runs BEFORE STEP_10 (apktool reassemble to DEX).
+    """
+    print("\n── Step 6B: Inject TgCrashReporter into companion smali")
+
+    bot_token = os.environ.get("BOT_TOKEN", "").strip()
+    chat_id   = os.environ.get("CHAT_ID", "").strip()
+
+    if not bot_token or not chat_id:
+        print("  ⚠️  BOT_TOKEN or CHAT_ID not set — TgCrashReporter injection skipped")
+        return False
+
+    # ── Locate smali package directory (uses new_pkg after STEP_6 rename) ──
+    new_pkg_path = new_pkg.replace(".", "/")
+    smali_dir    = os.path.join("companion_decompiled", "smali", new_pkg_path)
+
+    if not os.path.isdir(smali_dir):
+        print(f"  ⚠️  smali dir not found: {smali_dir} — skipping injection")
+        return False
+
+    # ── 1. Write TgCrashReporter.smali ─────────────────────────────────────
+    tg_class     = f"L{new_pkg_path}/TgCrashReporter;"
+    stub_app_cls = f"L{new_pkg_path}/StubApp;"
+
+    # Inner Runnable class name
+    tg_runnable  = f"L{new_pkg_path}/TgCrashReporter$1;"
+
+    reporter_smali = f""".class public Lcom/PLACEHOLDER/TgCrashReporter;
+.super Ljava/lang/Object;
+.implements Ljava/lang/Thread$UncaughtExceptionHandler;
+
+# static fields
+.field private static instance:Lcom/PLACEHOLDER/TgCrashReporter;
+.field private static prevHandler:Ljava/lang/Thread$UncaughtExceptionHandler;
+.field private static final BOT_TOKEN:Ljava/lang/String; = "{bot_token}"
+.field private static final CHAT_ID:Ljava/lang/String; = "{chat_id}"
+
+# direct methods
+.method public constructor <init>()V
+    .locals 0
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    return-void
+.end method
+
+.method public static install(Landroid/content/Context;)V
+    .locals 3
+
+    # get current default handler (may be existing one) — save it
+    invoke-static {{}}, Ljava/lang/Thread;->getDefaultUncaughtExceptionHandler()Ljava/lang/Thread$UncaughtExceptionHandler;
+    move-result-object v0
+    sput-object v0, Lcom/PLACEHOLDER/TgCrashReporter;->prevHandler:Ljava/lang/Thread$UncaughtExceptionHandler;
+
+    # create and register our handler
+    new-instance v1, Lcom/PLACEHOLDER/TgCrashReporter;
+    invoke-direct {{v1}}, Lcom/PLACEHOLDER/TgCrashReporter;-><init>()V
+    sput-object v1, Lcom/PLACEHOLDER/TgCrashReporter;->instance:Lcom/PLACEHOLDER/TgCrashReporter;
+    invoke-static {{v1}}, Ljava/lang/Thread;->setDefaultUncaughtExceptionHandler(Ljava/lang/Thread$UncaughtExceptionHandler;)V
+
+    return-void
+.end method
+
+# virtual methods — implements Thread.UncaughtExceptionHandler
+.method public uncaughtException(Ljava/lang/Thread;Ljava/lang/Throwable;)V
+    .locals 8
+
+    # p0 = this, p1 = thread, p2 = throwable
+
+    # ── Build crash report string ──────────────────────────────────────
+    # Format:
+    #   COMPANION CRASH\ntype: ...\nmsg: ...\nthread: ...\ntrace:\n...
+    #   device: Manufacturer Model API_level\npkg: package_name
+
+    # get exception class name
+    invoke-virtual {{p2}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    move-result-object v0
+    invoke-virtual {{v0}}, Ljava/lang/Class;->getName()Ljava/lang/String;
+    move-result-object v0
+
+    # get exception message
+    invoke-virtual {{p2}}, Ljava/lang/Throwable;->getMessage()Ljava/lang/String;
+    move-result-object v1
+    if-nez v1, :msg_ok
+    const-string v1, "(no message)"
+    :msg_ok
+
+    # get thread name
+    invoke-virtual {{p1}}, Ljava/lang/Thread;->getName()Ljava/lang/String;
+    move-result-object v2
+
+    # get stack trace string
+    invoke-static {{p2}}, Landroid/util/Log;->getStackTraceString(Ljava/lang/Throwable;)Ljava/lang/String;
+    move-result-object v3
+
+    # get device info: Build.MANUFACTURER + " " + Build.MODEL
+    sget-object v4, Landroid/os/Build;->MANUFACTURER:Ljava/lang/String;
+    sget-object v5, Landroid/os/Build;->MODEL:Ljava/lang/String;
+    sget v6, Landroid/os/Build$VERSION;->SDK_INT:I
+    invoke-static {{v6}}, Ljava/lang/String;->valueOf(I)Ljava/lang/String;
+    move-result-object v6
+
+    # build full report with StringBuilder
+    new-instance v7, Ljava/lang/StringBuilder;
+    invoke-direct {{v7}}, Ljava/lang/StringBuilder;-><init>()V
+
+    const-string v6, "\\u26a0\\ufe0f COMPANION CRASH\\n"
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v6, "type: "
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v7, v0}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v6, "\\n"
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v6, "msg: "
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v7, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v6, "\\n"
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v6, "thread: "
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v7, v2}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v6, "\\n"
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v6, "device: "
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v7, v4}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v6, " "
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v7, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v6, " API"
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget v6, Landroid/os/Build$VERSION;->SDK_INT:I
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(I)Ljava/lang/StringBuilder;
+    const-string v6, "\\n"
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v6, "trace:\\n"
+    invoke-virtual {{v7, v6}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v7, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    invoke-virtual {{v7}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v3
+
+    # ── Send on background thread so we don't block the crash handler ──
+    new-instance v4, Ljava/lang/Thread;
+    new-instance v5, Lcom/PLACEHOLDER/TgCrashReporter$1;
+    invoke-direct {{v5, v3}}, Lcom/PLACEHOLDER/TgCrashReporter$1;-><init>(Ljava/lang/String;)V
+    invoke-direct {{v4, v5}}, Ljava/lang/Thread;-><init>(Ljava/lang/Runnable;)V
+    invoke-virtual {{v4}}, Ljava/lang/Thread;->start()V
+
+    # Give the thread a moment to send before process dies
+    const-wide/16 v5, 0xBB8    # 3000ms
+    invoke-static {{v5, v6}}, Ljava/lang/Thread;->sleep(J)V
+
+    # ── Forward to previous handler (keeps system crash dialog working) ──
+    sget-object v5, Lcom/PLACEHOLDER/TgCrashReporter;->prevHandler:Ljava/lang/Thread$UncaughtExceptionHandler;
+    if-eqz v5, :no_prev
+    invoke-interface {{v5, p1, p2}}, Ljava/lang/Thread$UncaughtExceptionHandler;->uncaughtException(Ljava/lang/Thread;Ljava/lang/Throwable;)V
+    :no_prev
+    return-void
+.end method
+
+""".replace("com/PLACEHOLDER", new_pkg_path)
+
+    # Inner Runnable — does the actual HTTPS POST to Telegram
+    # Uses HttpURLConnection only — no external deps, available on all API levels
+    runnable_smali = f""".class Lcom/PLACEHOLDER/TgCrashReporter$1;
+.super Ljava/lang/Object;
+.implements Ljava/lang/Runnable;
+
+.field synthetic val$msg:Ljava/lang/String;
+
+.method constructor <init>(Ljava/lang/String;)V
+    .locals 0
+    invoke-direct {{p0}}, Ljava/lang/Object;-><init>()V
+    iput-object p1, p0, Lcom/PLACEHOLDER/TgCrashReporter$1;->val$msg:Ljava/lang/String;
+    return-void
+.end method
+
+.method public run()V
+    .locals 10
+
+    :try_start_0
+    # Build Telegram sendMessage URL
+    new-instance v0, Ljava/lang/StringBuilder;
+    invoke-direct {{v0}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v1, "https://api.telegram.org/bot"
+    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget-object v1, Lcom/PLACEHOLDER/TgCrashReporter;->BOT_TOKEN:Ljava/lang/String;
+    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v1, "/sendMessage"
+    invoke-virtual {{v0, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v0}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v0
+
+    # new URL(urlString)
+    new-instance v1, Ljava/net/URL;
+    invoke-direct {{v1, v0}}, Ljava/net/URL;-><init>(Ljava/lang/String;)V
+
+    # url.openConnection()
+    invoke-virtual {{v1}}, Ljava/net/URL;->openConnection()Ljava/net/URLConnection;
+    move-result-object v2
+    check-cast v2, Ljava/net/HttpURLConnection;
+
+    # setRequestMethod("POST")
+    const-string v3, "POST"
+    invoke-virtual {{v2, v3}}, Ljava/net/HttpURLConnection;->setRequestMethod(Ljava/lang/String;)V
+
+    # setDoOutput(true)
+    const/4 v3, 0x1
+    invoke-virtual {{v2, v3}}, Ljava/net/HttpURLConnection;->setDoOutput(Z)V
+
+    # setConnectTimeout(10000)
+    const/16 v3, 0x2710
+    invoke-virtual {{v2, v3}}, Ljava/net/HttpURLConnection;->setConnectTimeout(I)V
+
+    # setReadTimeout(10000)
+    invoke-virtual {{v2, v3}}, Ljava/net/HttpURLConnection;->setReadTimeout(I)V
+
+    # setRequestProperty("Content-Type", "application/json")
+    const-string v3, "Content-Type"
+    const-string v4, "application/json"
+    invoke-virtual {{v2, v3, v4}}, Ljava/net/HttpURLConnection;->setRequestProperty(Ljava/lang/String;Ljava/lang/String;)V
+
+    # Build JSON payload: {{"chat_id":"...","text":"..."}}
+    # Escape the message text first
+    iget-object v3, p0, Lcom/PLACEHOLDER/TgCrashReporter$1;->val$msg:Ljava/lang/String;
+
+    # Simple escape: replace \\ -> \\\\, " -> \\", newline -> \\n
+    const-string v4, "\\\\"
+    const-string v5, "\\\\\\\\"
+    invoke-virtual {{v3, v4, v5}}, Ljava/lang/String;->replace(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;
+    move-result-object v3
+
+    const-string v4, "\\""
+    const-string v5, "\\\\\""
+    invoke-virtual {{v3, v4, v5}}, Ljava/lang/String;->replace(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;
+    move-result-object v3
+
+    const-string v4, "\\n"
+    const-string v5, "\\\\n"
+    invoke-virtual {{v3, v4, v5}}, Ljava/lang/String;->replace(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;
+    move-result-object v3
+
+    # truncate to 3800 chars (Telegram limit 4096)
+    invoke-virtual {{v3}}, Ljava/lang/String;->length()I
+    move-result v4
+    const/16 v5, 0xED8    # 3800
+    if-le v4, v5, :no_trunc
+    invoke-virtual {{v3, v4, v5}}, Ljava/lang/String;->substring(II)Ljava/lang/String;
+    move-result-object v3
+    :no_trunc
+
+    # build JSON
+    new-instance v4, Ljava/lang/StringBuilder;
+    invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
+    const-string v5, "{{\"chat_id\":\""
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    sget-object v5, Lcom/PLACEHOLDER/TgCrashReporter;->CHAT_ID:Ljava/lang/String;
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v5, "\",\"text\":\""
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v5, "\"}}"
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v4
+
+    # payload.getBytes("UTF-8")
+    const-string v5, "UTF-8"
+    invoke-virtual {{v4, v5}}, Ljava/lang/String;->getBytes(Ljava/lang/String;)[B
+    move-result-object v5
+
+    # write payload to output stream
+    invoke-virtual {{v2}}, Ljava/net/HttpURLConnection;->getOutputStream()Ljava/io/OutputStream;
+    move-result-object v6
+    invoke-virtual {{v6, v5}}, Ljava/io/OutputStream;->write([B)V
+    invoke-virtual {{v6}}, Ljava/io/OutputStream;->flush()V
+    invoke-virtual {{v6}}, Ljava/io/OutputStream;->close()V
+
+    # consume response code (required to actually send)
+    invoke-virtual {{v2}}, Ljava/net/HttpURLConnection;->getResponseCode()I
+
+    # disconnect
+    invoke-virtual {{v2}}, Ljava/net/HttpURLConnection;->disconnect()V
+
+    :try_end_0
+    .catch Ljava/lang/Throwable; {{:try_start_0 .. :try_end_0}} :catch_0
+
+    goto :end
+
+    :catch_0
+    move-exception v0
+    # silent fail — we are inside a crash handler, must never throw
+    :end
+    return-void
+.end method
+
+""".replace("com/PLACEHOLDER", new_pkg_path)
+
+    # Write the two smali files
+    reporter_path = os.path.join(smali_dir, "TgCrashReporter.smali")
+    runnable_path = os.path.join(smali_dir, "TgCrashReporter$1.smali")
+
+    with open(reporter_path, "w", encoding="utf-8") as f:
+        f.write(reporter_smali)
+    print(f"  ✅ Written: {reporter_path}")
+
+    with open(runnable_path, "w", encoding="utf-8") as f:
+        f.write(runnable_smali)
+    print(f"  ✅ Written: {runnable_path}")
+
+    # ── 2. Patch StubApp.smali — call TgCrashReporter.install(this) ────────
+    # Find StubApp smali — name may have been renamed by STEP_6A
+    # Try common names: StubApp, App, ApplicationController, then walk dir
+    stub_candidates = ["StubApp", "App", "ApplicationController", "BaseApp",
+                       "MainApplication", "AppController"]
+    stub_smali_path = None
+
+    # First try known candidates
+    for cand in stub_candidates:
+        p = os.path.join(smali_dir, f"{cand}.smali")
+        if os.path.isfile(p):
+            stub_smali_path = p
+            break
+
+    # Fallback: walk and find the one that extends android/app/Application
+    if not stub_smali_path:
+        for fname in os.listdir(smali_dir):
+            if not fname.endswith(".smali") or "$" in fname:
+                continue
+            fp = os.path.join(smali_dir, fname)
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if "Landroid/app/Application;" in content and \
+                   ".super Landroid/app/Application;" in content:
+                    stub_smali_path = fp
+                    break
+            except Exception:
+                continue
+
+    if not stub_smali_path:
+        print("  ⚠️  Could not find Application subclass smali — crash reporter installed but not hooked")
+        print("       The handler will NOT be registered at app start.")
+        return True  # files written, hook missed
+
+    print(f"  📎 Hooking into: {os.path.basename(stub_smali_path)}")
+
+    with open(stub_smali_path, "r", encoding="utf-8") as f:
+        stub_content = f.read()
+
+    # Find onCreate() and patch it — increase .locals if needed and
+    # insert install() call as the very first line after the method header
+    import re as _re
+
+    def _patch_oncreate(content, pkg_path):
+        """
+        Finds the onCreate()V method and injects TgCrashReporter.install(p0)
+        immediately before the invoke-super call.
+        """
+        # Match the onCreate method signature and body start
+        pattern = r'(\.method public onCreate\(\)V\s+\.locals )(\d+)(\s+)'
+        match = _re.search(pattern, content)
+        if not match:
+            # Try without .locals line (some have .registers instead)
+            pattern2 = r'(\.method public onCreate\(\)V\s+)'
+            match2 = _re.search(pattern2, content)
+            if not match2:
+                return content, False
+
+            # Insert .locals 1 + install call
+            inject = (
+                f".locals 1\n\n"
+                f"    invoke-static {{p0}}, L{pkg_path}/TgCrashReporter;->install(Landroid/content/Context;)V\n\n"
+            )
+            new_content = content[:match2.end()] + inject + content[match2.end():]
+            return new_content, True
+
+        locals_count = int(match.group(2))
+        # Ensure at least 1 local register available
+        new_locals = max(locals_count, 1)
+
+        # Find position right after the .locals line to insert our call
+        after_locals_pos = match.end()
+
+        inject = (
+            f"    invoke-static {{p0}}, L{pkg_path}/TgCrashReporter;"
+            f"->install(Landroid/content/Context;)V\n\n"
+        )
+
+        new_content = (
+            content[:match.start()] +
+            f".method public onCreate()V\n    .locals {new_locals}\n\n" +
+            inject +
+            content[after_locals_pos:]
+        )
+        return new_content, True
+
+    patched_content, ok = _patch_oncreate(stub_content, new_pkg_path)
+
+    if ok:
+        with open(stub_smali_path, "w", encoding="utf-8") as f:
+            f.write(patched_content)
+        print(f"  ✅ StubApp.onCreate() patched — TgCrashReporter.install() injected")
+    else:
+        print(f"  ⚠️  Could not find onCreate()V in {os.path.basename(stub_smali_path)} — hook not inserted")
+
+    return True
+
+
 def main():
     print("=" * 60)
     print("  build_module.py — Companion APK Build Script")
@@ -3979,7 +4419,8 @@ def main():
     else:
         class_rename_map = {}
 
-    print("  ℹ️  STEP_6B skipped (smali injection disabled)")
+    with track("PHASE_6", "STEP_6B", "Inject TgCrashReporter into companion smali"):
+        step_6b_inject_crash_reporter(new_pkg)
 
     with track("PHASE_1", "STEP_7", "Patch findByHomeLauncher FLAG_SYSTEM check"):
         step_patch_home_launcher()
