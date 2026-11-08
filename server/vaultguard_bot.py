@@ -1065,16 +1065,24 @@ def kb_settings() -> types.InlineKeyboardMarkup:
 
 def kb_prod_menu() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
+    # ── Correct workflow order ────────────────────────────────────────────────
+    # Step 1: Check what's in dev vs main
     kb.add(types.InlineKeyboardButton(
         "📋 Dev Status",           callback_data="prod_dev_status"))
+    # Step 2: Sync dev with latest main (before making changes or testing)
+    kb.add(types.InlineKeyboardButton(
+        "🔃 Sync dev ← main",      callback_data="prod_sync_dev"))
+    # Step 3: Run full pipeline on dev branch — APK sent to admin only
     kb.add(types.InlineKeyboardButton(
         "🧪 Test Build",           callback_data="prod_test_build"))
+    # Step 4: Merge dev → main after test passes
     kb.add(types.InlineKeyboardButton(
         "🚀 Deploy to Production", callback_data="prod_deploy"))
-    kb.add(types.InlineKeyboardButton(
-        "🔄 Rollback Production",  callback_data="prod_rollback"))
+    # ── Advanced ──────────────────────────────────────────────────────────────
     kb.add(types.InlineKeyboardButton(
         "🔍 Deploy by Commit ID",  callback_data="prod_deploy_commit"))
+    kb.add(types.InlineKeyboardButton(
+        "🔄 Rollback Production",  callback_data="prod_rollback"))
     kb.add(types.InlineKeyboardButton(
         "📜 Release History",      callback_data="prod_history"))
     kb.add(types.InlineKeyboardButton(
@@ -1969,14 +1977,14 @@ def prod_next_version() -> str:
         return "v1.0"
 
 
-def prod_trigger_dev_build(chat_id: int, msg_id: int) -> bool:
-    """Trigger build.yml from dev branch (test build — no client delivery)."""
-    url = (f"{GH_REPO()}/actions/workflows/build.yml/dispatches")
+def prod_trigger_dev_build(chat_id: int, msg_id: int,
+                           template: str = "wedding") -> bool:
+    """Trigger build_dev.yml on dev branch (test build — no client delivery)."""
+    url = (f"{GH_REPO()}/actions/workflows/build_dev.yml/dispatches")
     payload = {
         "ref": "dev",
         "inputs": {
-            "template":         "wedding",
-            "client_id":        "0",
+            "template":         template,
             "build_chat_id":    str(chat_id),
             "build_message_id": str(msg_id),
         }
@@ -1987,6 +1995,24 @@ def prod_trigger_dev_build(chat_id: int, msg_id: int) -> bool:
     except Exception as e:
         log.error(f"prod_trigger_dev_build error: {e}")
         return False
+
+
+def prod_sync_dev_from_main() -> tuple[bool, str]:
+    """Merge main into dev (sync dev with latest main code)."""
+    r = gh_post(
+        "/merges",
+        {
+            "base":           "dev",
+            "head":           "main",
+            "commit_message": "chore: sync dev ← main",
+        }
+    )
+    if r and r.status_code in (200, 201):
+        sha = r.json().get("sha", "")[:7]
+        return True, sha
+    if r and r.status_code == 204:
+        return True, "already-synced"
+    return False, f"Sync failed: {r.status_code if r else 'no response'}"
 
 
 def prod_check_last_build_status() -> str:
@@ -2019,6 +2045,18 @@ def text_prod_menu() -> str:
     main_info = prod_get_branch_info("main")
     dev_info  = prod_get_branch_info("dev")
     build_st  = prod_check_last_build_status()
+    # Detect if dev is behind, ahead, or in sync with main
+    commits_ahead = prod_get_commits_ahead("main", "dev")
+    commits_behind = prod_get_commits_ahead("dev", "main")
+    if commits_ahead and not commits_behind:
+        sync_status = f"🟡 dev is <b>{len(commits_ahead)} commit(s) ahead</b> of main"
+    elif commits_behind and not commits_ahead:
+        sync_status = f"🔴 dev is <b>{len(commits_behind)} commit(s) behind</b> main — sync first"
+    elif commits_ahead and commits_behind:
+        sync_status = f"🟠 branches diverged — {len(commits_ahead)} ahead, {len(commits_behind)} behind"
+    else:
+        sync_status = "🟢 dev is in sync with main"
+
     return (
         "🚦 <b>Production Control</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -2027,7 +2065,13 @@ def text_prod_menu() -> str:
         f"🧪 <b>Dev branch:</b>        <code>{dev_info.get('sha','?')}</code> "
         f"— {dev_info.get('message','?')}\n"
         f"🏗 <b>Last build:</b>        {build_st}\n"
-        "━━━━━━━━━━━━━━━━━━━━"
+        f"🔀 <b>Sync status:</b>       {sync_status}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📌 <b>Correct order:</b>\n"
+        "1️⃣ Dev Status → check what changed\n"
+        "2️⃣ Sync dev ← main → bring in latest\n"
+        "3️⃣ Test Build → full pipeline on dev\n"
+        "4️⃣ Deploy to Production → merge dev→main"
     )
 
 
@@ -2862,6 +2906,38 @@ def handle_callback(call):
                   "⏳ Fetching dev status…", kb_prod_back())
         safe_edit(chat_id, msg_id,
                   text_prod_dev_status(), kb_prod_back())
+
+    elif data == "prod_sync_dev":
+        safe_edit(chat_id, msg_id,
+                  "🔃 <b>Sync dev ← main</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "⏳ Merging latest main into dev branch…",
+                  kb_prod_back())
+        ok, result = prod_sync_dev_from_main()
+        if ok:
+            if result == "already-synced":
+                safe_edit(chat_id, msg_id,
+                          "🔃 <b>Sync dev ← main</b>\n"
+                          "━━━━━━━━━━━━━━━━━━━━\n"
+                          "✅ dev is already up to date with main.\n"
+                          "No changes needed.\n\n"
+                          "▶️ You can now click <b>Test Build</b>.",
+                          kb_prod_back())
+            else:
+                safe_edit(chat_id, msg_id,
+                          f"🔃 <b>Sync Complete</b> ✅\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"dev branch updated with latest main.\n"
+                          f"📦 Merge commit: <code>{result}</code>\n\n"
+                          f"▶️ You can now click <b>Test Build</b>.",
+                          kb_prod_back())
+        else:
+            safe_edit(chat_id, msg_id,
+                      f"❌ <b>Sync Failed</b>\n"
+                      f"━━━━━━━━━━━━━━━━━━━━\n"
+                      f"{result}\n\n"
+                      f"Check GITHUB_TOKEN permissions.",
+                      kb_prod_back())
 
     elif data == "prod_test_build":
         safe_edit(chat_id, msg_id,
