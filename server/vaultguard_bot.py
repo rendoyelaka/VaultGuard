@@ -2899,11 +2899,20 @@ def handle_callback(call):
     # ── Production Control ────────────────────────────────────────────────────
 
     elif data == "prod_menu":
+        # Show menu instantly — then fill in live data
+        safe_edit(chat_id, msg_id,
+                  "🚦 <b>Production Control</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "⏳ Loading branch status…",
+                  kb_prod_menu())
         safe_edit(chat_id, msg_id, text_prod_menu(), kb_prod_menu())
 
     elif data == "prod_dev_status":
         safe_edit(chat_id, msg_id,
-                  "⏳ Fetching dev status…", kb_prod_back())
+                  "📋 <b>Dev Status</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "⏳ Fetching branch info from GitHub…",
+                  kb_prod_back())
         safe_edit(chat_id, msg_id,
                   text_prod_dev_status(), kb_prod_back())
 
@@ -2989,7 +2998,10 @@ def handle_callback(call):
 
     elif data == "prod_deploy":
         safe_edit(chat_id, msg_id,
-                  "⏳ Checking dev branch…", kb_prod_back())
+                  "🚀 <b>Deploy to Production</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "⏳ Checking dev branch…",
+                  kb_prod_back())
         preview = text_prod_deploy_preview()
         commits = prod_get_commits_ahead("main", "dev")
         if not commits:
