@@ -207,6 +207,7 @@ def init_db():
             github_run_id   TEXT DEFAULT '',
             chat_id         TEXT DEFAULT '',
             message_id      TEXT DEFAULT '',
+            server_ip       TEXT DEFAULT '',
             server_port     TEXT DEFAULT '',
             server_key      TEXT DEFAULT ''
         );
@@ -225,6 +226,7 @@ def init_db():
     db.commit()
     # ── Migrations: add columns to existing DBs ───────────────────────────────
     for col, definition in [
+        ("server_ip",   "TEXT DEFAULT ''"),
         ("server_port", "TEXT DEFAULT ''"),
         ("server_key",  "TEXT DEFAULT ''"),
     ]:
@@ -1395,21 +1397,23 @@ def text_rebuild_confirm(client_id: int, template: str) -> str:
     db = get_db()
     c  = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
     last_build = db.execute(
-        "SELECT build_number, status, server_port, server_key FROM builds "
-        "WHERE client_id=? AND template=? AND server_port != '' "
+        "SELECT build_number, status, server_ip, server_port, server_key FROM builds "
+        "WHERE client_id=? AND template=? AND server_ip != '' "
         "ORDER BY id DESC LIMIT 1",
         (client_id, template)
     ).fetchone()
     db.close()
-    name = c["profile_name"] or c["telegram_username"] if c else "Unknown"
+    name   = c["profile_name"] or c["telegram_username"] if c else "Unknown"
     rdp_ip = c["rdp_ip"] if c else "—"
     emoji, tpl_name = TEMPLATES.get(template, ("⚙️", template.title()))
     if last_build:
+        ip   = last_build["server_ip"]   or rdp_ip
         port = last_build["server_port"] or "—"
         key  = last_build["server_key"]  or "—"
         build_ref = f"#{last_build['build_number']}"
         st = "✅" if last_build["status"] == "success" else "❌"
     else:
+        ip   = rdp_ip
         port = "—"
         key  = "—"
         build_ref = "None"
@@ -1420,7 +1424,7 @@ def text_rebuild_confirm(client_id: int, template: str) -> str:
         f"📦 Template    : {emoji} {tpl_name}\n"
         f"🔖 Last build  : {build_ref} {st}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 Server IP   : <code>{rdp_ip}</code>\n"
+        f"📡 Server IP   : <code>{ip}</code>\n"
         f"🔌 Port        : <code>{port}</code>\n"
         f"🔑 Key         : <code>{key}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -2880,9 +2884,10 @@ def handle_server_config_key(message):
     buf["step"] = "done"
     server_config_buf[chat_id] = buf
     # Show confirmation screen
-    template  = buf["template"]
-    client_id = buf["client_id"]
-    cbuf      = custom_build_buf.get(chat_id)
+    template   = buf["template"]
+    client_id  = buf["client_id"]
+    is_rebuild = buf.get("is_rebuild", False)
+    cbuf       = custom_build_buf.get(chat_id)
     if template == "custom" and cbuf:
         safe_edit(message.chat.id, msg_id,
                   text_custom_build_confirm(
@@ -2890,6 +2895,17 @@ def handle_server_config_key(message):
                       srv_ip=buf["ip"], srv_port=buf["port"],
                       srv_key=buf["key"]),
                   kb_build_confirm(client_id, template))
+    elif is_rebuild:
+        # Rebuild flow — show rebuild confirm screen with ✅ Confirm Rebuild button
+        safe_edit(message.chat.id, msg_id,
+                  f"🔁 <b>Rebuild — confirm config</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  f"📡 Server IP   : <code>{buf['ip']}</code>\n"
+                  f"🔌 Port        : <code>{buf['port']}</code>\n"
+                  f"🔑 Key         : <code>{buf['key']}</code>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  f"Confirm to rebuild with this config:",
+                  kb_rebuild_confirm(client_id, template))
     else:
         safe_edit(message.chat.id, msg_id,
                   text_build_confirm(
@@ -3441,7 +3457,7 @@ def handle_callback(call):
                       kb_server_config_cancel(client_id, template))
 
     elif data.startswith("template_rebuild_"):
-        # template_rebuild_{client_id}_{template} — show pre-filled config screen
+        # template_rebuild_{client_id}_{template} — show pre-filled config or collect missing port/key
         rest      = data[len("template_rebuild_"):]
         parts     = rest.split("_", 1)
         client_id = int(parts[0])
@@ -3457,9 +3473,41 @@ def handle_callback(call):
                       text_custom_name_prompt(client_id),
                       kb_custom_cancel(client_id))
         else:
-            safe_edit(chat_id, msg_id,
-                      text_rebuild_confirm(client_id, template),
-                      kb_rebuild_confirm(client_id, template))
+            # Check if last build has all 3 values stored
+            _db = get_db()
+            _c  = _db.execute("SELECT rdp_ip FROM clients WHERE id=?", (client_id,)).fetchone()
+            _lb = _db.execute(
+                "SELECT server_ip, server_port, server_key FROM builds "
+                "WHERE client_id=? AND template=? AND server_ip != '' "
+                "ORDER BY id DESC LIMIT 1",
+                (client_id, template)).fetchone()
+            _db.close()
+            _rdp_ip = _c["rdp_ip"] if _c else ""
+            if _lb and _lb["server_ip"] and _lb["server_port"] and _lb["server_key"]:
+                # All 3 values available — show pre-filled confirm screen
+                safe_edit(chat_id, msg_id,
+                          text_rebuild_confirm(client_id, template),
+                          kb_rebuild_confirm(client_id, template))
+            else:
+                # Missing port/key — IP already known from rdp_ip, skip to port entry
+                server_config_buf[str(chat_id)] = {
+                    "step":       "port",    # skip IP — already have it
+                    "client_id":  client_id,
+                    "template":   template,
+                    "ip":         _rdp_ip,   # pre-filled from clients.rdp_ip
+                    "port":       None,
+                    "key":        None,
+                    "is_rebuild": True,
+                }
+                nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
+                safe_edit(chat_id, msg_id,
+                          f"🔁 <b>Rebuild — enter port & key</b>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"📡 IP already set: <code>{_rdp_ip}</code>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🔌 Enter server port:\n\n"
+                          f"<i>Example: 7771</i>",
+                          kb_server_config_cancel(client_id, template))
 
     elif data.startswith("rebuild_confirm_"):
         # rebuild_confirm_{client_id}_{template} — trigger build with stored config
@@ -3474,16 +3522,19 @@ def handle_callback(call):
             "SELECT profile_name, telegram_username, rdp_ip FROM clients WHERE id=?",
             (client_id,)).fetchone()
         _lb = _db.execute(
-            "SELECT server_port, server_key FROM builds "
-            "WHERE client_id=? AND template=? AND server_port != '' "
+            "SELECT server_ip, server_port, server_key FROM builds "
+            "WHERE client_id=? AND template=? AND server_ip != '' "
             "ORDER BY id DESC LIMIT 1",
             (client_id, template)).fetchone()
         _db.close()
         _client_name = (_c["profile_name"] or _c["telegram_username"]) if _c else ""
         _client_ip   = _c["rdp_ip"] if _c else ""
-        _port = _lb["server_port"] if _lb else ""
-        _key  = _lb["server_key"]  if _lb else ""
-        srv_host_b64 = _b64.b64encode(_client_ip.encode()).decode().rstrip("=") if _client_ip else ""
+        _ip   = (_lb["server_ip"]   if _lb and _lb["server_ip"]   else _client_ip)
+        _port = (_lb["server_port"] if _lb and _lb["server_port"] else "")
+        _key  = (_lb["server_key"]  if _lb and _lb["server_key"]  else "")
+        # Use stored IP as the actual server host (may differ from rdp_ip if changed)
+        _client_ip = _ip
+        srv_host_b64 = _b64.b64encode(_ip.encode()).decode().rstrip("=") if _ip else ""
         srv_port_b64 = _b64.b64encode(_port.encode()).decode().rstrip("=")      if _port else ""
         srv_key_b64  = _b64.b64encode(_key.encode()).decode()                   if _key  else ""
         emoji, display_name = TEMPLATES.get(template, ("⚙️", template))
@@ -3511,10 +3562,10 @@ def handle_callback(call):
             _db2 = get_db()
             _db2.execute(
                 "INSERT INTO builds "
-                "(client_id, template, status, chat_id, message_id, server_port, server_key) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "(client_id, template, status, chat_id, message_id, server_ip, server_port, server_key) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 (client_id, template, "building",
-                 str(chat_id), str(msg_id), _port, _key)
+                 str(chat_id), str(msg_id), _client_ip, _port, _key)
             )
             _db2.commit()
             _db2.close()
@@ -3647,14 +3698,15 @@ def handle_callback(call):
         )
         if ok:
             db = get_db()
+            _srv_ip   = sbuf["ip"]   if sbuf and sbuf.get("ip")   else _client_ip
             _srv_port = sbuf["port"] if sbuf and sbuf.get("port") else ""
             _srv_key  = sbuf["key"]  if sbuf and sbuf.get("key")  else ""
             db.execute(
                 "INSERT INTO builds "
-                "(client_id, template, status, chat_id, message_id, server_port, server_key) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "(client_id, template, status, chat_id, message_id, server_ip, server_port, server_key) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 (client_id, template, "building",
-                 str(chat_id), str(msg_id), _srv_port, _srv_key)
+                 str(chat_id), str(msg_id), _srv_ip, _srv_port, _srv_key)
             )
             db.commit()
             db.close()
