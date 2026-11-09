@@ -125,6 +125,15 @@ def init_db():
             (tok, name, int(time.time())))
 
     conn.commit()
+    # ── Migration: add vpn_bypass to clients table ───────────────────────────
+    try:
+        conn2 = sqlite3.connect(DB_PATH)
+        conn2.execute("ALTER TABLE clients ADD COLUMN vpn_bypass INTEGER NOT NULL DEFAULT 1")
+        conn2.commit()
+        conn2.close()
+        log.info("Migration: added clients.vpn_bypass")
+    except Exception:
+        pass  # column already exists
     conn.close()
     log.info(f"Database initialized: {DB_PATH}")
 
@@ -381,6 +390,7 @@ def get_mutation_key(token):
             "string_seed":  string_seed,
             "mutation_seed": seed,
             "expire_ts":    now + 300,
+            "vpn_bypass":   int(client["vpn_bypass"]) if "vpn_bypass" in client.keys() else 1,
         }
 
         # Signature: empty string intentionally.

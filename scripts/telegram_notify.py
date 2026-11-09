@@ -301,8 +301,9 @@ def edit_message(token: str, chat_id: str, message_id: str, text: str):
 
 
 def send_document(token: str, chat_id: str, apk_path: str,
-                  caption: str, filename: str = "") -> bool:
-    """Send APK file as Telegram document with optional custom filename."""
+                  caption: str, filename: str = "",
+                  reply_markup: dict = None) -> bool:
+    """Send APK file as Telegram document with optional custom filename and inline keyboard."""
     if not os.path.exists(apk_path):
         print(f"[telegram_notify] APK not found: {apk_path}", file=sys.stderr)
         return False
@@ -311,13 +312,18 @@ def send_document(token: str, chat_id: str, apk_path: str,
     with open(apk_path, "rb") as f:
         file_data = f.read()
 
+    payload = {
+        "chat_id":    chat_id,
+        "caption":    caption,
+        "parse_mode": "HTML",
+    }
+    if reply_markup:
+        import json as _json
+        payload["reply_markup"] = _json.dumps(reply_markup)
+
     result = telegram_request(
         token, "sendDocument",
-        {
-            "chat_id":    chat_id,
-            "caption":    caption,
-            "parse_mode": "HTML",
-        },
+        payload,
         files={
             "document": (send_filename, file_data,
                          "application/vnd.android.package-archive")
@@ -697,8 +703,32 @@ def main():
             if commit_short:
                 caption += f"\nCommit   : <code>{commit_short}</code>"
 
+        # ── Inline keyboard: Rebuild + Cancel directly on the APK message ───────
+        # Buttons appear attached to the APK file in chat — no navigation needed.
+        # quick_rebuild_<client_id>_<template>  → bot shows rebuild confirm screen
+        # quick_cancel_build_<client_id>        → bot cancels current in-progress build
+        # Dev builds (client == "0") get no Rebuild button — no client profile to rebuild for.
+        rebuild_markup = None
+        if not is_dev:
+            client_id_str = args.client  # numeric client_id string
+            template_str  = args.template
+            rebuild_markup = {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text":          "🔁 Rebuild",
+                            "callback_data": f"quick_rebuild_{client_id_str}_{template_str}"
+                        },
+                        {
+                            "text":          "❌ Cancel Build",
+                            "callback_data": f"quick_cancel_build_{client_id_str}"
+                        }
+                    ]
+                ]
+            }
+
         ok = send_document(args.token, args.chat_id, args.apk, caption,
-                           filename=apk_filename)
+                           filename=apk_filename, reply_markup=rebuild_markup)
         if ok:
             print(f"[telegram_notify] APK sent as '{apk_filename}'")
         else:
