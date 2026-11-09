@@ -1577,29 +1577,51 @@ def text_settings(chat_id: int) -> str:
     )
 
 
-def text_add_client_form(data: dict, current_field: str) -> str:
-    fields = {
-        "username": ("Telegram Username", data.get("username", "")),
-        "name":     ("Profile Name (optional)", data.get("name", "")),
-        "tg_id":    ("Telegram ID", data.get("tg_id", "")),
-        "rdp_ip":   ("RDP IP Address", data.get("rdp_ip", "")),
-    }
-    lines = ["➕ <b>Add Client</b>", "━━━━━━━━━━━━━━━━━━━━"]
-    for key, (label, value) in fields.items():
-        if key == current_field:
-            lines.append(f"➡️ <b>{label}</b>: {value or '___'}")
-        else:
-            check = "✅" if value else "⬜"
-            lines.append(f"{check} {label}: {value or '—'}")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
+def text_add_client_form(data: dict, current_field: str,
+                         error: str = "") -> str:
+    # Step counter
+    step_map = {"username": 1, "name": 2, "tg_id": 3, "rdp_ip": 4}
+    step = step_map.get(current_field, 1)
+    total = 4
+
+    fields = [
+        ("username", "Telegram Username",    data.get("username", ""), True),
+        ("name",     "Profile Name",         data.get("name", "") or "—", False),
+        ("tg_id",    "Telegram ID",          data.get("tg_id", ""),   True),
+        ("rdp_ip",   "RDP IP Address",       data.get("rdp_ip", ""),  True),
+    ]
     prompts = {
-        "username": "Send the client's Telegram username (without @):",
-        "name":     "Send profile name (or . to skip):",
-        "tg_id":    "Send the client's Telegram ID (numeric):",
-        "rdp_ip":   "Send the client's RDP IP address:",
+        "username": "✏️ Send Telegram username (without @):",
+        "name":     "✏️ Send profile name, or send  .  to skip:",
+        "tg_id":    "✏️ Send Telegram ID (numbers only):",
+        "rdp_ip":   "✏️ Send RDP IP address (e.g. 192.168.1.1):",
     }
+
+    lines = [
+        f"➕ <b>Add Client</b>  — Step {step}/{total}",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for key, label, value, required in fields:
+        req_tag = "" if required else " <i>(optional)</i>"
+        if key == current_field:
+            lines.append(f"➡️ <b>{label}</b>{req_tag}: ___")
+        else:
+            if value and value != "—":
+                lines.append(f"✅ {label}: <code>{value}</code>")
+            else:
+                lines.append(f"⬜ {label}{req_tag}: —")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    if error:
+        lines.append(f"⚠️ <b>{error}</b>")
     lines.append(prompts.get(current_field, ""))
     return "\n".join(lines)
+
+
+def kb_add_client_cancel() -> types.InlineKeyboardMarkup:
+    """Cancel button shown on every Add Client form step."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("❌ Cancel", callback_data="nav_clients"))
+    return kb
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2642,22 +2664,54 @@ def handle_add_client_input(message):
 
     field  = buf.get("field")
     data   = buf.get("data", {})
+    error  = ""
 
     if field == "username":
-        data["username"] = text.lstrip("@")
-        buf["field"]     = "name"
-    elif field == "name":
-        data["name"]     = "" if text == "." else text
-        buf["field"]     = "tg_id"
-    elif field == "tg_id":
-        data["tg_id"]    = text
-        buf["field"]     = "rdp_ip"
-    elif field == "rdp_ip":
-        data["rdp_ip"]   = text
-        buf["field"]     = "confirm"
+        clean = text.lstrip("@").strip()
+        if not clean:
+            error = "Username cannot be empty."
+        else:
+            # Duplicate check
+            db = get_db()
+            existing = db.execute(
+                "SELECT id FROM clients WHERE telegram_username=?",
+                (clean,)).fetchone()
+            db.close()
+            if existing:
+                error = f"Client @{clean} already exists."
+            else:
+                data["username"] = clean
+                buf["field"]     = "name"
 
-    buf["data"]           = data
-    add_client_buf[chat_id] = buf
+    elif field == "name":
+        data["name"]  = "" if text == "." else text.strip()
+        buf["field"]  = "tg_id"
+
+    elif field == "tg_id":
+        if not text.strip().lstrip("-").isdigit():
+            error = "Telegram ID must be numeric (e.g. 123456789)."
+        else:
+            data["tg_id"] = text.strip()
+            buf["field"]  = "rdp_ip"
+
+    elif field == "rdp_ip":
+        import re as _re
+        ip_pattern = r"^\d{1,3}(\.\d{1,3}){3}$"
+        if not _re.match(ip_pattern, text.strip()):
+            error = "Invalid IP format. Example: 192.168.1.100"
+        else:
+            data["rdp_ip"] = text.strip()
+            buf["field"]   = "confirm"
+
+    buf["data"]              = data
+    add_client_buf[chat_id]  = buf
+
+    if error:
+        # Re-show same field with error message
+        safe_edit(message.chat.id, msg_id,
+                  text_add_client_form(data, field, error=error),
+                  kb_add_client_cancel())
+        return
 
     if buf["field"] == "confirm":
         token = generate_client_token(data["username"])
@@ -2679,21 +2733,24 @@ def handle_add_client_input(message):
             return
         db.close()
         add_client_buf.pop(chat_id, None)
+        display_name = data.get("name") or f"@{data['username']}"
         safe_edit(
             message.chat.id, msg_id,
             f"✅ <b>Client Added</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"Username : @{data['username']}\n"
-            f"TG ID    : {data['tg_id']}\n"
-            f"RDP IP   : {data['rdp_ip']}\n"
-            f"Token    : <code>{token}</code>\n"
+            f"👤 Name     : {display_name}\n"
+            f"🔗 Username : @{data['username']}\n"
+            f"🆔 TG ID    : <code>{data['tg_id']}</code>\n"
+            f"🖥 RDP IP   : <code>{data['rdp_ip']}</code>\n"
+            f"🔑 Token    : <code>{token}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━",
             kb_home_only()
         )
         return
 
     safe_edit(message.chat.id, msg_id,
-              text_add_client_form(data, buf["field"]))
+              text_add_client_form(data, buf["field"]),
+              kb_add_client_cancel())
 
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -2754,7 +2811,9 @@ def handle_callback(call):
         add_client_buf[str(chat_id)] = {"field": "username", "data": {}}
         nav_state[str(chat_id)] = {"screen": "add_client",
                                    "message_id": msg_id}
-        safe_edit(chat_id, msg_id, text_add_client_form({}, "username"))
+        safe_edit(chat_id, msg_id,
+                  text_add_client_form({}, "username"),
+                  kb_add_client_cancel())
 
     elif data.startswith("client_") and not data.startswith("client_stats_"):
         show_client_detail(chat_id, msg_id, int(data.split("_")[1]))
