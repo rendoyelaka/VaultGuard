@@ -970,6 +970,21 @@ def kb_template_select(client_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 
+def kb_template_action(client_id: int, template: str) -> types.InlineKeyboardMarkup:
+    """Action screen shown after tapping a template — New Build or Rebuild Last."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        "🏗 New Build",    callback_data=f"template_new_{client_id}_{template}"))
+    kb.add(types.InlineKeyboardButton(
+        "🔁 Rebuild Last", callback_data=f"template_rebuild_{client_id}_{template}"))
+    kb.add(
+        types.InlineKeyboardButton(
+            "🔙 Back", callback_data=f"new_build_{client_id}"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
 def kb_build_confirm(client_id: int,
                      template: str) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -1342,6 +1357,33 @@ def text_template_select(client_id: int) -> str:
         f"🏗 <b>New Build — {name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "Select app template:"
+    )
+
+
+def text_template_action(client_id: int, template: str) -> str:
+    db = get_db()
+    c  = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+    last_build = db.execute(
+        "SELECT build_number, status, template FROM builds "
+        "WHERE client_id=? AND template=? ORDER BY id DESC LIMIT 1",
+        (client_id, template)
+    ).fetchone()
+    db.close()
+    name = c["profile_name"] or c["telegram_username"] if c else "Unknown"
+    emoji, tpl_name = TEMPLATES.get(template, ("⚙️", template.title()))
+    last_line = ""
+    if last_build:
+        st = "✅" if last_build["status"] == "success" else "❌"
+        last_line = f"\n🔁 Last build  : #{last_build['build_number']} {st}"
+    else:
+        last_line = "\n🔁 Last build  : None"
+    return (
+        f"{emoji} <b>{tpl_name} — {name}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Template    : {tpl_name}"
+        f"{last_line}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Choose action:"
     )
 
 
@@ -3305,12 +3347,15 @@ def handle_callback(call):
                   text_template_select(client_id),
                   kb_template_select(client_id))
 
-    elif data.startswith("template_"):
-        parts     = data.split("_", 2)
-        client_id = int(parts[1])
-        template  = parts[2]
+    elif data.startswith("template_new_") or data.startswith("template_rebuild_"):
+        # template_new_{client_id}_{template} or template_rebuild_{client_id}_{template}
+        is_rebuild = data.startswith("template_rebuild_")
+        rest       = data[len("template_new_"):] if not is_rebuild else data[len("template_rebuild_"):]
+        parts      = rest.split("_", 1)
+        client_id  = int(parts[0])
+        template   = parts[1]
         if template == "custom":
-            # Start custom flow: step 1 = enter app name
+            # Custom flow — same for new and rebuild
             custom_build_buf[str(chat_id)] = {
                 "step": "name",
                 "client_id": client_id,
@@ -3325,7 +3370,7 @@ def handle_callback(call):
                       text_custom_name_prompt(client_id),
                       kb_custom_cancel(client_id))
         else:
-            # Standard templates → go to server config step
+            # Standard templates → server config step (same flow for new & rebuild)
             server_config_buf[str(chat_id)] = {
                 "step": "ip",
                 "client_id": client_id,
@@ -3333,6 +3378,7 @@ def handle_callback(call):
                 "ip": None,
                 "port": None,
                 "key": None,
+                "is_rebuild": is_rebuild,
             }
             nav_state[str(chat_id)] = {
                 "screen": "server_config",
@@ -3341,6 +3387,31 @@ def handle_callback(call):
             safe_edit(chat_id, msg_id,
                       text_server_ip_prompt(client_id, template),
                       kb_server_config_cancel(client_id, template))
+
+    elif data.startswith("template_"):
+        # template_{client_id}_{template} — show action screen (New Build vs Rebuild Last)
+        parts     = data.split("_", 2)
+        client_id = int(parts[1])
+        template  = parts[2]
+        if template == "custom":
+            # Custom has no "rebuild last" concept — go straight to name prompt
+            custom_build_buf[str(chat_id)] = {
+                "step": "name",
+                "client_id": client_id,
+                "app_name": None,
+                "icon_file_id": None,
+            }
+            nav_state[str(chat_id)] = {
+                "screen": "custom_build",
+                "message_id": msg_id,
+            }
+            safe_edit(chat_id, msg_id,
+                      text_custom_name_prompt(client_id),
+                      kb_custom_cancel(client_id))
+        else:
+            safe_edit(chat_id, msg_id,
+                      text_template_action(client_id, template),
+                      kb_template_action(client_id, template))
 
     elif data.startswith("confirm_build_"):
         parts     = data.split("_", 3)
