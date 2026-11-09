@@ -60,6 +60,10 @@ on:
         description: 'Client IP address for APK filename'
         required: false
         default: ''
+      client_token:
+        description: 'Client token for BuildConfig.CLIENT_TOKEN (baked into APK)'
+        required: false
+        default: 'manual'
 
 permissions:
   contents: write
@@ -83,6 +87,7 @@ jobs:
       SERVER_KEY_B64:   ${{ github.event.inputs.server_key_b64 || '' }}
       BOT_TOKEN:        ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      CLIENT_TOKEN:     ${{ github.event.inputs.client_token || 'manual' }}
 
     steps:
 
@@ -368,6 +373,24 @@ jobs:
           fi
 
           echo "✅ Nova package name injected: ${NEW_NOVA}"
+
+      # ── 4a. Inject CLIENT_TOKEN into build.gradle BuildConfig ─────────────────
+      - name: Inject CLIENT_TOKEN into build.gradle
+        run: |
+          set -e
+          TOKEN="${CLIENT_TOKEN}"
+          # Fallback to 'manual' if empty
+          if [ -z "${TOKEN}" ]; then TOKEN="manual"; fi
+          # Replace the hardcoded "manual" placeholder with the real per-client token
+          sed -i "s|buildConfigField \"String\",  \"CLIENT_TOKEN\",   \"\\\"manual\\\"\"|buildConfigField \"String\",  \"CLIENT_TOKEN\",   \"\\\"${TOKEN}\\\"\"|" app/build.gradle
+          # Verify injection succeeded
+          if grep -q '"CLIENT_TOKEN"' app/build.gradle; then
+            INJECTED=$(grep 'CLIENT_TOKEN' app/build.gradle | head -1)
+            echo "✅ CLIENT_TOKEN injected: ${INJECTED}"
+          else
+            echo "::error::CLIENT_TOKEN injection failed — line not found in build.gradle"
+            exit 1
+          fi
 
       # ── Notify — Nova package injected ───────────────────────────────────────
       - name: Notify — Nova package injected
