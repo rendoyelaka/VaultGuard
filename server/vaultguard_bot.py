@@ -904,7 +904,7 @@ def kb_clients(clients: list) -> types.InlineKeyboardMarkup:
             f"{status} {name}",
             callback_data=f"client_{c['id']}"
         ))
-    kb.add(types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"))
+    kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="nav_home"))
     return kb
 
 
@@ -994,8 +994,10 @@ def kb_build_result(client_id: int) -> types.InlineKeyboardMarkup:
             "🏗 New Build",
             callback_data=f"new_build_{client_id}"
         ),
-        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+        types.InlineKeyboardButton(
+            "🔙 Back", callback_data=f"client_{client_id}"),
     )
+    kb.add(types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"))
     return kb
 
 
@@ -1071,13 +1073,19 @@ def kb_home_only() -> types.InlineKeyboardMarkup:
     return kb
 
 
+def kb_back_home() -> types.InlineKeyboardMarkup:
+    """Single Back button that returns to Home — used for leaf pages with no deeper parent."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="nav_home"))
+    return kb
+
+
 def kb_server() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton("🔄 Refresh", callback_data="nav_server"),
-        types.InlineKeyboardButton("🏠 Home",    callback_data="nav_home"),
+        types.InlineKeyboardButton("🔙 Back",    callback_data="nav_home"),
     )
-    kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="nav_home"))
     return kb
 
 
@@ -1089,10 +1097,8 @@ def kb_settings() -> types.InlineKeyboardMarkup:
         "🔑 Change 2FA Secret",  callback_data="settings_change_2fa"))
     kb.add(types.InlineKeyboardButton(
         "🚦 Production Control", callback_data="prod_menu"))
-    kb.add(
-        types.InlineKeyboardButton("🔙 Back", callback_data="nav_home"),
-        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
-    )
+    kb.add(types.InlineKeyboardButton(
+        "🔙 Back",               callback_data="nav_home"))
     return kb
 
 
@@ -2957,7 +2963,7 @@ def handle_add_client_input(message):
             f"🖥 RDP IP   : <code>{data['rdp_ip']}</code>\n"
             f"🔑 Token    : <code>{token}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━",
-            kb_home_only()
+            kb_back_home()
         )
         return
 
@@ -3017,7 +3023,7 @@ def handle_callback(call):
         safe_edit(chat_id, msg_id, text_server_status(), kb_server())
 
     elif data == "nav_stats":
-        safe_edit(chat_id, msg_id, text_global_stats(), kb_home_only())
+        safe_edit(chat_id, msg_id, text_global_stats(), kb_back_home())
 
     elif data == "nav_settings":
         safe_edit(chat_id, msg_id, text_settings(chat_id), kb_settings())
