@@ -413,11 +413,11 @@ jobs:
           python3 -u scripts/build_module.py 2>&1 | tee companion_build.log
           exit ${PIPESTATUS[0]}
 
-      # ── Notify — Companion APK built ─────────────────────────────────────────
+      # ── Notify — Companion APK built (advance to phase 8: Send to Telegram) ───
       - name: Notify — Companion APK built
         run: |
           python3 scripts/telegram_notify.py \
-            --step      "Build companion APK" \
+            --step      "Send to Telegram" \
             --status    "progress" \
             --build     "${{ github.run_number }}" \
             --template  "${{ github.event.inputs.template }}" \

