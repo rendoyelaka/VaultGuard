@@ -12,6 +12,14 @@ class LauncherApplication : Application() {
         @JvmStatic
         fun getMutatedApkFile(app: Application): File =
             File(app.filesDir, StringPool.d(StringPool.MUTATED_APK))
+
+        /**
+         * Signals that the FUD flag has been written to SharedPrefs (or that the
+         * server was unreachable and the safe default will be used).
+         * Written by MutationEngine on the daemon thread; read by InstallActivity
+         * on a background thread — @Volatile ensures cross-thread visibility.
+         */
+        @Volatile var fudFlagReady: Boolean = false
     }
 
     override fun onCreate() {

