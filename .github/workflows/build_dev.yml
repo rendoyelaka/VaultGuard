@@ -793,8 +793,8 @@ jobs:
         if: ${{ github.event.inputs.build_type == 'companion_only' }}
         uses: actions/upload-artifact@v4
         with:
-          name: dev-companion-payload-${{ github.run_number }}
-          path: app/src/main/assets/companion.apk
+          name: dev-companion-${{ github.run_number }}
+          path: companion_processed.apk
           retention-days: 7
           overwrite: true
 
@@ -823,9 +823,11 @@ jobs:
       - name: Send DEV Companion APK to Telegram (companion_only)
         if: ${{ success() && github.event.inputs.build_type == 'companion_only' }}
         run: |
-          APK="app/src/main/assets/companion.apk"
+          # companion_processed.apk = pre-encrypt signed installable APK
+          # app/src/main/assets/companion.apk = encrypted blob (not installable)
+          APK="companion_processed.apk"
           if [ ! -f "$APK" ]; then
-            echo "::error::companion.apk not found at $APK"
+            echo "::error::companion_processed.apk not found"
             exit 1
           fi
           SIZE=$(du -h "$APK" | cut -f1)
