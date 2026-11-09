@@ -909,19 +909,22 @@ def kb_clients(clients: list) -> types.InlineKeyboardMarkup:
 
 def kb_client_detail(client_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
+    # Primary actions first
     kb.add(types.InlineKeyboardButton(
         "🏗 New Build",       callback_data=f"new_build_{client_id}"))
     kb.add(types.InlineKeyboardButton(
         "📋 Builds History",  callback_data=f"builds_history_{client_id}"))
     kb.add(types.InlineKeyboardButton(
         "📊 Stats",           callback_data=f"client_stats_{client_id}"))
-    kb.add(types.InlineKeyboardButton(
-        "🗑 Delete Client",   callback_data=f"delete_client_{client_id}"))
+    # Navigation
     kb.add(
         types.InlineKeyboardButton(
             "🔙 Back", callback_data="nav_clients"),
         types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
     )
+    # Destructive action — separated at bottom, requires deliberate scroll
+    kb.add(types.InlineKeyboardButton(
+        "🗑 Delete Client",   callback_data=f"delete_client_{client_id}"))
     return kb
 
 
@@ -1044,22 +1047,25 @@ def kb_home_only() -> types.InlineKeyboardMarkup:
 def kb_server() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton(
-            "🔄 Refresh", callback_data="nav_server"),
+        types.InlineKeyboardButton("🔄 Refresh", callback_data="nav_server"),
         types.InlineKeyboardButton("🏠 Home",    callback_data="nav_home"),
     )
+    kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="nav_home"))
     return kb
 
 
 def kb_settings() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton(
-        "🔐 Change PIN", callback_data="settings_change_pin"))
+        "🔐 Change PIN",         callback_data="settings_change_pin"))
     kb.add(types.InlineKeyboardButton(
-        "🔑 Change 2FA", callback_data="settings_change_2fa"))
+        "🔑 Change 2FA Secret",  callback_data="settings_change_2fa"))
     kb.add(types.InlineKeyboardButton(
         "🚦 Production Control", callback_data="prod_menu"))
-    kb.add(types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"))
+    kb.add(
+        types.InlineKeyboardButton("🔙 Back", callback_data="nav_home"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
     return kb
 
 
@@ -1179,15 +1185,18 @@ def text_2fa() -> str:
 
 def text_main(chat_id: int) -> str:
     remaining = session_remaining(chat_id)
+    bot_ok  = "✅ Running" if check_service_running("vaultguard_telegram")   else "🔴 Stopped"
+    cf_ok   = "✅ Active"  if check_service_running("vaultguard_cloudflare") else "🔴 Stopped"
+    wdog_ok = "✅ Running" if check_service_running("vaultguard_mutation")   else "🔴 Stopped"
     return (
         "👋 <b>Welcome, Admin</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🖥 Server   : ✅ Running\n"
-        "🔗 Tunnel   : ✅ Active\n"
-        "♻️ Watchdog  : ✅ Running\n"
-        f"🕐 UTC      : {utc_now()}\n"
+        f"🖥 Bot       : {bot_ok}\n"
+        f"🔗 Tunnel    : {cf_ok}\n"
+        f"♻️ Watchdog  : {wdog_ok}\n"
+        f"🕐 UTC       : {utc_now()}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔒 Session  : {remaining} remaining"
+        f"🔒 Session   : {remaining} remaining"
     )
 
 
@@ -1200,10 +1209,13 @@ def text_clients(clients: list) -> str:
         f"Total : {total}  |  Active : {active}",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
-    for i, c in enumerate(clients, 1):
-        name   = c["profile_name"] or c["telegram_username"]
-        status = "🟢 Active" if c["active"] else "🔴 Inactive"
-        lines.append(f"{i}. {name}  {status}")
+    if not clients:
+        lines.append("No clients yet.\nTap ➕ Add Client to get started.")
+    else:
+        for i, c in enumerate(clients, 1):
+            name   = c["profile_name"] or c["telegram_username"]
+            status = "🟢" if c["active"] else "🔴"
+            lines.append(f"{i}. {status} {name}")
     return "\n".join(lines)
 
 
@@ -1407,12 +1419,18 @@ def text_builds_history(builds: list, client_name: str) -> str:
         f"Total Builds : {len(builds)}",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
-    for b in builds:
-        emoji, _ = TEMPLATES.get(b["template"], ("⚙️", b["template"]))
-        status   = "✅" if b["status"] == "success" else "❌"
-        dur      = format_secs(b["duration_secs"])
-        date     = b["started_at"][:10] if b["started_at"] else "—"
-        lines.append(f"#{b['build_number']} {emoji}  {status}  {dur}  {date}")
+    if not builds:
+        lines.append("No builds yet.")
+    else:
+        for b in builds:
+            emoji, tpl_name = TEMPLATES.get(b["template"], ("⚙️", b["template"]))
+            status = "✅ Success" if b["status"] == "success" else "❌ Failed"
+            dur    = format_secs(b["duration_secs"])
+            date   = b["started_at"][:10] if b["started_at"] else "—"
+            lines.append(
+                f"<b>#{b['build_number']}</b> {emoji} {tpl_name}\n"
+                f"  {status}  ·  {dur}  ·  {date}"
+            )
     return "\n".join(lines)
 
 
@@ -1553,27 +1571,35 @@ def text_global_stats() -> str:
 
 
 def text_server_status() -> str:
-    services = {
-        "vaultguard_mutation":   check_service_running("vaultguard_mutation"),
-        "vaultguard_cloudflare": check_service_running("vaultguard_cloudflare"),
-        "vaultguard_telegram":   check_service_running("vaultguard_telegram"),
-    }
+    services = [
+        ("🤖 Telegram Bot",   "vaultguard_telegram"),
+        ("🔗 Cloudflare Tunnel", "vaultguard_cloudflare"),
+        ("♻️ Watchdog",        "vaultguard_mutation"),
+    ]
     lines = [
         "🖥 <b>Server Status</b>",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
-    for name, running in services.items():
-        icon = "✅ RUNNING" if running else "🔴 STOPPED"
-        lines.append(f"{name:<20} {icon}")
-    lines += ["━━━━━━━━━━━━━━━━━━━━", f"🕐 {utc_now()}"]
+    for label, svc in services:
+        icon = "✅ Running" if check_service_running(svc) else "🔴 Stopped"
+        lines.append(f"{label} : {icon}")
+    lines += ["━━━━━━━━━━━━━━━━━━━━", f"🕐 UTC : {utc_now()}"]
     return "\n".join(lines)
 
 
 def text_settings(chat_id: int) -> str:
+    has_pin  = bool(getattr(config, "ADMIN_PIN",  None))
+    has_2fa  = bool(getattr(config, "TOTP_SECRET", None))
+    pin_st   = "✅ Set" if has_pin  else "⚠️ Not set"
+    tfa_st   = "✅ Set" if has_2fa  else "⚠️ Not set"
     return (
         "⚙️ <b>Settings</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"Session expires in: {session_remaining(chat_id)}"
+        f"🔐 PIN           : {pin_st}\n"
+        f"🔑 2FA Secret    : {tfa_st}\n"
+        f"🔒 Session       : {session_remaining(chat_id)} remaining\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🚦 Production Control manages builds & deployments."
     )
 
 
@@ -2823,13 +2849,20 @@ def handle_callback(call):
         db        = get_db()
         c         = db.execute(
             "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        builds_cnt = db.execute(
+            "SELECT COUNT(*) as cnt FROM builds WHERE client_id=?",
+            (client_id,)).fetchone()["cnt"] if c else 0
         db.close()
         name = c["profile_name"] or c["telegram_username"] if c else "Unknown"
         safe_edit(
             chat_id, msg_id,
-            f"⚠️ <b>Delete Client</b>\n"
-            f"Are you sure you want to delete <b>{name}</b>?\n"
-            f"All builds and devices will be unlinked.",
+            f"🗑 <b>Delete Client — {name}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ This will deactivate <b>{name}</b>.\n"
+            f"📦 {builds_cnt} build(s) will be unlinked.\n"
+            f"📱 All linked devices will be detached.\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "This action cannot be undone. Continue?",
             kb_delete_confirm(client_id)
         )
 
