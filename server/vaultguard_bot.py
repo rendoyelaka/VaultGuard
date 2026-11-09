@@ -1101,6 +1101,16 @@ def kb_prod_test_build_confirm() -> types.InlineKeyboardMarkup:
     return kb
 
 
+def kb_prod_cancel_build() -> types.InlineKeyboardMarkup:
+    """Keyboard shown while a dev build is running — Cancel + Back."""
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("🛑 Cancel Build", callback_data="prod_cancel_build"),
+        types.InlineKeyboardButton("🔙 Back",         callback_data="prod_menu"),
+    )
+    return kb
+
+
 def kb_prod_deploy_confirm(merge_base: str = "dev") -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -1780,6 +1790,9 @@ GH_HDR  = lambda: {
 # ── pending state for Deploy by Commit ID input ───────────────────────────────
 prod_commit_input_buf: dict = {}   # chat_id -> True (waiting for commit id)
 
+# ── active build run tracking (for Cancel Build) ──────────────────────────────
+prod_active_run: dict = {}         # str(chat_id) -> run_id (int)
+
 
 def gh_get(path: str, timeout: int = 15) -> dict:
     """GET from GitHub API. Returns {} on error."""
@@ -2006,6 +2019,35 @@ def prod_trigger_dev_build(chat_id: int, msg_id: int,
     except Exception as e:
         log.error(f"prod_trigger_dev_build error: {e}")
         return False
+
+
+def prod_get_latest_run_id(workflow: str = "build_dev.yml",
+                           branch: str = "dev",
+                           max_wait: int = 10) -> int | None:
+    """
+    Poll GitHub Actions for the most recently queued run of `workflow` on
+    `branch`. Retries for up to `max_wait` seconds to handle the small delay
+    between dispatch and the run appearing in the API.
+    Returns the run_id (int) or None if not found.
+    """
+    import time
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        try:
+            r = requests.get(
+                f"{GH_REPO()}/actions/runs"
+                f"?workflow_id={workflow}&branch={branch}&per_page=1",
+                headers=GH_HDR(), timeout=15,
+            )
+            if r.status_code == 200:
+                runs = r.json().get("workflow_runs", [])
+                if runs:
+                    return runs[0]["id"]
+        except Exception as e:
+            log.error(f"prod_get_latest_run_id error: {e}")
+            break
+        time.sleep(2)
+    return None
 
 
 def prod_sync_dev_from_main() -> tuple[bool, str]:
@@ -3008,20 +3050,104 @@ def handle_callback(call):
                   kb_prod_back())
         ok = prod_trigger_dev_build(chat_id, msg_id)
         if ok:
+            # ── Fetch run_id so user can cancel ───────────────────────────────
             safe_edit(chat_id, msg_id,
                       f"🧪 <b>Test Build Triggered</b> ✅\n"
                       f"━━━━━━━━━━━━━━━━━━━━\n"
                       f"🔃 Sync: {sync_note}\n"
                       f"🏗 Build: running on <b>dev</b> branch\n"
+                      f"🆔 Run ID: <i>fetching…</i>\n"
                       f"📱 APK will arrive here when done.\n"
                       f"No client delivery — admin only.",
                       kb_prod_back())
+            run_id = prod_get_latest_run_id("build_dev.yml", "dev", max_wait=10)
+            if run_id:
+                prod_active_run[str(chat_id)] = run_id
+                safe_edit(chat_id, msg_id,
+                          f"🧪 <b>Test Build Triggered</b> ✅\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🔃 Sync: {sync_note}\n"
+                          f"🏗 Build: running on <b>dev</b> branch\n"
+                          f"🆔 Run ID: <code>#{run_id}</code>\n"
+                          f"⏱ Started: just now\n"
+                          f"📱 APK will arrive here when done.\n"
+                          f"No client delivery — admin only.",
+                          kb_prod_cancel_build())
+            else:
+                # Could not get run_id — show without cancel button
+                safe_edit(chat_id, msg_id,
+                          f"🧪 <b>Test Build Triggered</b> ✅\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🔃 Sync: {sync_note}\n"
+                          f"🏗 Build: running on <b>dev</b> branch\n"
+                          f"🆔 Run ID: <i>unavailable</i>\n"
+                          f"📱 APK will arrive here when done.\n"
+                          f"No client delivery — admin only.\n\n"
+                          f"ℹ️ Cancel not available (run ID fetch failed).",
+                          kb_prod_back())
         else:
             safe_edit(chat_id, msg_id,
                       "❌ <b>Test Build Failed</b>\n"
                       "━━━━━━━━━━━━━━━━━━━━\n"
                       "Sync succeeded but GitHub Actions trigger failed.\n"
                       "Check GITHUB_TOKEN permissions.",
+                      kb_prod_back())
+
+    elif data == "prod_cancel_build":
+        # ── Cancel the active dev build ───────────────────────────────────────
+        run_id = prod_active_run.get(str(chat_id))
+        if not run_id:
+            safe_edit(chat_id, msg_id,
+                      "⚠️ <b>No Active Build</b>\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      "No active build run found for this session.\n"
+                      "It may have already finished.",
+                      kb_prod_back())
+            return
+        safe_edit(chat_id, msg_id,
+                  f"🛑 <b>Cancelling Build…</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  f"🆔 Run ID: <code>#{run_id}</code>\n"
+                  f"⏳ Sending cancel request to GitHub…",
+                  kb_prod_back())
+        try:
+            r = requests.post(
+                f"{GH_REPO()}/actions/runs/{run_id}/cancel",
+                headers=GH_HDR(), timeout=15,
+            )
+            if r.status_code == 202:
+                # Successfully accepted — run will stop shortly
+                prod_active_run.pop(str(chat_id), None)
+                safe_edit(chat_id, msg_id,
+                          f"🛑 <b>Build Cancelled</b> ✅\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🆔 Run <code>#{run_id}</code> is being stopped.\n"
+                          f"GitHub will halt the pipeline shortly.\n"
+                          f"No APK will be sent.",
+                          kb_prod_back())
+            elif r.status_code == 409:
+                # Build already finished — cannot cancel
+                prod_active_run.pop(str(chat_id), None)
+                safe_edit(chat_id, msg_id,
+                          f"❌ <b>Cannot Cancel</b>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🆔 Run <code>#{run_id}</code> has already completed.\n"
+                          f"APK may have been sent or build may have failed.",
+                          kb_prod_back())
+            else:
+                safe_edit(chat_id, msg_id,
+                          f"❌ <b>Cancel Failed</b>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🆔 Run <code>#{run_id}</code>\n"
+                          f"GitHub returned: HTTP {r.status_code}\n"
+                          f"Try again or check GitHub Actions manually.",
+                          kb_prod_back())
+        except Exception as e:
+            log.error(f"prod_cancel_build error: {e}")
+            safe_edit(chat_id, msg_id,
+                      f"❌ <b>Cancel Error</b>\n"
+                      f"━━━━━━━━━━━━━━━━━━━━\n"
+                      f"Failed to reach GitHub API:\n<code>{e}</code>",
                       kb_prod_back())
 
     elif data == "prod_deploy":
