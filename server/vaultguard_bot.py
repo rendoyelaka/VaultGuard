@@ -1104,17 +1104,14 @@ def kb_settings() -> types.InlineKeyboardMarkup:
 
 def kb_prod_menu() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
-    # ── Correct workflow order ────────────────────────────────────────────────
-    # Step 1: Check what's in dev vs main
+    # ── Correct dev-first workflow order ─────────────────────────────────────
+    # Step 1: Check what's on dev
     kb.add(types.InlineKeyboardButton(
         "📋 Dev Status",           callback_data="prod_dev_status"))
-    # Step 2: Sync dev with latest main (before making changes or testing)
-    kb.add(types.InlineKeyboardButton(
-        "🔃 Sync dev ← main",      callback_data="prod_sync_dev"))
-    # Step 3: Run full pipeline on dev branch — APK sent to admin only
+    # Step 2: Build & test dev branch
     kb.add(types.InlineKeyboardButton(
         "🧪 Test Build",           callback_data="prod_test_build"))
-    # Step 4: Merge dev → main after test passes
+    # Step 3: Merge dev → main after test passes
     kb.add(types.InlineKeyboardButton(
         "🚀 Deploy to Production", callback_data="prod_deploy"))
     # ── Advanced ──────────────────────────────────────────────────────────────
@@ -1124,6 +1121,9 @@ def kb_prod_menu() -> types.InlineKeyboardMarkup:
         "🔄 Rollback Production",  callback_data="prod_rollback"))
     kb.add(types.InlineKeyboardButton(
         "📜 Release History",      callback_data="prod_history"))
+    # ── Emergency only ────────────────────────────────────────────────────────
+    kb.add(types.InlineKeyboardButton(
+        "⚠️ Sync dev ← main",     callback_data="prod_sync_dev"))
     kb.add(types.InlineKeyboardButton(
         "🔙 Back",                 callback_data="nav_settings"))
     return kb
