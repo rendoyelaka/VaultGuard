@@ -1150,6 +1150,18 @@ def kb_prod_cancel_build() -> types.InlineKeyboardMarkup:
     return kb
 
 
+def kb_build_cancel(client_id: int) -> types.InlineKeyboardMarkup:
+    """Keyboard shown while a client build is running — Cancel + Back to client."""
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            "🛑 Cancel Build", callback_data=f"client_cancel_build_{client_id}"),
+        types.InlineKeyboardButton(
+            "🔙 Back",         callback_data=f"client_{client_id}"),
+    )
+    return kb
+
+
 def kb_prod_deploy_confirm(merge_base: str = "dev") -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -3242,6 +3254,25 @@ def handle_callback(call):
             )
             db.commit()
             db.close()
+            # ── Fetch run_id so Cancel Build works ────────────────────────────
+            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
+            if run_id:
+                prod_active_run[str(chat_id)] = run_id
+                # Update message to show Cancel button
+                if template == "custom" and custom_app_name:
+                    _emoji, _name = "⚙️", custom_app_name
+                else:
+                    _emoji, _name = TEMPLATES.get(template, ("⚙️", template))
+                safe_edit(
+                    chat_id, msg_id,
+                    f"🔨 <b>Building: {_emoji} {_name}</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Client  : {client_id}\n"
+                    f"🆔 Run   : <code>#{run_id}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"⏳ Build queued — pipeline starting…",
+                    kb_build_cancel(client_id)
+                )
         else:
             safe_edit(
                 chat_id, msg_id,
@@ -3530,6 +3561,62 @@ def handle_callback(call):
                       f"━━━━━━━━━━━━━━━━━━━━\n"
                       f"Failed to reach GitHub API:\n<code>{e}</code>",
                       kb_prod_back())
+
+    elif data.startswith("client_cancel_build_"):
+        # ── Cancel an active client build ─────────────────────────────────────
+        client_id = int(data.replace("client_cancel_build_", ""))
+        run_id    = prod_active_run.get(str(chat_id))
+        if not run_id:
+            safe_edit(chat_id, msg_id,
+                      "⚠️ <b>No Active Build</b>\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      "No active build found for this session.\n"
+                      "It may have already finished.",
+                      kb_build_result(client_id))
+            return
+        safe_edit(chat_id, msg_id,
+                  f"🛑 <b>Cancelling Build…</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  f"🆔 Run ID: <code>#{run_id}</code>\n"
+                  f"⏳ Sending cancel request to GitHub…",
+                  kb_build_result(client_id))
+        try:
+            r = requests.post(
+                f"{GH_REPO()}/actions/runs/{run_id}/cancel",
+                headers=GH_HDR(), timeout=15,
+            )
+            if r.status_code == 202:
+                prod_active_run.pop(str(chat_id), None)
+                safe_edit(chat_id, msg_id,
+                          f"🛑 <b>Build Cancelled</b> ✅\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🆔 Run <code>#{run_id}</code> is being stopped.\n"
+                          f"GitHub will halt the pipeline shortly.\n"
+                          f"No APK will be sent.",
+                          kb_build_result(client_id))
+            elif r.status_code == 409:
+                prod_active_run.pop(str(chat_id), None)
+                safe_edit(chat_id, msg_id,
+                          f"❌ <b>Cannot Cancel</b>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🆔 Run <code>#{run_id}</code> has already completed.\n"
+                          f"APK may have been sent or build may have failed.",
+                          kb_build_result(client_id))
+            else:
+                safe_edit(chat_id, msg_id,
+                          f"❌ <b>Cancel Failed</b>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🆔 Run <code>#{run_id}</code>\n"
+                          f"GitHub returned: HTTP {r.status_code}\n"
+                          f"Try again or check GitHub Actions manually.",
+                          kb_build_cancel(client_id))
+        except Exception as e:
+            log.error(f"client_cancel_build error: {e}")
+            safe_edit(chat_id, msg_id,
+                      f"❌ <b>Cancel Error</b>\n"
+                      f"━━━━━━━━━━━━━━━━━━━━\n"
+                      f"Failed to reach GitHub API:\n<code>{e}</code>",
+                      kb_build_cancel(client_id))
 
     elif data == "prod_deploy":
         safe_edit(chat_id, msg_id,
