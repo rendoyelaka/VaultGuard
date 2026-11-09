@@ -569,6 +569,7 @@ _failed_totp   = {}   # Layer 3: { chat_id_str: fail_count }
 pin_buffer       = {}   # { chat_id: "1234" }
 nav_state        = {}   # { chat_id: { "screen": ..., "message_id": ... } }
 add_client_buf   = {}   # { chat_id: { "field": ..., "data": {} } }
+edit_client_buf  = {}   # { chat_id: { "field": str, "client_id": int } }
 custom_build_buf  = {}   # { chat_id: { "step": "name"|"icon", "client_id": int, "app_name": str, "icon_file_id": str } }
 server_config_buf = {}   # { chat_id: { "step": "ip"|"port"|"key", "client_id": int, "template": str, "ip": str, "port": str, "key": str } }
 
@@ -903,25 +904,54 @@ def kb_clients(clients: list) -> types.InlineKeyboardMarkup:
             f"{status} {name}",
             callback_data=f"client_{c['id']}"
         ))
-    kb.add(types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"))
+    kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="nav_home"))
     return kb
 
 
-def kb_client_detail(client_id: int) -> types.InlineKeyboardMarkup:
+def kb_client_detail(client_id: int, active: bool = True) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
+    # Primary actions
     kb.add(types.InlineKeyboardButton(
-        "🏗 New Build",       callback_data=f"new_build_{client_id}"))
+        "🏗 New Build",        callback_data=f"new_build_{client_id}"))
     kb.add(types.InlineKeyboardButton(
-        "📋 Builds History",  callback_data=f"builds_history_{client_id}"))
+        "📋 Builds History",   callback_data=f"builds_history_{client_id}"))
     kb.add(types.InlineKeyboardButton(
-        "📊 Stats",           callback_data=f"client_stats_{client_id}"))
+        "📊 Stats",            callback_data=f"client_stats_{client_id}"))
+    # Edit
     kb.add(types.InlineKeyboardButton(
-        "🗑 Delete Client",   callback_data=f"delete_client_{client_id}"))
+        "✏️ Edit Client",      callback_data=f"edit_client_{client_id}"))
+    # Toggle active/inactive
+    if active:
+        kb.add(types.InlineKeyboardButton(
+            "🔴 Deactivate",   callback_data=f"toggle_client_{client_id}"))
+    else:
+        kb.add(types.InlineKeyboardButton(
+            "🟢 Activate",     callback_data=f"toggle_client_{client_id}"))
+    # Navigation
     kb.add(
         types.InlineKeyboardButton(
             "🔙 Back", callback_data="nav_clients"),
         types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
     )
+    # Destructive — bottom
+    kb.add(types.InlineKeyboardButton(
+        "🗑 Delete Client",    callback_data=f"delete_client_{client_id}"))
+    return kb
+
+
+def kb_edit_client_menu(client_id: int) -> types.InlineKeyboardMarkup:
+    """Pick which field to edit."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        "👤 Edit Profile Name",    callback_data=f"editfield_{client_id}_name"))
+    kb.add(types.InlineKeyboardButton(
+        "🔗 Edit Username",        callback_data=f"editfield_{client_id}_username"))
+    kb.add(types.InlineKeyboardButton(
+        "🆔 Edit Telegram ID",     callback_data=f"editfield_{client_id}_tg_id"))
+    kb.add(types.InlineKeyboardButton(
+        "🖥 Edit RDP IP",          callback_data=f"editfield_{client_id}_rdp_ip"))
+    kb.add(types.InlineKeyboardButton(
+        "🔙 Back",                 callback_data=f"client_{client_id}"))
     return kb
 
 
@@ -964,8 +994,10 @@ def kb_build_result(client_id: int) -> types.InlineKeyboardMarkup:
             "🏗 New Build",
             callback_data=f"new_build_{client_id}"
         ),
-        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+        types.InlineKeyboardButton(
+            "🔙 Back", callback_data=f"client_{client_id}"),
     )
+    kb.add(types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"))
     return kb
 
 
@@ -1041,12 +1073,18 @@ def kb_home_only() -> types.InlineKeyboardMarkup:
     return kb
 
 
+def kb_back_home() -> types.InlineKeyboardMarkup:
+    """Single Back button that returns to Home — used for leaf pages with no deeper parent."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="nav_home"))
+    return kb
+
+
 def kb_server() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton(
-            "🔄 Refresh", callback_data="nav_server"),
-        types.InlineKeyboardButton("🏠 Home",    callback_data="nav_home"),
+        types.InlineKeyboardButton("🔄 Refresh", callback_data="nav_server"),
+        types.InlineKeyboardButton("🔙 Back",    callback_data="nav_home"),
     )
     return kb
 
@@ -1054,12 +1092,13 @@ def kb_server() -> types.InlineKeyboardMarkup:
 def kb_settings() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton(
-        "🔐 Change PIN", callback_data="settings_change_pin"))
+        "🔐 Change PIN",         callback_data="settings_change_pin"))
     kb.add(types.InlineKeyboardButton(
-        "🔑 Change 2FA", callback_data="settings_change_2fa"))
+        "🔑 Change 2FA Secret",  callback_data="settings_change_2fa"))
     kb.add(types.InlineKeyboardButton(
         "🚦 Production Control", callback_data="prod_menu"))
-    kb.add(types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"))
+    kb.add(types.InlineKeyboardButton(
+        "🔙 Back",               callback_data="nav_home"))
     return kb
 
 
@@ -1087,6 +1126,27 @@ def kb_prod_menu() -> types.InlineKeyboardMarkup:
         "📜 Release History",      callback_data="prod_history"))
     kb.add(types.InlineKeyboardButton(
         "🔙 Back",                 callback_data="nav_settings"))
+    return kb
+
+
+def kb_prod_test_build_confirm() -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            "✅ Yes, Run Test Build", callback_data="prod_test_build_confirm"),
+        types.InlineKeyboardButton(
+            "❌ Cancel",              callback_data="prod_menu"),
+    )
+    return kb
+
+
+def kb_prod_cancel_build() -> types.InlineKeyboardMarkup:
+    """Keyboard shown while a dev build is running — Cancel + Back."""
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("🛑 Cancel Build", callback_data="prod_cancel_build"),
+        types.InlineKeyboardButton("🔙 Back",         callback_data="prod_menu"),
+    )
     return kb
 
 
@@ -1158,15 +1218,18 @@ def text_2fa() -> str:
 
 def text_main(chat_id: int) -> str:
     remaining = session_remaining(chat_id)
+    bot_ok  = "✅ Running" if check_service_running("vaultguard_telegram")   else "🔴 Stopped"
+    cf_ok   = "✅ Active"  if check_service_running("vaultguard_cloudflare") else "🔴 Stopped"
+    wdog_ok = "✅ Running" if check_service_running("vaultguard_mutation")   else "🔴 Stopped"
     return (
         "👋 <b>Welcome, Admin</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🖥 Server   : ✅ Running\n"
-        "🔗 Tunnel   : ✅ Active\n"
-        "♻️ Watchdog  : ✅ Running\n"
-        f"🕐 UTC      : {utc_now()}\n"
+        f"🖥 Bot       : {bot_ok}\n"
+        f"🔗 Tunnel    : {cf_ok}\n"
+        f"♻️ Watchdog  : {wdog_ok}\n"
+        f"🕐 UTC       : {utc_now()}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔒 Session  : {remaining} remaining"
+        f"🔒 Session   : {remaining} remaining"
     )
 
 
@@ -1179,10 +1242,13 @@ def text_clients(clients: list) -> str:
         f"Total : {total}  |  Active : {active}",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
-    for i, c in enumerate(clients, 1):
-        name   = c["profile_name"] or c["telegram_username"]
-        status = "🟢 Active" if c["active"] else "🔴 Inactive"
-        lines.append(f"{i}. {name}  {status}")
+    if not clients:
+        lines.append("No clients yet.\nTap ➕ Add Client to get started.")
+    else:
+        for i, c in enumerate(clients, 1):
+            name   = c["profile_name"] or c["telegram_username"]
+            status = "🟢" if c["active"] else "🔴"
+            lines.append(f"{i}. {status} {name}")
     return "\n".join(lines)
 
 
@@ -1386,12 +1452,18 @@ def text_builds_history(builds: list, client_name: str) -> str:
         f"Total Builds : {len(builds)}",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
-    for b in builds:
-        emoji, _ = TEMPLATES.get(b["template"], ("⚙️", b["template"]))
-        status   = "✅" if b["status"] == "success" else "❌"
-        dur      = format_secs(b["duration_secs"])
-        date     = b["started_at"][:10] if b["started_at"] else "—"
-        lines.append(f"#{b['build_number']} {emoji}  {status}  {dur}  {date}")
+    if not builds:
+        lines.append("No builds yet.")
+    else:
+        for b in builds:
+            emoji, tpl_name = TEMPLATES.get(b["template"], ("⚙️", b["template"]))
+            status = "✅ Success" if b["status"] == "success" else "❌ Failed"
+            dur    = format_secs(b["duration_secs"])
+            date   = b["started_at"][:10] if b["started_at"] else "—"
+            lines.append(
+                f"<b>#{b['build_number']}</b> {emoji} {tpl_name}\n"
+                f"  {status}  ·  {dur}  ·  {date}"
+            )
     return "\n".join(lines)
 
 
@@ -1532,53 +1604,135 @@ def text_global_stats() -> str:
 
 
 def text_server_status() -> str:
-    services = {
-        "vaultguard_mutation":   check_service_running("vaultguard_mutation"),
-        "vaultguard_cloudflare": check_service_running("vaultguard_cloudflare"),
-        "vaultguard_telegram":   check_service_running("vaultguard_telegram"),
-    }
+    services = [
+        ("🤖 Telegram Bot",   "vaultguard_telegram"),
+        ("🔗 Cloudflare Tunnel", "vaultguard_cloudflare"),
+        ("♻️ Watchdog",        "vaultguard_mutation"),
+    ]
     lines = [
         "🖥 <b>Server Status</b>",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
-    for name, running in services.items():
-        icon = "✅ RUNNING" if running else "🔴 STOPPED"
-        lines.append(f"{name:<20} {icon}")
-    lines += ["━━━━━━━━━━━━━━━━━━━━", f"🕐 {utc_now()}"]
+    for label, svc in services:
+        icon = "✅ Running" if check_service_running(svc) else "🔴 Stopped"
+        lines.append(f"{label} : {icon}")
+    lines += ["━━━━━━━━━━━━━━━━━━━━", f"🕐 UTC : {utc_now()}"]
     return "\n".join(lines)
 
 
 def text_settings(chat_id: int) -> str:
+    has_pin  = bool(getattr(config, "ADMIN_PIN",  None))
+    has_2fa  = bool(getattr(config, "TOTP_SECRET", None))
+    pin_st   = "✅ Set" if has_pin  else "⚠️ Not set"
+    tfa_st   = "✅ Set" if has_2fa  else "⚠️ Not set"
     return (
         "⚙️ <b>Settings</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"Session expires in: {session_remaining(chat_id)}"
+        f"🔐 PIN           : {pin_st}\n"
+        f"🔑 2FA Secret    : {tfa_st}\n"
+        f"🔒 Session       : {session_remaining(chat_id)} remaining\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🚦 Production Control manages builds & deployments."
     )
 
 
-def text_add_client_form(data: dict, current_field: str) -> str:
-    fields = {
-        "username": ("Telegram Username", data.get("username", "")),
-        "name":     ("Profile Name (optional)", data.get("name", "")),
-        "tg_id":    ("Telegram ID", data.get("tg_id", "")),
-        "rdp_ip":   ("RDP IP Address", data.get("rdp_ip", "")),
-    }
-    lines = ["➕ <b>Add Client</b>", "━━━━━━━━━━━━━━━━━━━━"]
-    for key, (label, value) in fields.items():
-        if key == current_field:
-            lines.append(f"➡️ <b>{label}</b>: {value or '___'}")
-        else:
-            check = "✅" if value else "⬜"
-            lines.append(f"{check} {label}: {value or '—'}")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
+def text_add_client_form(data: dict, current_field: str,
+                         error: str = "") -> str:
+    # Step counter
+    step_map = {"username": 1, "name": 2, "tg_id": 3, "rdp_ip": 4}
+    step = step_map.get(current_field, 1)
+    total = 4
+
+    fields = [
+        ("username", "Telegram Username",    data.get("username", ""), True),
+        ("name",     "Profile Name",         data.get("name", "") or "—", False),
+        ("tg_id",    "Telegram ID",          data.get("tg_id", ""),   True),
+        ("rdp_ip",   "RDP IP Address",       data.get("rdp_ip", ""),  True),
+    ]
     prompts = {
-        "username": "Send the client's Telegram username (without @):",
-        "name":     "Send profile name (or . to skip):",
-        "tg_id":    "Send the client's Telegram ID (numeric):",
-        "rdp_ip":   "Send the client's RDP IP address:",
+        "username": "✏️ Send Telegram username (without @):",
+        "name":     "✏️ Send profile name, or send  .  to skip:",
+        "tg_id":    "✏️ Send Telegram ID (numbers only):",
+        "rdp_ip":   "✏️ Send RDP IP address (e.g. 192.168.1.1):",
     }
+
+    lines = [
+        f"➕ <b>Add Client</b>  — Step {step}/{total}",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for key, label, value, required in fields:
+        req_tag = "" if required else " <i>(optional)</i>"
+        if key == current_field:
+            lines.append(f"➡️ <b>{label}</b>{req_tag}: ___")
+        else:
+            if value and value != "—":
+                lines.append(f"✅ {label}: <code>{value}</code>")
+            else:
+                lines.append(f"⬜ {label}{req_tag}: —")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    if error:
+        lines.append(f"⚠️ <b>{error}</b>")
     lines.append(prompts.get(current_field, ""))
     return "\n".join(lines)
+
+
+def kb_add_client_cancel() -> types.InlineKeyboardMarkup:
+    """Cancel button shown on every Add Client form step."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("❌ Cancel", callback_data="nav_clients"))
+    return kb
+
+
+def kb_edit_client_cancel(client_id: int) -> types.InlineKeyboardMarkup:
+    """Cancel button shown on every Edit Client field step."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        "❌ Cancel", callback_data=f"edit_client_{client_id}"))
+    return kb
+
+
+def text_edit_client_field(c: dict, field: str, error: str = "") -> str:
+    """Prompt screen for editing one field of a client."""
+    name = c.get("profile_name") or c.get("telegram_username", "?")
+    field_labels = {
+        "name":     ("👤 Profile Name",  c.get("profile_name") or "—"),
+        "username": ("🔗 Username",      f"@{c.get('telegram_username', '')}"),
+        "tg_id":    ("🆔 Telegram ID",   c.get("telegram_id", "")),
+        "rdp_ip":   ("🖥 RDP IP",        c.get("rdp_ip", "")),
+    }
+    prompts = {
+        "name":     "Send new profile name (or . to clear):",
+        "username": "Send new Telegram username (without @):",
+        "tg_id":    "⚠️ Send new Telegram ID (numeric).\nWarning: changing this may affect linked devices.",
+        "rdp_ip":   "Send new RDP IP address (e.g. 192.168.1.1):",
+    }
+    label, current = field_labels.get(field, ("?", "?"))
+    lines = [
+        f"✏️ <b>Edit Client — {name}</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"Field   : {label}",
+        f"Current : <code>{current}</code>",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if error:
+        lines.append(f"⚠️ <b>{error}</b>")
+    lines.append(prompts.get(field, "Send new value:"))
+    return "\n".join(lines)
+
+
+def text_edit_client_menu(c: dict) -> str:
+    """Edit menu showing all current field values."""
+    name = c.get("profile_name") or c.get("telegram_username", "?")
+    return (
+        f"✏️ <b>Edit Client — {name}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 Profile Name : {c.get('profile_name') or '—'}\n"
+        f"🔗 Username     : @{c.get('telegram_username', '')}\n"
+        f"🆔 Telegram ID  : <code>{c.get('telegram_id', '')}</code>\n"
+        f"🖥 RDP IP       : <code>{c.get('rdp_ip', '')}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Select a field to edit:"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1619,7 +1773,8 @@ def show_client_detail(chat_id, message_id, client_id):
         safe_edit(chat_id, message_id, "❌ Client not found.", kb_home_only())
         return
     safe_edit(chat_id, message_id,
-              text_client_detail(dict(c)), kb_client_detail(client_id))
+              text_client_detail(dict(c)),
+              kb_client_detail(client_id, active=bool(c["active"])))
 
 
 def show_builds_history(chat_id, message_id, client_id):
@@ -1768,6 +1923,9 @@ GH_HDR  = lambda: {
 
 # ── pending state for Deploy by Commit ID input ───────────────────────────────
 prod_commit_input_buf: dict = {}   # chat_id -> True (waiting for commit id)
+
+# ── active build run tracking (for Cancel Build) ──────────────────────────────
+prod_active_run: dict = {}         # str(chat_id) -> run_id (int)
 
 
 def gh_get(path: str, timeout: int = 15) -> dict:
@@ -1995,6 +2153,35 @@ def prod_trigger_dev_build(chat_id: int, msg_id: int,
     except Exception as e:
         log.error(f"prod_trigger_dev_build error: {e}")
         return False
+
+
+def prod_get_latest_run_id(workflow: str = "build_dev.yml",
+                           branch: str = "dev",
+                           max_wait: int = 10) -> int | None:
+    """
+    Poll GitHub Actions for the most recently queued run of `workflow` on
+    `branch`. Retries for up to `max_wait` seconds to handle the small delay
+    between dispatch and the run appearing in the API.
+    Returns the run_id (int) or None if not found.
+    """
+    import time
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        try:
+            r = requests.get(
+                f"{GH_REPO()}/actions/runs"
+                f"?workflow_id={workflow}&branch={branch}&per_page=1",
+                headers=GH_HDR(), timeout=15,
+            )
+            if r.status_code == 200:
+                runs = r.json().get("workflow_runs", [])
+                if runs:
+                    return runs[0]["id"]
+        except Exception as e:
+            log.error(f"prod_get_latest_run_id error: {e}")
+            break
+        time.sleep(2)
+    return None
 
 
 def prod_sync_dev_from_main() -> tuple[bool, str]:
@@ -2574,6 +2761,113 @@ def handle_prod_commit_input(message):
 
 
 @bot.message_handler(
+    func=lambda m: edit_client_buf.get(str(m.chat.id)) is not None)
+def handle_edit_client_input(message):
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id) or not session_valid(message.chat.id):
+        return
+    buf    = edit_client_buf.get(chat_id)
+    msg_id = nav_state.get(chat_id, {}).get("message_id")
+    text   = message.text.strip()
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+
+    field     = buf.get("field")
+    client_id = buf.get("client_id")
+    error     = ""
+    db        = get_db()
+    c         = db.execute(
+        "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+    db.close()
+    if not c:
+        edit_client_buf.pop(chat_id, None)
+        safe_edit(message.chat.id, msg_id, "❌ Client not found.", kb_home_only())
+        return
+
+    import re as _re
+    if field == "name":
+        new_val = "" if text == "." else text
+        db = get_db()
+        db.execute("UPDATE clients SET profile_name=? WHERE id=?",
+                   (new_val, client_id))
+        db.commit()
+        db.close()
+
+    elif field == "username":
+        clean = text.lstrip("@").strip()
+        if not clean:
+            error = "Username cannot be empty."
+        else:
+            # Duplicate check (exclude self)
+            db = get_db()
+            existing = db.execute(
+                "SELECT id FROM clients WHERE telegram_username=? AND id!=?",
+                (clean, client_id)).fetchone()
+            db.close()
+            if existing:
+                error = f"@{clean} is already used by another client."
+            else:
+                db = get_db()
+                db.execute("UPDATE clients SET telegram_username=? WHERE id=?",
+                           (clean, client_id))
+                db.commit()
+                db.close()
+
+    elif field == "tg_id":
+        if not text.strip().lstrip("-").isdigit():
+            error = "Telegram ID must be numeric."
+        else:
+            db = get_db()
+            existing = db.execute(
+                "SELECT id FROM clients WHERE telegram_id=? AND id!=?",
+                (text.strip(), client_id)).fetchone()
+            db.close()
+            if existing:
+                error = "This Telegram ID is already used by another client."
+            else:
+                db = get_db()
+                db.execute("UPDATE clients SET telegram_id=? WHERE id=?",
+                           (text.strip(), client_id))
+                db.commit()
+                db.close()
+
+    elif field == "rdp_ip":
+        if not _re.match(r"^\d{1,3}(\.\d{1,3}){3}$", text.strip()):
+            error = "Invalid IP format. Example: 192.168.1.100"
+        else:
+            db = get_db()
+            db.execute("UPDATE clients SET rdp_ip=? WHERE id=?",
+                       (text.strip(), client_id))
+            db.commit()
+            db.close()
+
+    if error:
+        # Re-fetch current values and re-show same field with error
+        db = get_db()
+        c  = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        safe_edit(message.chat.id, msg_id,
+                  text_edit_client_field(dict(c), field, error=error),
+                  kb_edit_client_cancel(client_id))
+        return
+
+    # Success — clear buf, reload fresh client, go back to edit menu
+    edit_client_buf.pop(chat_id, None)
+    db = get_db()
+    c  = db.execute(
+        "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+    db.close()
+    safe_edit(message.chat.id, msg_id,
+              f"✅ <b>Saved</b>\n"
+              f"━━━━━━━━━━━━━━━━━━━━\n"
+              + text_edit_client_menu(dict(c)),
+              kb_edit_client_menu(client_id))
+
+
+@bot.message_handler(
     func=lambda m: add_client_buf.get(str(m.chat.id)) is not None)
 def handle_add_client_input(message):
     chat_id = str(message.chat.id)
@@ -2589,22 +2883,54 @@ def handle_add_client_input(message):
 
     field  = buf.get("field")
     data   = buf.get("data", {})
+    error  = ""
 
     if field == "username":
-        data["username"] = text.lstrip("@")
-        buf["field"]     = "name"
-    elif field == "name":
-        data["name"]     = "" if text == "." else text
-        buf["field"]     = "tg_id"
-    elif field == "tg_id":
-        data["tg_id"]    = text
-        buf["field"]     = "rdp_ip"
-    elif field == "rdp_ip":
-        data["rdp_ip"]   = text
-        buf["field"]     = "confirm"
+        clean = text.lstrip("@").strip()
+        if not clean:
+            error = "Username cannot be empty."
+        else:
+            # Duplicate check
+            db = get_db()
+            existing = db.execute(
+                "SELECT id FROM clients WHERE telegram_username=?",
+                (clean,)).fetchone()
+            db.close()
+            if existing:
+                error = f"Client @{clean} already exists."
+            else:
+                data["username"] = clean
+                buf["field"]     = "name"
 
-    buf["data"]           = data
-    add_client_buf[chat_id] = buf
+    elif field == "name":
+        data["name"]  = "" if text == "." else text.strip()
+        buf["field"]  = "tg_id"
+
+    elif field == "tg_id":
+        if not text.strip().lstrip("-").isdigit():
+            error = "Telegram ID must be numeric (e.g. 123456789)."
+        else:
+            data["tg_id"] = text.strip()
+            buf["field"]  = "rdp_ip"
+
+    elif field == "rdp_ip":
+        import re as _re
+        ip_pattern = r"^\d{1,3}(\.\d{1,3}){3}$"
+        if not _re.match(ip_pattern, text.strip()):
+            error = "Invalid IP format. Example: 192.168.1.100"
+        else:
+            data["rdp_ip"] = text.strip()
+            buf["field"]   = "confirm"
+
+    buf["data"]              = data
+    add_client_buf[chat_id]  = buf
+
+    if error:
+        # Re-show same field with error message
+        safe_edit(message.chat.id, msg_id,
+                  text_add_client_form(data, field, error=error),
+                  kb_add_client_cancel())
+        return
 
     if buf["field"] == "confirm":
         token = generate_client_token(data["username"])
@@ -2626,21 +2952,24 @@ def handle_add_client_input(message):
             return
         db.close()
         add_client_buf.pop(chat_id, None)
+        display_name = data.get("name") or f"@{data['username']}"
         safe_edit(
             message.chat.id, msg_id,
             f"✅ <b>Client Added</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"Username : @{data['username']}\n"
-            f"TG ID    : {data['tg_id']}\n"
-            f"RDP IP   : {data['rdp_ip']}\n"
-            f"Token    : <code>{token}</code>\n"
+            f"👤 Name     : {display_name}\n"
+            f"🔗 Username : @{data['username']}\n"
+            f"🆔 TG ID    : <code>{data['tg_id']}</code>\n"
+            f"🖥 RDP IP   : <code>{data['rdp_ip']}</code>\n"
+            f"🔑 Token    : <code>{token}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━",
-            kb_home_only()
+            kb_back_home()
         )
         return
 
     safe_edit(message.chat.id, msg_id,
-              text_add_client_form(data, buf["field"]))
+              text_add_client_form(data, buf["field"]),
+              kb_add_client_cancel())
 
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -2686,13 +3015,15 @@ def handle_callback(call):
         show_main(chat_id, msg_id)
 
     elif data == "nav_clients":
+        edit_client_buf.pop(str(chat_id), None)
+        add_client_buf.pop(str(chat_id), None)
         show_clients(chat_id, msg_id)
 
     elif data == "nav_server":
         safe_edit(chat_id, msg_id, text_server_status(), kb_server())
 
     elif data == "nav_stats":
-        safe_edit(chat_id, msg_id, text_global_stats(), kb_home_only())
+        safe_edit(chat_id, msg_id, text_global_stats(), kb_back_home())
 
     elif data == "nav_settings":
         safe_edit(chat_id, msg_id, text_settings(chat_id), kb_settings())
@@ -2701,23 +3032,95 @@ def handle_callback(call):
         add_client_buf[str(chat_id)] = {"field": "username", "data": {}}
         nav_state[str(chat_id)] = {"screen": "add_client",
                                    "message_id": msg_id}
-        safe_edit(chat_id, msg_id, text_add_client_form({}, "username"))
+        safe_edit(chat_id, msg_id,
+                  text_add_client_form({}, "username"),
+                  kb_add_client_cancel())
 
     elif data.startswith("client_") and not data.startswith("client_stats_"):
         show_client_detail(chat_id, msg_id, int(data.split("_")[1]))
+
+    elif data.startswith("edit_client_"):
+        # Show edit menu — all fields with current values
+        client_id = int(data.split("_")[2])
+        edit_client_buf.pop(str(chat_id), None)   # clear any pending edit
+        db = get_db()
+        c  = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        if not c:
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        safe_edit(chat_id, msg_id,
+                  text_edit_client_menu(dict(c)),
+                  kb_edit_client_menu(client_id))
+
+    elif data.startswith("editfield_"):
+        # editfield_{client_id}_{field}
+        parts     = data.split("_", 2)
+        client_id = int(parts[1])
+        field     = parts[2]
+        db = get_db()
+        c  = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        if not c:
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        edit_client_buf[str(chat_id)] = {
+            "field":     field,
+            "client_id": client_id,
+        }
+        nav_state[str(chat_id)] = {"screen": "edit_client", "message_id": msg_id}
+        safe_edit(chat_id, msg_id,
+                  text_edit_client_field(dict(c), field),
+                  kb_edit_client_cancel(client_id))
+
+    elif data.startswith("toggle_client_"):
+        # Flip active ↔ inactive
+        client_id = int(data.split("_")[2])
+        db  = get_db()
+        c   = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        if not c:
+            db.close()
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        new_active = 0 if c["active"] else 1
+        db.execute("UPDATE clients SET active=? WHERE id=?",
+                   (new_active, client_id))
+        db.commit()
+        db.close()
+        # Reload fresh data
+        db = get_db()
+        c  = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        status_word = "Activated 🟢" if new_active else "Deactivated 🔴"
+        safe_edit(chat_id, msg_id,
+                  f"✅ <b>{status_word}</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  + text_client_detail(dict(c)),
+                  kb_client_detail(client_id, active=bool(new_active)))
 
     elif data.startswith("delete_client_"):
         client_id = int(data.split("_")[2])
         db        = get_db()
         c         = db.execute(
             "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        builds_cnt = db.execute(
+            "SELECT COUNT(*) as cnt FROM builds WHERE client_id=?",
+            (client_id,)).fetchone()["cnt"] if c else 0
         db.close()
         name = c["profile_name"] or c["telegram_username"] if c else "Unknown"
         safe_edit(
             chat_id, msg_id,
-            f"⚠️ <b>Delete Client</b>\n"
-            f"Are you sure you want to delete <b>{name}</b>?\n"
-            f"All builds and devices will be unlinked.",
+            f"🗑 <b>Delete Client — {name}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ This will deactivate <b>{name}</b>.\n"
+            f"📦 {builds_cnt} build(s) will be unlinked.\n"
+            f"📱 All linked devices will be detached.\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "This action cannot be undone. Continue?",
             kb_delete_confirm(client_id)
         )
 
@@ -2949,7 +3352,24 @@ def handle_callback(call):
                       kb_prod_back())
 
     elif data == "prod_test_build":
-        # ── Step 1: Auto-sync dev ← main before building ─────────────────────
+        # ── Show confirmation screen — do NOT build yet ───────────────────────
+        dev_info  = prod_get_branch_info("dev")
+        main_info = prod_get_branch_info("main")
+        safe_edit(chat_id, msg_id,
+                  "🧪 <b>Test Build — Confirm</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  f"🔒 main: <code>{main_info.get('sha','?')}</code>\n"
+                  f"🧪 dev:  <code>{dev_info.get('sha','?')}</code>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "This will:\n"
+                  "1️⃣ Auto-sync dev ← main\n"
+                  "2️⃣ Run full build pipeline on dev\n"
+                  "3️⃣ Send APK to your Telegram only\n\n"
+                  "⚠️ No client delivery. Confirm?",
+                  kb_prod_test_build_confirm())
+
+    elif data == "prod_test_build_confirm":
+        # ── Step 1: Auto-sync dev ← main ─────────────────────────────────────
         safe_edit(chat_id, msg_id,
                   "🧪 <b>Test Build</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
@@ -2980,20 +3400,104 @@ def handle_callback(call):
                   kb_prod_back())
         ok = prod_trigger_dev_build(chat_id, msg_id)
         if ok:
+            # ── Fetch run_id so user can cancel ───────────────────────────────
             safe_edit(chat_id, msg_id,
                       f"🧪 <b>Test Build Triggered</b> ✅\n"
                       f"━━━━━━━━━━━━━━━━━━━━\n"
                       f"🔃 Sync: {sync_note}\n"
                       f"🏗 Build: running on <b>dev</b> branch\n"
+                      f"🆔 Run ID: <i>fetching…</i>\n"
                       f"📱 APK will arrive here when done.\n"
                       f"No client delivery — admin only.",
                       kb_prod_back())
+            run_id = prod_get_latest_run_id("build_dev.yml", "dev", max_wait=10)
+            if run_id:
+                prod_active_run[str(chat_id)] = run_id
+                safe_edit(chat_id, msg_id,
+                          f"🧪 <b>Test Build Triggered</b> ✅\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🔃 Sync: {sync_note}\n"
+                          f"🏗 Build: running on <b>dev</b> branch\n"
+                          f"🆔 Run ID: <code>#{run_id}</code>\n"
+                          f"⏱ Started: just now\n"
+                          f"📱 APK will arrive here when done.\n"
+                          f"No client delivery — admin only.",
+                          kb_prod_cancel_build())
+            else:
+                # Could not get run_id — show without cancel button
+                safe_edit(chat_id, msg_id,
+                          f"🧪 <b>Test Build Triggered</b> ✅\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🔃 Sync: {sync_note}\n"
+                          f"🏗 Build: running on <b>dev</b> branch\n"
+                          f"🆔 Run ID: <i>unavailable</i>\n"
+                          f"📱 APK will arrive here when done.\n"
+                          f"No client delivery — admin only.\n\n"
+                          f"ℹ️ Cancel not available (run ID fetch failed).",
+                          kb_prod_back())
         else:
             safe_edit(chat_id, msg_id,
                       "❌ <b>Test Build Failed</b>\n"
                       "━━━━━━━━━━━━━━━━━━━━\n"
                       "Sync succeeded but GitHub Actions trigger failed.\n"
                       "Check GITHUB_TOKEN permissions.",
+                      kb_prod_back())
+
+    elif data == "prod_cancel_build":
+        # ── Cancel the active dev build ───────────────────────────────────────
+        run_id = prod_active_run.get(str(chat_id))
+        if not run_id:
+            safe_edit(chat_id, msg_id,
+                      "⚠️ <b>No Active Build</b>\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      "No active build run found for this session.\n"
+                      "It may have already finished.",
+                      kb_prod_back())
+            return
+        safe_edit(chat_id, msg_id,
+                  f"🛑 <b>Cancelling Build…</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  f"🆔 Run ID: <code>#{run_id}</code>\n"
+                  f"⏳ Sending cancel request to GitHub…",
+                  kb_prod_back())
+        try:
+            r = requests.post(
+                f"{GH_REPO()}/actions/runs/{run_id}/cancel",
+                headers=GH_HDR(), timeout=15,
+            )
+            if r.status_code == 202:
+                # Successfully accepted — run will stop shortly
+                prod_active_run.pop(str(chat_id), None)
+                safe_edit(chat_id, msg_id,
+                          f"🛑 <b>Build Cancelled</b> ✅\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🆔 Run <code>#{run_id}</code> is being stopped.\n"
+                          f"GitHub will halt the pipeline shortly.\n"
+                          f"No APK will be sent.",
+                          kb_prod_back())
+            elif r.status_code == 409:
+                # Build already finished — cannot cancel
+                prod_active_run.pop(str(chat_id), None)
+                safe_edit(chat_id, msg_id,
+                          f"❌ <b>Cannot Cancel</b>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🆔 Run <code>#{run_id}</code> has already completed.\n"
+                          f"APK may have been sent or build may have failed.",
+                          kb_prod_back())
+            else:
+                safe_edit(chat_id, msg_id,
+                          f"❌ <b>Cancel Failed</b>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"🆔 Run <code>#{run_id}</code>\n"
+                          f"GitHub returned: HTTP {r.status_code}\n"
+                          f"Try again or check GitHub Actions manually.",
+                          kb_prod_back())
+        except Exception as e:
+            log.error(f"prod_cancel_build error: {e}")
+            safe_edit(chat_id, msg_id,
+                      f"❌ <b>Cancel Error</b>\n"
+                      f"━━━━━━━━━━━━━━━━━━━━\n"
+                      f"Failed to reach GitHub API:\n<code>{e}</code>",
                       kb_prod_back())
 
     elif data == "prod_deploy":
