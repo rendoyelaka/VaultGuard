@@ -3571,16 +3571,15 @@ def handle_callback(call):
             version = prod_next_version()
             prod_create_release(version, result if not is_sha else ref,
                                 f"Production deploy {version}")
-            # Trigger production build
-            trigger_github_build("wedding", 0, chat_id, msg_id)
             safe_edit(
                 chat_id, msg_id,
-                f"🔒 <b>Production Locked</b> ✅\n"
+                f"🚀 <b>Deployed to Production</b> ✅\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"🏷 Release: <b>{version}</b>\n"
                 f"📦 Commit:  <code>{result}</code>\n"
-                f"🏗 Production build triggered.\n"
-                f"Watch @TheVaultGuardBot for build progress.",
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ main is now up to date.\n"
+                f"Go to each client → <b>New Build</b> when ready.",
                 kb_prod_back()
             )
         else:
