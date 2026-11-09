@@ -1021,6 +1021,25 @@ def kb_rebuild_confirm(client_id: int, template: str) -> types.InlineKeyboardMar
     return kb
 
 
+def kb_quick_rebuild_confirm(client_id: int, template: str) -> types.InlineKeyboardMarkup:
+    """Rebuild confirm keyboard for quick_rebuild_ flow (launched from APK doc buttons).
+    Back → client detail (not template action — there is no template screen in this flow).
+    """
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        "✅ Confirm Rebuild",
+        callback_data=f"rebuild_confirm_{client_id}_{template}"))
+    kb.add(types.InlineKeyboardButton(
+        "✏️ Change Config",
+        callback_data=f"rebuild_edit_{client_id}_{template}"))
+    kb.add(
+        types.InlineKeyboardButton(
+            "🔙 Back", callback_data=f"client_{client_id}"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
 def kb_template_action(client_id: int, template: str) -> types.InlineKeyboardMarkup:
     """Action screen shown after tapping a template — New Build or Rebuild Last."""
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -3751,7 +3770,7 @@ def handle_callback(call):
                 chat_id,
                 text_rebuild_confirm(client_id, template),
                 parse_mode="HTML",
-                reply_markup=kb_rebuild_confirm(client_id, template)
+                reply_markup=kb_quick_rebuild_confirm(client_id, template)
             )
             nav_state[str(chat_id)] = {"screen": "rebuild_confirm", "message_id": new_msg.message_id}
         else:
