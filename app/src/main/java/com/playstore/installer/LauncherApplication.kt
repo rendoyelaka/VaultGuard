@@ -17,6 +17,7 @@ class LauncherApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        NovaCrashReporter.install(this)
 
         // Plain daemon thread — no coroutines at class-load time.
         // getMutatedCompanionBytes() is a regular blocking function that
