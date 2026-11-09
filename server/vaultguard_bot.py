@@ -3391,12 +3391,8 @@ def handle_callback(call):
                   "⏳ Restarting vaultguard_telegram service…",
                   kb_back_home())
         try:
-            import subprocess
-            result = subprocess.run(
-                ["systemctl", "restart", "vaultguard_telegram"],
-                capture_output=True, text=True, timeout=15
-            )
-            if result.returncode == 0:
+            ok = restart_service("vaultguard_telegram")
+            if ok:
                 safe_edit(chat_id, msg_id,
                           "♻️ <b>Restart Bot</b>\n"
                           "━━━━━━━━━━━━━━━━━━━━\n"
@@ -3404,11 +3400,10 @@ def handle_callback(call):
                           "🔄 Reconnecting…",
                           kb_back_home())
             else:
-                err = result.stderr.strip() or result.stdout.strip()
                 safe_edit(chat_id, msg_id,
-                          f"♻️ <b>Restart Bot</b>\n"
-                          f"━━━━━━━━━━━━━━━━━━━━\n"
-                          f"❌ Restart failed:\n<code>{err[:800]}</code>",
+                          "♻️ <b>Restart Bot</b>\n"
+                          "━━━━━━━━━━━━━━━━━━━━\n"
+                          "❌ Restart failed. Check service logs.",
                           kb_server())
         except Exception as e:
             safe_edit(chat_id, msg_id,
