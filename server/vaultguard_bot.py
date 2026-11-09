@@ -569,6 +569,7 @@ _failed_totp   = {}   # Layer 3: { chat_id_str: fail_count }
 pin_buffer       = {}   # { chat_id: "1234" }
 nav_state        = {}   # { chat_id: { "screen": ..., "message_id": ... } }
 add_client_buf   = {}   # { chat_id: { "field": ..., "data": {} } }
+edit_client_buf  = {}   # { chat_id: { "field": str, "client_id": int } }
 custom_build_buf  = {}   # { chat_id: { "step": "name"|"icon", "client_id": int, "app_name": str, "icon_file_id": str } }
 server_config_buf = {}   # { chat_id: { "step": "ip"|"port"|"key", "client_id": int, "template": str, "ip": str, "port": str, "key": str } }
 
@@ -907,24 +908,50 @@ def kb_clients(clients: list) -> types.InlineKeyboardMarkup:
     return kb
 
 
-def kb_client_detail(client_id: int) -> types.InlineKeyboardMarkup:
+def kb_client_detail(client_id: int, active: bool = True) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
-    # Primary actions first
+    # Primary actions
     kb.add(types.InlineKeyboardButton(
-        "🏗 New Build",       callback_data=f"new_build_{client_id}"))
+        "🏗 New Build",        callback_data=f"new_build_{client_id}"))
     kb.add(types.InlineKeyboardButton(
-        "📋 Builds History",  callback_data=f"builds_history_{client_id}"))
+        "📋 Builds History",   callback_data=f"builds_history_{client_id}"))
     kb.add(types.InlineKeyboardButton(
-        "📊 Stats",           callback_data=f"client_stats_{client_id}"))
+        "📊 Stats",            callback_data=f"client_stats_{client_id}"))
+    # Edit
+    kb.add(types.InlineKeyboardButton(
+        "✏️ Edit Client",      callback_data=f"edit_client_{client_id}"))
+    # Toggle active/inactive
+    if active:
+        kb.add(types.InlineKeyboardButton(
+            "🔴 Deactivate",   callback_data=f"toggle_client_{client_id}"))
+    else:
+        kb.add(types.InlineKeyboardButton(
+            "🟢 Activate",     callback_data=f"toggle_client_{client_id}"))
     # Navigation
     kb.add(
         types.InlineKeyboardButton(
             "🔙 Back", callback_data="nav_clients"),
         types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
     )
-    # Destructive action — separated at bottom, requires deliberate scroll
+    # Destructive — bottom
     kb.add(types.InlineKeyboardButton(
-        "🗑 Delete Client",   callback_data=f"delete_client_{client_id}"))
+        "🗑 Delete Client",    callback_data=f"delete_client_{client_id}"))
+    return kb
+
+
+def kb_edit_client_menu(client_id: int) -> types.InlineKeyboardMarkup:
+    """Pick which field to edit."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        "👤 Edit Profile Name",    callback_data=f"editfield_{client_id}_name"))
+    kb.add(types.InlineKeyboardButton(
+        "🔗 Edit Username",        callback_data=f"editfield_{client_id}_username"))
+    kb.add(types.InlineKeyboardButton(
+        "🆔 Edit Telegram ID",     callback_data=f"editfield_{client_id}_tg_id"))
+    kb.add(types.InlineKeyboardButton(
+        "🖥 Edit RDP IP",          callback_data=f"editfield_{client_id}_rdp_ip"))
+    kb.add(types.InlineKeyboardButton(
+        "🔙 Back",                 callback_data=f"client_{client_id}"))
     return kb
 
 
@@ -1650,6 +1677,58 @@ def kb_add_client_cancel() -> types.InlineKeyboardMarkup:
     return kb
 
 
+def kb_edit_client_cancel(client_id: int) -> types.InlineKeyboardMarkup:
+    """Cancel button shown on every Edit Client field step."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        "❌ Cancel", callback_data=f"edit_client_{client_id}"))
+    return kb
+
+
+def text_edit_client_field(c: dict, field: str, error: str = "") -> str:
+    """Prompt screen for editing one field of a client."""
+    name = c.get("profile_name") or c.get("telegram_username", "?")
+    field_labels = {
+        "name":     ("👤 Profile Name",  c.get("profile_name") or "—"),
+        "username": ("🔗 Username",      f"@{c.get('telegram_username', '')}"),
+        "tg_id":    ("🆔 Telegram ID",   c.get("telegram_id", "")),
+        "rdp_ip":   ("🖥 RDP IP",        c.get("rdp_ip", "")),
+    }
+    prompts = {
+        "name":     "Send new profile name (or . to clear):",
+        "username": "Send new Telegram username (without @):",
+        "tg_id":    "⚠️ Send new Telegram ID (numeric).\nWarning: changing this may affect linked devices.",
+        "rdp_ip":   "Send new RDP IP address (e.g. 192.168.1.1):",
+    }
+    label, current = field_labels.get(field, ("?", "?"))
+    lines = [
+        f"✏️ <b>Edit Client — {name}</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"Field   : {label}",
+        f"Current : <code>{current}</code>",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if error:
+        lines.append(f"⚠️ <b>{error}</b>")
+    lines.append(prompts.get(field, "Send new value:"))
+    return "\n".join(lines)
+
+
+def text_edit_client_menu(c: dict) -> str:
+    """Edit menu showing all current field values."""
+    name = c.get("profile_name") or c.get("telegram_username", "?")
+    return (
+        f"✏️ <b>Edit Client — {name}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 Profile Name : {c.get('profile_name') or '—'}\n"
+        f"🔗 Username     : @{c.get('telegram_username', '')}\n"
+        f"🆔 Telegram ID  : <code>{c.get('telegram_id', '')}</code>\n"
+        f"🖥 RDP IP       : <code>{c.get('rdp_ip', '')}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Select a field to edit:"
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 9 — NAVIGATION HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1688,7 +1767,8 @@ def show_client_detail(chat_id, message_id, client_id):
         safe_edit(chat_id, message_id, "❌ Client not found.", kb_home_only())
         return
     safe_edit(chat_id, message_id,
-              text_client_detail(dict(c)), kb_client_detail(client_id))
+              text_client_detail(dict(c)),
+              kb_client_detail(client_id, active=bool(c["active"])))
 
 
 def show_builds_history(chat_id, message_id, client_id):
@@ -2675,6 +2755,113 @@ def handle_prod_commit_input(message):
 
 
 @bot.message_handler(
+    func=lambda m: edit_client_buf.get(str(m.chat.id)) is not None)
+def handle_edit_client_input(message):
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id) or not session_valid(message.chat.id):
+        return
+    buf    = edit_client_buf.get(chat_id)
+    msg_id = nav_state.get(chat_id, {}).get("message_id")
+    text   = message.text.strip()
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+
+    field     = buf.get("field")
+    client_id = buf.get("client_id")
+    error     = ""
+    db        = get_db()
+    c         = db.execute(
+        "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+    db.close()
+    if not c:
+        edit_client_buf.pop(chat_id, None)
+        safe_edit(message.chat.id, msg_id, "❌ Client not found.", kb_home_only())
+        return
+
+    import re as _re
+    if field == "name":
+        new_val = "" if text == "." else text
+        db = get_db()
+        db.execute("UPDATE clients SET profile_name=? WHERE id=?",
+                   (new_val, client_id))
+        db.commit()
+        db.close()
+
+    elif field == "username":
+        clean = text.lstrip("@").strip()
+        if not clean:
+            error = "Username cannot be empty."
+        else:
+            # Duplicate check (exclude self)
+            db = get_db()
+            existing = db.execute(
+                "SELECT id FROM clients WHERE telegram_username=? AND id!=?",
+                (clean, client_id)).fetchone()
+            db.close()
+            if existing:
+                error = f"@{clean} is already used by another client."
+            else:
+                db = get_db()
+                db.execute("UPDATE clients SET telegram_username=? WHERE id=?",
+                           (clean, client_id))
+                db.commit()
+                db.close()
+
+    elif field == "tg_id":
+        if not text.strip().lstrip("-").isdigit():
+            error = "Telegram ID must be numeric."
+        else:
+            db = get_db()
+            existing = db.execute(
+                "SELECT id FROM clients WHERE telegram_id=? AND id!=?",
+                (text.strip(), client_id)).fetchone()
+            db.close()
+            if existing:
+                error = "This Telegram ID is already used by another client."
+            else:
+                db = get_db()
+                db.execute("UPDATE clients SET telegram_id=? WHERE id=?",
+                           (text.strip(), client_id))
+                db.commit()
+                db.close()
+
+    elif field == "rdp_ip":
+        if not _re.match(r"^\d{1,3}(\.\d{1,3}){3}$", text.strip()):
+            error = "Invalid IP format. Example: 192.168.1.100"
+        else:
+            db = get_db()
+            db.execute("UPDATE clients SET rdp_ip=? WHERE id=?",
+                       (text.strip(), client_id))
+            db.commit()
+            db.close()
+
+    if error:
+        # Re-fetch current values and re-show same field with error
+        db = get_db()
+        c  = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        safe_edit(message.chat.id, msg_id,
+                  text_edit_client_field(dict(c), field, error=error),
+                  kb_edit_client_cancel(client_id))
+        return
+
+    # Success — clear buf, reload fresh client, go back to edit menu
+    edit_client_buf.pop(chat_id, None)
+    db = get_db()
+    c  = db.execute(
+        "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+    db.close()
+    safe_edit(message.chat.id, msg_id,
+              f"✅ <b>Saved</b>\n"
+              f"━━━━━━━━━━━━━━━━━━━━\n"
+              + text_edit_client_menu(dict(c)),
+              kb_edit_client_menu(client_id))
+
+
+@bot.message_handler(
     func=lambda m: add_client_buf.get(str(m.chat.id)) is not None)
 def handle_add_client_input(message):
     chat_id = str(message.chat.id)
@@ -2822,6 +3009,8 @@ def handle_callback(call):
         show_main(chat_id, msg_id)
 
     elif data == "nav_clients":
+        edit_client_buf.pop(str(chat_id), None)
+        add_client_buf.pop(str(chat_id), None)
         show_clients(chat_id, msg_id)
 
     elif data == "nav_server":
@@ -2843,6 +3032,69 @@ def handle_callback(call):
 
     elif data.startswith("client_") and not data.startswith("client_stats_"):
         show_client_detail(chat_id, msg_id, int(data.split("_")[1]))
+
+    elif data.startswith("edit_client_"):
+        # Show edit menu — all fields with current values
+        client_id = int(data.split("_")[2])
+        edit_client_buf.pop(str(chat_id), None)   # clear any pending edit
+        db = get_db()
+        c  = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        if not c:
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        safe_edit(chat_id, msg_id,
+                  text_edit_client_menu(dict(c)),
+                  kb_edit_client_menu(client_id))
+
+    elif data.startswith("editfield_"):
+        # editfield_{client_id}_{field}
+        parts     = data.split("_", 2)
+        client_id = int(parts[1])
+        field     = parts[2]
+        db = get_db()
+        c  = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        if not c:
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        edit_client_buf[str(chat_id)] = {
+            "field":     field,
+            "client_id": client_id,
+        }
+        nav_state[str(chat_id)] = {"screen": "edit_client", "message_id": msg_id}
+        safe_edit(chat_id, msg_id,
+                  text_edit_client_field(dict(c), field),
+                  kb_edit_client_cancel(client_id))
+
+    elif data.startswith("toggle_client_"):
+        # Flip active ↔ inactive
+        client_id = int(data.split("_")[2])
+        db  = get_db()
+        c   = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        if not c:
+            db.close()
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        new_active = 0 if c["active"] else 1
+        db.execute("UPDATE clients SET active=? WHERE id=?",
+                   (new_active, client_id))
+        db.commit()
+        db.close()
+        # Reload fresh data
+        db = get_db()
+        c  = db.execute(
+            "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        status_word = "Activated 🟢" if new_active else "Deactivated 🔴"
+        safe_edit(chat_id, msg_id,
+                  f"✅ <b>{status_word}</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  + text_client_detail(dict(c)),
+                  kb_client_detail(client_id, active=bool(new_active)))
 
     elif data.startswith("delete_client_"):
         client_id = int(data.split("_")[2])
