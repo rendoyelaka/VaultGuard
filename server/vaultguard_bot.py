@@ -3431,6 +3431,80 @@ def handle_callback(call):
                   text_template_select(client_id),
                   kb_template_select(client_id))
 
+    elif data.startswith("quick_rebuild_"):
+        # quick_rebuild_{client_id}_{template}
+        # Fired from the Rebuild button attached directly to the APK document message.
+        # The document message cannot be edited — send a NEW message and use that as nav target.
+        rest      = data[len("quick_rebuild_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        # Check last build config
+        _db = get_db()
+        _c  = _db.execute("SELECT rdp_ip FROM clients WHERE id=?", (client_id,)).fetchone()
+        _lb = _db.execute(
+            "SELECT server_ip, server_port, server_key FROM builds "
+            "WHERE client_id=? AND template=? AND server_ip != '' "
+            "ORDER BY id DESC LIMIT 1",
+            (client_id, template)).fetchone()
+        _db.close()
+        _rdp_ip = _c["rdp_ip"] if _c else ""
+        if _lb and _lb["server_ip"] and _lb["server_port"] and _lb["server_key"]:
+            # All 3 values available — send new message with pre-filled confirm screen
+            new_msg = bot.send_message(
+                chat_id,
+                text_rebuild_confirm(client_id, template),
+                parse_mode="HTML",
+                reply_markup=kb_rebuild_confirm(client_id, template)
+            )
+            nav_state[str(chat_id)] = {"screen": "rebuild_confirm", "message_id": new_msg.message_id}
+        else:
+            # Missing port/key — send new message, start port entry
+            new_msg = bot.send_message(
+                chat_id,
+                f"🔁 <b>Rebuild — enter port & key</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📡 IP already set: <code>{_rdp_ip}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔌 Enter server port:\n\n"
+                f"<i>Example: 7771</i>",
+                parse_mode="HTML",
+                reply_markup=kb_server_config_cancel(client_id, template)
+            )
+            server_config_buf[str(chat_id)] = {
+                "step":       "port",
+                "client_id":  client_id,
+                "template":   template,
+                "ip":         _rdp_ip,
+                "port":       None,
+                "key":        None,
+                "is_rebuild": True,
+            }
+            nav_state[str(chat_id)] = {"screen": "server_config", "message_id": new_msg.message_id}
+
+    elif data.startswith("quick_cancel_build_"):
+        # quick_cancel_build_{client_id}
+        # Fired from the Cancel Build button on the APK document message.
+        # Cancels the most recent in-progress GitHub Actions run for this client.
+        rest      = data[len("quick_cancel_build_"):]
+        client_id = int(rest.split("_")[0]) if "_" in rest else int(rest)
+        run_id    = prod_active_run.get(str(chat_id))
+        if not run_id:
+            bot.answer_callback_query(call.id, "⚠️ No active build to cancel.", show_alert=False)
+        else:
+            resp = requests.delete(
+                f"{GH_REPO()}/actions/runs/{run_id}/cancel",
+                headers=GH_HEADERS(),
+                timeout=10,
+            )
+            if resp.status_code in (202, 204):
+                bot.answer_callback_query(call.id, "🛑 Build cancelled.", show_alert=False)
+                prod_active_run.pop(str(chat_id), None)
+            elif resp.status_code == 409:
+                bot.answer_callback_query(call.id, "✅ Build already completed.", show_alert=False)
+            else:
+                bot.answer_callback_query(call.id, f"⚠️ Cancel failed ({resp.status_code}).", show_alert=False)
+
     elif data.startswith("template_new_"):
         # template_new_{client_id}_{template} — fresh build, go to server config entry
         rest      = data[len("template_new_"):]
