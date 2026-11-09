@@ -5,12 +5,9 @@ on:
     branches:
       - main
       - dev
-  workflow_run:
-    workflows: ["*"]
-    types:
-      - completed
   schedule:
     - cron: '0 */6 * * *'   # re-enforce every 6 hours automatically
+  workflow_dispatch:          # allow manual trigger anytime
 
 jobs:
   protect-main:
@@ -19,12 +16,18 @@ jobs:
     steps:
       - name: Apply branch protection to main
         run: |
+          TOKEN="${{ secrets.BRANCH_PROTECTION_TOKEN }}"
+          if [ -z "$TOKEN" ]; then
+            echo "❌ BRANCH_PROTECTION_TOKEN secret not set. Skipping."
+            exit 1
+          fi
+
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
             -X PUT \
-            -H "Authorization: token ${{ secrets.BRANCH_PROTECTION_TOKEN }}" \
+            -H "Authorization: token ${TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            https://api.github.com/repos/${{ github.repository }}/branches/main/protection \
+            "https://api.github.com/repos/${{ github.repository }}/branches/main/protection" \
             -d '{
               "required_status_checks": null,
               "enforce_admins": true,
@@ -51,7 +54,7 @@ jobs:
           curl -s \
             -H "Authorization: token ${{ secrets.BRANCH_PROTECTION_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/branches/main/protection \
+            "https://api.github.com/repos/${{ github.repository }}/branches/main/protection" \
             | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
