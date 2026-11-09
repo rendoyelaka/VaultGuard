@@ -50,6 +50,10 @@ android {
         buildConfigField "String",  "INTERNAL_ID",    "\"${project.ext.fp_blake3.take(12)}\""
         buildConfigField "boolean", "FEATURE_ANALYTICS", "true"
         buildConfigField "boolean", "FEATURE_CRASH_REPORT", "false"
+        // IS_DEV_BUILD — true only for dev test builds (set via IS_DEV_BUILD env var in build_dev.yml)
+        // Production build.yml never sets this → false → R8 strips NovaCrashReporter entirely
+        def isDevBuild = (System.getenv("IS_DEV_BUILD") ?: "false") == "true"
+        buildConfigField "boolean", "IS_DEV_BUILD", "${isDevBuild}"
         buildConfigField "int",     "API_LEVEL",      "${project.ext.rand_versionCode % 100}"
         buildConfigField "String",  "CLIENT_TOKEN",   "\"manual\""
     }
