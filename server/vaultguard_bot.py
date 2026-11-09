@@ -1156,6 +1156,8 @@ def kb_server() -> types.InlineKeyboardMarkup:
         types.InlineKeyboardButton("♻️ Restart Bot", callback_data="server_restart"),
         types.InlineKeyboardButton("🔗 Tunnel URL",  callback_data="server_tunnel"),
     )
+    kb.add(types.InlineKeyboardButton(
+        "⬇️ Force Sync from GitHub", callback_data="server_force_sync"))
     kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="nav_home"))
     return kb
 
@@ -3509,6 +3511,51 @@ def handle_callback(call):
                       f"━━━━━━━━━━━━━━━━━━━━\n"
                       f"❌ Error: <code>{e}</code>",
                       kb_server())
+
+    elif data == "server_force_sync":
+        safe_edit(chat_id, msg_id,
+                  "⬇️ <b>Force Sync</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "⏳ Syncing from GitHub main…\n\n"
+                  "Step 1 — Fetching latest code\n"
+                  "Step 2 — Backing up config.py\n"
+                  "Step 3 — Hard reset to origin/main\n"
+                  "Step 4 — Restoring config.py\n"
+                  "Step 5 — Restarting bot service",
+                  kb_back_home())
+        def _do_force_sync():
+            try:
+                changed = force_sync()
+                if changed:
+                    files_str = "\n".join(
+                        f"  📄 <code>{f}</code>" for f in changed[:10])
+                    if len(changed) > 10:
+                        files_str += f"\n  ...and {len(changed) - 10} more"
+                    result_text = (
+                        "⬇️ <b>Force Sync — Done ✅</b>\n"
+                        "━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📦 {len(changed)} file(s) updated:\n"
+                        f"{files_str}\n"
+                        "━━━━━━━━━━━━━━━━━━━━\n"
+                        "♻️ Restarting bot service…"
+                    )
+                    safe_edit(chat_id, msg_id, result_text, kb_back_home())
+                    time.sleep(1)
+                    restart_service("vaultguard_telegram")
+                else:
+                    safe_edit(chat_id, msg_id,
+                              "⬇️ <b>Force Sync — Done ✅</b>\n"
+                              "━━━━━━━━━━━━━━━━━━━━\n"
+                              "✅ Already up to date with GitHub main.\n"
+                              "No files changed.",
+                              kb_server())
+            except Exception as e:
+                safe_edit(chat_id, msg_id,
+                          f"⬇️ <b>Force Sync — Failed ❌</b>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"Error: <code>{e}</code>",
+                          kb_server())
+        threading.Thread(target=_do_force_sync, daemon=True).start()
 
     elif data == "nav_stats":
         safe_edit(chat_id, msg_id, text_global_stats(), kb_back_home())

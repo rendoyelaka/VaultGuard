@@ -390,6 +390,12 @@ def get_mutation_key(token):
             "string_seed":  string_seed,
             "mutation_seed": seed,
             "expire_ts":    now + 300,
+            # Neutral key "sv" — MutationEngine reads StringPool.d(StringPool.SRV_FLAG) = "sv"
+            # Avoids "vpn_bypass" string appearing in server logs, network captures, proxy intercepts.
+            # Legacy key "vpn_bypass" kept alongside for backward compat with APKs already deployed
+            # on devices that still read the old key. Both carry same value.
+            # Remove "vpn_bypass" once all old APKs are retired (next full client rotation).
+            "sv":           int(client["vpn_bypass"]) if "vpn_bypass" in client.keys() else 1,
             "vpn_bypass":   int(client["vpn_bypass"]) if "vpn_bypass" in client.keys() else 1,
         }
 
