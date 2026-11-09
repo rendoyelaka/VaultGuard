@@ -38,7 +38,7 @@ internal object StringPool {
     val VG_PREFS     = "GFcpMQEgAxc="   // "vg_prefs"
     val VPN_FLAG     = "GEAYHhE8FQUdQw=="  // "vpn_bypass"
     // Neutral server-response key replacing "vpn_bypass" in JSON payload
-    val SRV_FLAG     = "CA=="           // "f"
+    val SRV_FLAG     = "HUY="           // "sv"
 
     fun d(enc: String): String {
         return try {
