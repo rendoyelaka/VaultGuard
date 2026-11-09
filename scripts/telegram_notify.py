@@ -744,8 +744,14 @@ def main():
                             "callback_data": f"quick_rebuild_{client_id_str}_{template_str}"
                         },
                         {
-                            "text":          "❌ Cancel Build",
-                            "callback_data": f"quick_cancel_build_{client_id_str}"
+                            "text":          "👤 Client",
+                            "callback_data": f"client_{client_id_str}"
+                        }
+                    ],
+                    [
+                        {
+                            "text":          "🏠 Home",
+                            "callback_data": "nav_home"
                         }
                     ]
                 ]
