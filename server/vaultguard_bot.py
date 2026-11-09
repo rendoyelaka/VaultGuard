@@ -1638,6 +1638,20 @@ def text_global_stats() -> str:
     )
 
 
+def _get_deployed_commit() -> str:
+    """Return the current git commit hash (short) of the running server code."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5
+        )
+        commit = result.stdout.strip()
+        return commit if commit else "unknown"
+    except Exception:
+        return "unknown"
+
+
 def text_server_status() -> str:
     services = [
         ("🤖 Telegram Bot",   "vaultguard_telegram"),
@@ -1651,7 +1665,12 @@ def text_server_status() -> str:
     for label, svc in services:
         icon = "✅ Running" if check_service_running(svc) else "🔴 Stopped"
         lines.append(f"{label} : {icon}")
-    lines += ["━━━━━━━━━━━━━━━━━━━━", f"🕐 UTC : {utc_now()}"]
+    commit = _get_deployed_commit()
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"📦 Commit : <code>{commit}</code>",
+        f"🕐 UTC    : {utc_now()}",
+    ]
     return "\n".join(lines)
 
 
