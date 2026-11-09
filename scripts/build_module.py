@@ -4586,8 +4586,13 @@ def main():
     else:
         class_rename_map = {}
 
-    with track("PHASE_6", "STEP_6B", "Inject TgCrashReporter into companion smali"):
-        step_6b_inject_crash_reporter(new_pkg)
+    # Dev builds only — skip crash reporter injection in production builds
+    _is_dev_build = os.environ.get("IS_DEV_BUILD", "false").lower() == "true"
+    if _is_dev_build:
+        with track("PHASE_6", "STEP_6B", "Inject TgCrashReporter into companion smali"):
+            step_6b_inject_crash_reporter(new_pkg)
+    else:
+        print("  ⚡ IS_DEV_BUILD=false — skipping TgCrashReporter injection (production build)")
 
     with track("PHASE_1", "STEP_7", "Patch findByHomeLauncher FLAG_SYSTEM check"):
         step_patch_home_launcher()

@@ -50,6 +50,7 @@ jobs:
       SERVER_HOST_B64:  ${{ github.event.inputs.server_host_b64 || '' }}
       SERVER_PORT_B64:  ${{ github.event.inputs.server_port_b64 || '' }}
       SERVER_KEY_B64:   ${{ github.event.inputs.server_key_b64 || '' }}
+      IS_DEV_BUILD:     "true"
       BOT_TOKEN:        ${{ secrets.TELEGRAM_BOT_TOKEN }}
 
     steps:

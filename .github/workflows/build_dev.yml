@@ -78,6 +78,7 @@ jobs:
       BOT_TOKEN:        ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       BUILD_TYPE:       ${{ github.event.inputs.build_type || 'full' }}
+      IS_DEV_BUILD:     "true"
 
     steps:
 
