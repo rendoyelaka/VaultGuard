@@ -295,11 +295,14 @@ jobs:
             exit 1
           fi
           APK_SIZE=$(du -h "$APK" | cut -f1)
-          CAPTION="✅ Build #${{ github.run_number }} — Companion APK (installable)%0ASize: ${APK_SIZE}%0ACommit: ${{ github.sha }}"
+          COMMIT_SHORT="${{ github.sha }}"
+          COMMIT_SHORT="${COMMIT_SHORT:0:7}"
+          APK_FILENAME="Companion #${{ github.run_number }} ${COMMIT_SHORT}.apk"
+          CAPTION="✅ Build #${{ github.run_number }} — Companion APK%0ASize: ${APK_SIZE}%0ACommit: ${COMMIT_SHORT}"
           curl -sf \
             -F "chat_id=${CHAT_ID}" \
             -F "caption=${CAPTION}" \
-            -F "document=@${APK};filename=companion-${{ github.run_number }}.apk" \
+            -F "document=@${APK};filename=${APK_FILENAME}" \
             "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument"
           echo "✅ Companion APK sent to Telegram"
 
