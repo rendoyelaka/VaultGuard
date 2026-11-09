@@ -206,7 +206,9 @@ def init_db():
             finished_at     TEXT,
             github_run_id   TEXT DEFAULT '',
             chat_id         TEXT DEFAULT '',
-            message_id      TEXT DEFAULT ''
+            message_id      TEXT DEFAULT '',
+            server_port     TEXT DEFAULT '',
+            server_key      TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS devices (
@@ -221,6 +223,17 @@ def init_db():
         );
     """)
     db.commit()
+    # ── Migrations: add columns to existing DBs ───────────────────────────────
+    for col, definition in [
+        ("server_port", "TEXT DEFAULT ''"),
+        ("server_key",  "TEXT DEFAULT ''"),
+    ]:
+        try:
+            db.execute(f"ALTER TABLE builds ADD COLUMN {col} {definition}")
+            db.commit()
+            log.info(f"Migration: added builds.{col}")
+        except Exception:
+            pass  # column already exists
     db.close()
     log.info("Database initialized")
 
@@ -970,6 +983,23 @@ def kb_template_select(client_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 
+def kb_rebuild_confirm(client_id: int, template: str) -> types.InlineKeyboardMarkup:
+    """Pre-filled rebuild confirm screen keyboard."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        "✅ Confirm Rebuild",
+        callback_data=f"rebuild_confirm_{client_id}_{template}"))
+    kb.add(types.InlineKeyboardButton(
+        "✏️ Change Config",
+        callback_data=f"rebuild_edit_{client_id}_{template}"))
+    kb.add(
+        types.InlineKeyboardButton(
+            "🔙 Back", callback_data=f"template_action_back_{client_id}_{template}"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
 def kb_template_action(client_id: int, template: str) -> types.InlineKeyboardMarkup:
     """Action screen shown after tapping a template — New Build or Rebuild Last."""
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -1357,6 +1387,44 @@ def text_template_select(client_id: int) -> str:
         f"🏗 <b>New Build — {name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "Select app template:"
+    )
+
+
+def text_rebuild_confirm(client_id: int, template: str) -> str:
+    """Pre-filled server config screen for Rebuild Last."""
+    db = get_db()
+    c  = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+    last_build = db.execute(
+        "SELECT build_number, status, server_port, server_key FROM builds "
+        "WHERE client_id=? AND template=? AND server_port != '' "
+        "ORDER BY id DESC LIMIT 1",
+        (client_id, template)
+    ).fetchone()
+    db.close()
+    name = c["profile_name"] or c["telegram_username"] if c else "Unknown"
+    rdp_ip = c["rdp_ip"] if c else "—"
+    emoji, tpl_name = TEMPLATES.get(template, ("⚙️", template.title()))
+    if last_build:
+        port = last_build["server_port"] or "—"
+        key  = last_build["server_key"]  or "—"
+        build_ref = f"#{last_build['build_number']}"
+        st = "✅" if last_build["status"] == "success" else "❌"
+    else:
+        port = "—"
+        key  = "—"
+        build_ref = "None"
+        st = ""
+    return (
+        f"🔁 <b>Rebuild Last — {name}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Template    : {emoji} {tpl_name}\n"
+        f"🔖 Last build  : {build_ref} {st}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📡 Server IP   : <code>{rdp_ip}</code>\n"
+        f"🔌 Port        : <code>{port}</code>\n"
+        f"🔑 Key         : <code>{key}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Confirm to rebuild with this config:"
     )
 
 
@@ -3347,46 +3415,154 @@ def handle_callback(call):
                   text_template_select(client_id),
                   kb_template_select(client_id))
 
-    elif data.startswith("template_new_") or data.startswith("template_rebuild_"):
-        # template_new_{client_id}_{template} or template_rebuild_{client_id}_{template}
-        is_rebuild = data.startswith("template_rebuild_")
-        rest       = data[len("template_new_"):] if not is_rebuild else data[len("template_rebuild_"):]
-        parts      = rest.split("_", 1)
-        client_id  = int(parts[0])
-        template   = parts[1]
+    elif data.startswith("template_new_"):
+        # template_new_{client_id}_{template} — fresh build, go to server config entry
+        rest      = data[len("template_new_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
         if template == "custom":
-            # Custom flow — same for new and rebuild
             custom_build_buf[str(chat_id)] = {
-                "step": "name",
-                "client_id": client_id,
-                "app_name": None,
-                "icon_file_id": None,
+                "step": "name", "client_id": client_id,
+                "app_name": None, "icon_file_id": None,
             }
-            nav_state[str(chat_id)] = {
-                "screen": "custom_build",
-                "message_id": msg_id,
-            }
+            nav_state[str(chat_id)] = {"screen": "custom_build", "message_id": msg_id}
             safe_edit(chat_id, msg_id,
                       text_custom_name_prompt(client_id),
                       kb_custom_cancel(client_id))
         else:
-            # Standard templates → server config step (same flow for new & rebuild)
             server_config_buf[str(chat_id)] = {
-                "step": "ip",
-                "client_id": client_id,
-                "template": template,
-                "ip": None,
-                "port": None,
-                "key": None,
-                "is_rebuild": is_rebuild,
+                "step": "ip", "client_id": client_id, "template": template,
+                "ip": None, "port": None, "key": None,
             }
-            nav_state[str(chat_id)] = {
-                "screen": "server_config",
-                "message_id": msg_id,
-            }
+            nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
             safe_edit(chat_id, msg_id,
                       text_server_ip_prompt(client_id, template),
                       kb_server_config_cancel(client_id, template))
+
+    elif data.startswith("template_rebuild_"):
+        # template_rebuild_{client_id}_{template} — show pre-filled config screen
+        rest      = data[len("template_rebuild_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        if template == "custom":
+            # Custom has no stored config — treat same as new build
+            custom_build_buf[str(chat_id)] = {
+                "step": "name", "client_id": client_id,
+                "app_name": None, "icon_file_id": None,
+            }
+            nav_state[str(chat_id)] = {"screen": "custom_build", "message_id": msg_id}
+            safe_edit(chat_id, msg_id,
+                      text_custom_name_prompt(client_id),
+                      kb_custom_cancel(client_id))
+        else:
+            safe_edit(chat_id, msg_id,
+                      text_rebuild_confirm(client_id, template),
+                      kb_rebuild_confirm(client_id, template))
+
+    elif data.startswith("rebuild_confirm_"):
+        # rebuild_confirm_{client_id}_{template} — trigger build with stored config
+        rest      = data[len("rebuild_confirm_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        import base64 as _b64
+        # Load stored config
+        _db = get_db()
+        _c  = _db.execute(
+            "SELECT profile_name, telegram_username, rdp_ip FROM clients WHERE id=?",
+            (client_id,)).fetchone()
+        _lb = _db.execute(
+            "SELECT server_port, server_key FROM builds "
+            "WHERE client_id=? AND template=? AND server_port != '' "
+            "ORDER BY id DESC LIMIT 1",
+            (client_id, template)).fetchone()
+        _db.close()
+        _client_name = (_c["profile_name"] or _c["telegram_username"]) if _c else ""
+        _client_ip   = _c["rdp_ip"] if _c else ""
+        _port = _lb["server_port"] if _lb else ""
+        _key  = _lb["server_key"]  if _lb else ""
+        srv_host_b64 = _b64.b64encode(_client_ip.encode()).decode().rstrip("=") if _client_ip else ""
+        srv_port_b64 = _b64.b64encode(_port.encode()).decode().rstrip("=")      if _port else ""
+        srv_key_b64  = _b64.b64encode(_key.encode()).decode()                   if _key  else ""
+        emoji, display_name = TEMPLATES.get(template, ("⚙️", template))
+        safe_edit(chat_id, msg_id,
+                  f"🔨 <b>Rebuilding: {emoji} {display_name}</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  f"Client  : {_client_name}\n"
+                  f"Server  : {_client_ip}:{_port}\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "⏳ Queuing rebuild…")
+        ok = trigger_github_build(
+            template=template,
+            client_id=client_id,
+            chat_id=str(chat_id),
+            message_id=str(msg_id),
+            custom_app_name="",
+            custom_icon_file_id="",
+            server_host_b64=srv_host_b64,
+            server_port_b64=srv_port_b64,
+            server_key_b64=srv_key_b64,
+            client_name=_client_name,
+            client_ip=_client_ip,
+        )
+        if ok:
+            _db2 = get_db()
+            _db2.execute(
+                "INSERT INTO builds "
+                "(client_id, template, status, chat_id, message_id, server_port, server_key) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (client_id, template, "building",
+                 str(chat_id), str(msg_id), _port, _key)
+            )
+            _db2.commit()
+            _db2.close()
+            run_id = prod_get_latest_run_id("build.yml", "dev", max_wait=12)
+            if run_id:
+                prod_active_run[str(chat_id)] = run_id
+                safe_edit(chat_id, msg_id,
+                          f"🔨 <b>Rebuilding: {emoji} {display_name}</b>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"Client  : {_client_name}\n"
+                          f"🆔 Run   : <code>#{run_id}</code>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"⏳ Build queued — pipeline starting…",
+                          kb_build_cancel(client_id))
+        else:
+            safe_edit(chat_id, msg_id,
+                      "❌ <b>Failed to trigger rebuild.</b>\n"
+                      "GitHub API error. Check logs.",
+                      kb_build_result(client_id))
+
+    elif data.startswith("rebuild_edit_"):
+        # rebuild_edit_{client_id}_{template} — Change Config: go to server config entry
+        rest      = data[len("rebuild_edit_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        # Pre-fill IP from client rdp_ip
+        _db = get_db()
+        _c  = _db.execute("SELECT rdp_ip FROM clients WHERE id=?", (client_id,)).fetchone()
+        _db.close()
+        server_config_buf[str(chat_id)] = {
+            "step": "ip", "client_id": client_id, "template": template,
+            "ip": _c["rdp_ip"] if _c else None, "port": None, "key": None,
+        }
+        nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
+        safe_edit(chat_id, msg_id,
+                  text_server_ip_prompt(client_id, template),
+                  kb_server_config_cancel(client_id, template))
+
+    elif data.startswith("template_action_back_"):
+        # Back from rebuild confirm → show action screen
+        rest      = data[len("template_action_back_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        safe_edit(chat_id, msg_id,
+                  text_template_action(client_id, template),
+                  kb_template_action(client_id, template))
 
     elif data.startswith("template_"):
         # template_{client_id}_{template} — show action screen (New Build vs Rebuild Last)
@@ -3471,12 +3647,14 @@ def handle_callback(call):
         )
         if ok:
             db = get_db()
+            _srv_port = sbuf["port"] if sbuf and sbuf.get("port") else ""
+            _srv_key  = sbuf["key"]  if sbuf and sbuf.get("key")  else ""
             db.execute(
                 "INSERT INTO builds "
-                "(client_id, template, status, chat_id, message_id) "
-                "VALUES (?,?,?,?,?)",
+                "(client_id, template, status, chat_id, message_id, server_port, server_key) "
+                "VALUES (?,?,?,?,?,?,?)",
                 (client_id, template, "building",
-                 str(chat_id), str(msg_id))
+                 str(chat_id), str(msg_id), _srv_port, _srv_key)
             )
             db.commit()
             db.close()
