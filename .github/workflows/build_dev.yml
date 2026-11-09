@@ -816,7 +816,8 @@ jobs:
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
             --apk       "$APK" \
             --apk-size  "$SIZE" \
-                        --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" \
+            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" \
+            --commit    "${{ github.sha }}" \
             --build-type "full"
 
       # ── 11d. Send companion APK to Telegram (companion_only build) ───────────
@@ -842,7 +843,8 @@ jobs:
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
             --apk       "$APK" \
             --apk-size  "$SIZE" \
-                        --pkg       "${{ steps.nova_pkg.outputs.MOD_PKG }}" \
+            --pkg       "${{ steps.nova_pkg.outputs.MOD_PKG }}" \
+            --commit    "${{ github.sha }}" \
             --build-type "companion_only"
 
       # ── 12. Collect + upload error logs (on failure) ──────────────────────────

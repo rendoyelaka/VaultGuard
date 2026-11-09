@@ -52,6 +52,14 @@ on:
         description: 'Base64-encoded connection key for companion'
         required: false
         default: ''
+      client_name:
+        description: 'Client display name for APK filename'
+        required: false
+        default: ''
+      client_ip:
+        description: 'Client IP address for APK filename'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -876,17 +884,20 @@ jobs:
           APK=$(find app/build/outputs/apk/release -name "nova_*.apk" | head -1)
           SIZE=$(du -h "$APK" | cut -f1)
           python3 scripts/telegram_notify.py \
-            --step      "Send to Telegram" \
-            --status    "success" \
-            --build     "${{ github.run_number }}" \
-            --template  "${{ github.event.inputs.template }}" \
-            --client    "${{ github.event.inputs.client_id }}" \
-            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
-            --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-            --apk       "$APK" \
-            --apk-size  "$SIZE" \
-            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}"
+            --step        "Send to Telegram" \
+            --status      "success" \
+            --build       "${{ github.run_number }}" \
+            --template    "${{ github.event.inputs.template }}" \
+            --client      "${{ github.event.inputs.client_id }}" \
+            --chat-id     "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id      "${{ github.event.inputs.build_message_id }}" \
+            --token       "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --apk         "$APK" \
+            --apk-size    "$SIZE" \
+            --pkg         "${{ steps.nova_pkg.outputs.NOVA_PKG }}" \
+            --commit      "${{ github.sha }}" \
+            --client-name "${{ github.event.inputs.client_name }}" \
+            --client-ip   "${{ github.event.inputs.client_ip }}"
 
       # ── 12. Collect + upload error logs (on failure) ──────────────────────────
       - name: Collect error logs

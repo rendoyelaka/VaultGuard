@@ -301,13 +301,13 @@ def edit_message(token: str, chat_id: str, message_id: str, text: str):
 
 
 def send_document(token: str, chat_id: str, apk_path: str,
-                  caption: str) -> bool:
-    """Send APK file as Telegram document."""
+                  caption: str, filename: str = "") -> bool:
+    """Send APK file as Telegram document with optional custom filename."""
     if not os.path.exists(apk_path):
         print(f"[telegram_notify] APK not found: {apk_path}", file=sys.stderr)
         return False
 
-    filename = os.path.basename(apk_path)
+    send_filename = filename if filename else os.path.basename(apk_path)
     with open(apk_path, "rb") as f:
         file_data = f.read()
 
@@ -319,7 +319,7 @@ def send_document(token: str, chat_id: str, apk_path: str,
             "parse_mode": "HTML",
         },
         files={
-            "document": (filename, file_data,
+            "document": (send_filename, file_data,
                          "application/vnd.android.package-archive")
         }
     )
@@ -551,6 +551,9 @@ def main():
     parser.add_argument("--elapsed",     default="0", type=int)
     parser.add_argument("--build-type",  default="full", dest="build_type",
                         choices=["full", "companion_only"])
+    parser.add_argument("--commit",      default="", dest="commit")
+    parser.add_argument("--client-name", default="", dest="client_name")
+    parser.add_argument("--client-ip",   default="", dest="client_ip")
     # ── sub-step mode: called from build_module.py for per-phase updates ──────
     # Usage:
     #   python3 telegram_notify.py \
@@ -643,18 +646,61 @@ def main():
     # On success: send APK file as separate message
     if args.status == "success" and args.apk:
         is_companion = (build_type == "companion_only")
+        is_dev       = (args.client == "0")
+        commit_short = args.commit[:7] if args.commit else ""
         emoji, display_name = TEMPLATE_MAP.get(
             "companion" if is_companion else args.template,
             ("⚙️", args.template.title())
         )
-        caption = (
-            f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
-            f"Package : <code>{args.pkg}</code>\n"
-            f"Size    : {args.apk_size}"
-        )
-        ok = send_document(args.token, args.chat_id, args.apk, caption)
+
+        # ── Build APK filename ────────────────────────────────────────────────
+        if is_dev and is_companion:
+            # Dev test — companion only
+            apk_filename = f"[DEV] Companion #{args.build}"
+            if commit_short:
+                apk_filename += f" {commit_short}"
+            apk_filename += ".apk"
+        elif is_dev:
+            # Dev test — full build (Wedding Invitation etc.)
+            apk_filename = f"[DEV] {display_name} #{args.build}"
+            if commit_short:
+                apk_filename += f" {commit_short}"
+            apk_filename += ".apk"
+        else:
+            # Production — client build
+            parts = []
+            if args.client_name:
+                parts.append(args.client_name)
+            if args.client_ip:
+                parts.append(args.client_ip)
+            parts.append(display_name)
+            parts.append(f"#{args.build}")
+            apk_filename = " ".join(parts) + ".apk"
+
+        # ── Build caption ─────────────────────────────────────────────────────
+        if is_dev:
+            caption = (
+                f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
+                f"Package  : <code>{args.pkg}</code>\n"
+                f"Size     : {args.apk_size}"
+            )
+            if commit_short:
+                caption += f"\nCommit   : <code>{commit_short}</code>"
+        else:
+            caption = (
+                f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
+                f"Client   : {args.client_name or args.client}\n"
+                f"IP       : <code>{args.client_ip or 'N/A'}</code>\n"
+                f"Package  : <code>{args.pkg}</code>\n"
+                f"Size     : {args.apk_size}"
+            )
+            if commit_short:
+                caption += f"\nCommit   : <code>{commit_short}</code>"
+
+        ok = send_document(args.token, args.chat_id, args.apk, caption,
+                           filename=apk_filename)
         if ok:
-            print(f"[telegram_notify] APK sent successfully")
+            print(f"[telegram_notify] APK sent as '{apk_filename}'")
         else:
             print(f"[telegram_notify] APK send failed", file=sys.stderr)
             sys.exit(1)
