@@ -583,10 +583,12 @@ def generate_client_token(username: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ── State dicts ───────────────────────────────────────────────────────────────
-_verified      = {}   # Layer 1: { chat_id_str: expiry_timestamp }
-_lockout_until = {}   # Layer 3: { chat_id_str: lockout_timestamp }
-_failed_pins   = {}   # Layer 3: { chat_id_str: fail_count }
-_failed_totp   = {}   # Layer 3: { chat_id_str: fail_count }
+_verified        = {}   # Layer 1: { chat_id_str: expiry_timestamp }
+_lockout_until   = {}   # Layer 3: { chat_id_str: lockout_timestamp }
+_failed_pins     = {}   # Layer 3: { chat_id_str: fail_count }
+_failed_totp     = {}   # Layer 3: { chat_id_str: fail_count }
+_unlock_attempts = {}   # Emergency unlock: { chat_id_str: fail_count }
+_unlock_blocked  = set()  # chat_ids permanently ignored until restart (3 wrong master passwords)
 
 pin_buffer       = {}   # { chat_id: "1234" }
 nav_state        = {}   # { chat_id: { "screen": ..., "message_id": ... } }
@@ -602,6 +604,7 @@ SESSION_HOURS    = config.SESSION_TIMEOUT_HRS
 LOCKOUT_MINUTES  = 30
 MAX_PIN_FAILS    = 3
 MAX_TOTP_FAILS   = 3
+MAX_UNLOCK_FAILS = 3
 
 # ── Session file encryption (Layer 5) ────────────────────────────────────────
 
@@ -2637,11 +2640,16 @@ def handle_pin_text(message):
     # Layer 3: Check lockout
     locked, mins = is_locked_out(message.chat.id)
     if locked:
+        cid = str(message.chat.id)
+        kb_unlock = types.InlineKeyboardMarkup()
+        if cid not in _unlock_blocked:
+            kb_unlock.add(types.InlineKeyboardButton(
+                "🔓 Unlock", callback_data="do_unlock"))
         safe_edit(
             message.chat.id, msg_id,
             f"🔒 <b>Too many failed attempts.</b>\n"
-            f"Locked for {mins} more minute(s).\n"
-            f"Try again later.",
+            f"Locked for {mins} more minute(s).",
+            kb_unlock,
         )
         return
     entered = message.text.strip() if message.text else ""
@@ -2654,10 +2662,16 @@ def handle_pin_text(message):
         count = record_pin_fail(message.chat.id)
         locked2, mins2 = is_locked_out(message.chat.id)
         if locked2:
+            cid2 = str(message.chat.id)
+            kb_unlock2 = types.InlineKeyboardMarkup()
+            if cid2 not in _unlock_blocked:
+                kb_unlock2.add(types.InlineKeyboardButton(
+                    "🔓 Unlock", callback_data="do_unlock"))
             safe_edit(
                 message.chat.id, msg_id,
                 f"🔒 <b>Too many failed attempts.</b>\n"
                 f"Locked for {mins2} minutes.",
+                kb_unlock2,
             )
         else:
             remaining = MAX_PIN_FAILS - count
@@ -2684,10 +2698,15 @@ def handle_2fa(message):
     # Layer 3: Check lockout
     locked, mins = is_locked_out(message.chat.id)
     if locked:
+        kb_unlock_2fa = types.InlineKeyboardMarkup()
+        if chat_id not in _unlock_blocked:
+            kb_unlock_2fa.add(types.InlineKeyboardButton(
+                "🔓 Unlock", callback_data="do_unlock"))
         safe_edit(
             message.chat.id, msg_id,
             f"🔒 <b>Too many failed attempts.</b>\n"
-            f"Locked for {mins} more minute(s)."
+            f"Locked for {mins} more minute(s).",
+            kb_unlock_2fa,
         )
         return
 
@@ -2702,10 +2721,15 @@ def handle_2fa(message):
         count     = record_totp_fail(message.chat.id)
         locked2, mins2 = is_locked_out(message.chat.id)
         if locked2:
+            kb_unlock_2fa2 = types.InlineKeyboardMarkup()
+            if chat_id not in _unlock_blocked:
+                kb_unlock_2fa2.add(types.InlineKeyboardButton(
+                    "🔓 Unlock", callback_data="do_unlock"))
             safe_edit(
                 message.chat.id, msg_id,
                 f"🔒 <b>Too many failed attempts.</b>\n"
-                f"Locked for {mins2} minutes."
+                f"Locked for {mins2} minutes.",
+                kb_unlock_2fa2,
             )
         else:
             remaining = MAX_TOTP_FAILS - count
@@ -2714,6 +2738,61 @@ def handle_2fa(message):
                 f"❌ Wrong 2FA code. "
                 f"{remaining} attempt(s) left.\n\n"
                 + text_2fa()
+            )
+
+
+# ── Emergency unlock: master password input ───────────────────────────────────
+@bot.message_handler(
+    func=lambda m: nav_state.get(
+        str(m.chat.id), {}).get("screen") == "awaiting_unlock")
+def handle_unlock_password(message):
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id):
+        return
+    msg_id = nav_state.get(chat_id, {}).get("message_id")
+    # Always delete the user's message immediately (security — hide password)
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    # Silently ignore if permanently blocked
+    if chat_id in _unlock_blocked:
+        return
+    entered = message.text.strip() if message.text else ""
+    master_pw = getattr(config, "MASTER_UNLOCK_PASSWORD", "")
+    if entered == master_pw and master_pw:
+        # ✅ Correct — clear lockout, reset unlock counter, show PIN prompt
+        clear_fails(message.chat.id)
+        _unlock_attempts.pop(chat_id, None)
+        pin_buffer[chat_id] = ""
+        nav_state[chat_id] = {"screen": "pin", "message_id": msg_id}
+        safe_edit(
+            message.chat.id, msg_id,
+            "✅ <b>Unlocked.</b> Enter your PIN to continue.\n\n"
+            + text_pin(""),
+            kb_pin(),
+        )
+    else:
+        # ❌ Wrong — track attempts
+        count = _unlock_attempts.get(chat_id, 0) + 1
+        _unlock_attempts[chat_id] = count
+        if count >= MAX_UNLOCK_FAILS:
+            _unlock_blocked.add(chat_id)
+            nav_state.pop(chat_id, None)
+            safe_edit(
+                message.chat.id, msg_id,
+                "🚫 <b>Too many wrong master passwords.</b>\n"
+                "Further unlock attempts are blocked until bot restart."
+            )
+        else:
+            remaining = MAX_UNLOCK_FAILS - count
+            kb_retry = types.InlineKeyboardMarkup()
+            kb_retry.add(types.InlineKeyboardButton(
+                "🔓 Try Again", callback_data="do_unlock"))
+            safe_edit(
+                message.chat.id, msg_id,
+                f"❌ <b>Wrong master password.</b> {remaining} attempt(s) left.",
+                kb_retry,
             )
 
 
@@ -3212,11 +3291,15 @@ def handle_callback(call):
         # Layer 3: Check lockout before showing PIN
         locked, mins = is_locked_out(chat_id)
         if locked:
+            kb_unlock_cb = types.InlineKeyboardMarkup()
+            if str(chat_id) not in _unlock_blocked:
+                kb_unlock_cb.add(types.InlineKeyboardButton(
+                    "🔓 Unlock", callback_data="do_unlock"))
             safe_edit(
                 chat_id, msg_id,
                 f"🔒 <b>Too many failed attempts.</b>\n"
-                f"Locked for {mins} more minute(s).\n"
-                f"Try again later."
+                f"Locked for {mins} more minute(s).",
+                kb_unlock_cb,
             )
             return
         pin_buffer[str(chat_id)] = ""
@@ -3416,6 +3499,21 @@ def handle_callback(call):
                   + text_client_detail(dict(c)),
                   kb_client_detail(client_id, active=bool(new_active),
                                    vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1)))
+
+    elif data == "do_unlock":
+        # Emergency unlock: set nav_state to awaiting_unlock so the next
+        # message is handled by handle_unlock_password
+        cid_str = str(chat_id)
+        if cid_str in _unlock_blocked:
+            # Silently ignore — too many wrong master passwords
+            return
+        nav_state[cid_str] = {"screen": "awaiting_unlock", "message_id": msg_id}
+        safe_edit(
+            chat_id, msg_id,
+            "🔐 <b>Emergency Unlock</b>\n\n"
+            "Enter the master password to clear the lockout:"
+        )
+        return
 
     elif data.startswith("toggle_fud_"):
         client_id = int(data.split("_")[2])

@@ -27,6 +27,11 @@ ADMIN_PIN        = "YOUR_PIN_HERE"
 # Then scan the QR in 2FAS app
 TOTP_SECRET      = "YOUR_2FAS_BASE32_SECRET_HERE"
 
+# Master unlock password — used to clear lockout when too many PIN/2FA fails
+# Set a strong value here on RDP only. Never push real value to GitHub.
+# If this is left as placeholder, emergency unlock will not work.
+MASTER_UNLOCK_PASSWORD = "YOUR_MASTER_UNLOCK_PASSWORD_HERE"
+
 # ── Session ───────────────────────────────────────────────────────────────────
 # Session valid duration in hours after successful PIN + 2FA login
 SESSION_TIMEOUT_HRS = 6
