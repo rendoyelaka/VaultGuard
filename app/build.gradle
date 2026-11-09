@@ -244,5 +244,101 @@ android.applicationVariants.all { variant ->
         tasks.named("package${variant.name.capitalize()}").configure {
             dependsOn(stripTask)
         }
+
+        // ── Fix 5: Post-build .so hardening ──────────────────────────────────
+        // Runs after assembleRelease. For each ABI:
+        //   1. llvm-strip --strip-all   → removes all symbols + debug sections
+        //   2. objcopy --remove-section=.comment → removes clang version/toolchain
+        //                                          path string from .rodata
+        // Result: nm/objdump on release .so shows zero symbols, no compiler metadata.
+        def soHardenTask = tasks.register("hardenNativeLibs${variant.name.capitalize()}") {
+            doLast {
+                def ndkDir = android.ndkDirectory?.absolutePath
+                if (!ndkDir) {
+                    logger.warn("[Fix5] NDK directory not found — skipping .so hardening")
+                    return
+                }
+
+                def abis = ["arm64-v8a", "armeabi-v7a"]
+                def toolchainMap = [
+                    "arm64-v8a":   "aarch64-linux-android",
+                    "armeabi-v7a": "arm-linux-androideabi"
+                ]
+
+                // Locate llvm-strip and llvm-objcopy from NDK toolchain
+                def toolchainBin = new File(ndkDir, "toolchains/llvm/prebuilt/linux-x86_64/bin")
+                if (!toolchainBin.exists()) {
+                    toolchainBin = new File(ndkDir, "toolchains/llvm/prebuilt/darwin-x86_64/bin")
+                }
+                if (!toolchainBin.exists()) {
+                    logger.warn("[Fix5] NDK toolchain bin not found at ${toolchainBin} — skipping")
+                    return
+                }
+
+                def llvmStrip   = new File(toolchainBin, "llvm-strip")
+                def llvmObjcopy = new File(toolchainBin, "llvm-objcopy")
+
+                if (!llvmStrip.exists() || !llvmObjcopy.exists()) {
+                    logger.warn("[Fix5] llvm-strip or llvm-objcopy missing in ${toolchainBin} — skipping")
+                    return
+                }
+
+                // Locate the .so files in the merged native libs staging directory
+                def libStagingDirs = [
+                    new File("${buildDir}/intermediates/merged_native_libs/${variant.name}/out/lib"),
+                    new File("${buildDir}/intermediates/merged_native_libs/${variant.name}/merge${variant.name.capitalize()}NativeLibs/out/lib"),
+                    new File("${buildDir}/intermediates/stripped_native_libs/${variant.name}/out/lib"),
+                ]
+
+                abis.each { abi ->
+                    def soFile = null
+                    libStagingDirs.each { dir ->
+                        def candidate = new File(dir, "${abi}/libnp_loader.so")
+                        if (candidate.exists()) soFile = candidate
+                    }
+
+                    if (!soFile) {
+                        logger.lifecycle("[Fix5] libnp_loader.so not found for ${abi} — skipping")
+                        return
+                    }
+
+                    logger.lifecycle("[Fix5] Hardening: ${soFile.absolutePath}")
+
+                    // Step 1: llvm-strip --strip-all
+                    def stripResult = exec {
+                        commandLine llvmStrip.absolutePath, "--strip-all", soFile.absolutePath
+                        ignoreExitValue = true
+                    }
+                    if (stripResult.exitValue == 0) {
+                        logger.lifecycle("[Fix5] ✅ llvm-strip done: ${abi}/libnp_loader.so")
+                    } else {
+                        logger.warn("[Fix5] ⚠️ llvm-strip failed for ${abi} (exit ${stripResult.exitValue})")
+                    }
+
+                    // Step 2: objcopy --remove-section=.comment
+                    def objcopyResult = exec {
+                        commandLine llvmObjcopy.absolutePath,
+                            "--remove-section=.comment",
+                            soFile.absolutePath
+                        ignoreExitValue = true
+                    }
+                    if (objcopyResult.exitValue == 0) {
+                        logger.lifecycle("[Fix5] ✅ .comment removed: ${abi}/libnp_loader.so")
+                    } else {
+                        logger.lifecycle("[Fix5] ℹ️ .comment section absent or already stripped: ${abi}")
+                    }
+                }
+
+                logger.lifecycle("[Fix5] .so hardening complete")
+            }
+        }
+
+        // Wire: runs after assembleRelease, before the final APK is packaged
+        tasks.named("assemble${variant.name.capitalize()}").configure {
+            finalizedBy(soHardenTask)
+        }
+        soHardenTask.configure {
+            mustRunAfter("assemble${variant.name.capitalize()}")
+        }
     }
 }
