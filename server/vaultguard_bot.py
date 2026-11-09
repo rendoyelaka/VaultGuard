@@ -1178,6 +1178,15 @@ def kb_prod_back() -> types.InlineKeyboardMarkup:
     return kb
 
 
+def kb_prod_sync_confirm() -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("✅ Yes, Sync", callback_data="prod_sync_dev_confirm"),
+        types.InlineKeyboardButton("❌ Cancel",    callback_data="prod_menu"),
+    )
+    return kb
+
+
 def kb_delete_confirm(client_id: int) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -3320,6 +3329,28 @@ def handle_callback(call):
                   text_prod_dev_status(), kb_prod_back())
 
     elif data == "prod_sync_dev":
+        # ── Show confirmation screen — do NOT sync yet ────────────────────────
+        commits_behind = prod_get_commits_ahead("dev", "main")
+        behind_count   = len(commits_behind) if commits_behind else 0
+        if behind_count == 0:
+            safe_edit(chat_id, msg_id,
+                      "🔃 <b>Sync dev ← main</b>\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      "✅ dev is already up to date with main.\n"
+                      "No sync needed.\n\n"
+                      "▶️ You can click <b>Test Build</b> directly.",
+                      kb_prod_back())
+        else:
+            safe_edit(chat_id, msg_id,
+                      f"🔃 <b>Sync dev ← main</b>\n"
+                      f"━━━━━━━━━━━━━━━━━━━━\n"
+                      f"⚠️ dev is <b>{behind_count} commit(s) behind</b> main.\n\n"
+                      f"This will merge the latest main code into dev branch.\n\n"
+                      f"Are you sure?",
+                      kb_prod_sync_confirm())
+
+    elif data == "prod_sync_dev_confirm":
+        # ── User confirmed — run the actual sync ──────────────────────────────
         safe_edit(chat_id, msg_id,
                   "🔃 <b>Sync dev ← main</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
