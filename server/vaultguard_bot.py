@@ -1913,7 +1913,7 @@ def trigger_github_build(template: str, client_id: int,
     if server_key_b64:
         inputs["server_key_b64"] = server_key_b64
     payload = {
-        "ref": "main",
+        "ref": "dev",   # dev-first workflow: builds always run from dev branch
         "inputs": inputs,
     }
     try:
@@ -2276,10 +2276,10 @@ def text_prod_menu() -> str:
         f"🔀 <b>Sync status:</b>       {sync_status}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "📌 <b>Correct order:</b>\n"
-        "1️⃣ Dev Status → check what changed\n"
-        "2️⃣ Sync dev ← main → bring in latest\n"
-        "3️⃣ Test Build → full pipeline on dev\n"
-        "4️⃣ Deploy to Production → merge dev→main"
+        "1️⃣ Dev Status → check what's on dev\n"
+        "2️⃣ Test Build → build & test dev branch\n"
+        "3️⃣ Deploy to Production → merge dev→main\n"
+        "⚠️ Sync dev←main → emergency hotfix only"
     )
 
 
@@ -3255,7 +3255,7 @@ def handle_callback(call):
             db.commit()
             db.close()
             # ── Fetch run_id so Cancel Build works ────────────────────────────
-            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
+            run_id = prod_get_latest_run_id("build.yml", "dev", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
                 # Update message to show Cancel button
@@ -5199,7 +5199,7 @@ def prod_build_monitor_loop():
     while True:
         try:
             r = requests.get(
-                f"{GH_REPO()}/actions/runs?branch=main&per_page=1",
+                f"{GH_REPO()}/actions/runs?branch=dev&per_page=1",
                 headers=GH_HDR(), timeout=15)
             if r.status_code != 200:
                 time.sleep(180)

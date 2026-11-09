@@ -81,6 +81,8 @@ jobs:
       # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          ref: dev
 
       # ── 1a. Set up JDK 17 (FIRST — before any Java/Gradle step) ─────────────
       # MUST be immediately after checkout. ubuntu-latest ships Java 25 by
