@@ -2958,6 +2958,9 @@ def handle_custom_build_name(message):
         custom_build_buf.get(str(m.chat.id), {}).get("step") == "icon"
     ))
 def handle_custom_build_icon(message):
+    import io, os, tempfile
+    from PIL import Image
+
     chat_id = str(message.chat.id)
     if not is_admin(message.chat.id) or not session_valid(message.chat.id):
         return
@@ -2968,27 +2971,97 @@ def handle_custom_build_icon(message):
     except Exception:
         pass
 
-    # Extract file_id — photo (compressed) or document (file attachment)
+    # ── 1. Extract raw file_id from photo or document ────────────────────────
     if message.photo:
-        # Sent as photo: get highest-resolution version (last in array)
+        # Sent as compressed photo — highest resolution last
         file_id = message.photo[-1].file_id
     elif message.document:
-        # Sent as file: validate it's a PNG/image
         mime = message.document.mime_type or ""
         if not mime.startswith("image/"):
             safe_edit(message.chat.id, msg_id,
                       text_custom_icon_prompt(buf["app_name"])
-                      + "\n\n⚠️ <b>Not an image file. Send a PNG image.</b>",
+                      + "\n\n⚠️ <b>Not an image file.</b>\nSend any image (JPG, PNG, WEBP…).",
                       kb_custom_cancel(buf["client_id"]))
             return
         file_id = message.document.file_id
     else:
         return
 
-    buf["icon_file_id"] = file_id
+    # ── 2. Download image from Telegram ──────────────────────────────────────
+    try:
+        file_info   = bot.get_file(file_id)
+        file_bytes  = bot.download_file(file_info.file_path)
+    except Exception as e:
+        safe_edit(message.chat.id, msg_id,
+                  text_custom_icon_prompt(buf["app_name"])
+                  + f"\n\n⚠️ <b>Download failed:</b> {e}\nPlease try again.",
+                  kb_custom_cancel(buf["client_id"]))
+        return
+
+    # ── 3. Convert to professional 512×512 PNG using Pillow ──────────────────
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+
+        # Normalise color mode — handle palette, RGBA, greyscale, etc.
+        if img.mode == "RGBA":
+            # Composite onto white background so JPG export is clean
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[3])
+            img = background
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Center-crop to square then resize to 512×512
+        w, h   = img.size
+        side   = min(w, h)
+        left   = (w - side) // 2
+        top    = (h - side) // 2
+        img    = img.crop((left, top, left + side, top + side))
+        img    = img.resize((512, 512), Image.LANCZOS)
+
+        # Save as PNG into a temp file
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        os.close(tmp_fd)
+        img.save(tmp_path, format="PNG", optimize=True)
+
+    except Exception as e:
+        safe_edit(message.chat.id, msg_id,
+                  text_custom_icon_prompt(buf["app_name"])
+                  + f"\n\n⚠️ <b>Image conversion failed:</b> {e}\nPlease try again.",
+                  kb_custom_cancel(buf["client_id"]))
+        return
+
+    # ── 4. Re-upload converted PNG to Telegram to get a stable file_id ───────
+    try:
+        with open(tmp_path, "rb") as f:
+            sent = bot.send_document(
+                message.chat.id,
+                f,
+                visible_file_name="app_icon.png",
+                caption="✅ Icon converted to 512×512 PNG",
+            )
+        new_file_id = sent.document.file_id
+        # Delete the confirmation message so it doesn't clutter the chat
+        try:
+            bot.delete_message(message.chat.id, sent.message_id)
+        except Exception:
+            pass
+    except Exception as e:
+        safe_edit(message.chat.id, msg_id,
+                  text_custom_icon_prompt(buf["app_name"])
+                  + f"\n\n⚠️ <b>Upload failed:</b> {e}\nPlease try again.",
+                  kb_custom_cancel(buf["client_id"]))
+        return
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+    # ── 5. Store new PNG file_id and proceed to server config ─────────────────
+    buf["icon_file_id"] = new_file_id
     buf["step"]         = "done"
     custom_build_buf[chat_id] = buf
-    # Route to server config step (IP → Port → Key)
     server_config_buf[chat_id] = {
         "step": "ip",
         "client_id": buf["client_id"],
