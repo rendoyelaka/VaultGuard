@@ -342,29 +342,50 @@ def read_companion_server_config() -> dict:
                 found_port     = dec
                 found_port_b64 = raw.decode()
 
-        # Key: scan for known default OR any short printable non-numeric string
-        # near the IP position in the DEX
-        if found_ip_b64:
-            ip_pos = dex.find(found_ip_b64.encode())
-            search_zone = dex[max(0, ip_pos - 5000): ip_pos + 5000]
-            for m in b64_pat.finditer(search_zone):
-                raw = m.group()
-                try:
-                    dec = base64.b64decode(raw + b"==").decode("ascii")
-                except Exception:
-                    continue
-                # Key must be alphanumeric-only (no punctuation, commas, dots)
-                # At least 3 chars, all chars in [A-Za-z0-9]
-                _alnum_only = _re.match(r'^[A-Za-z0-9]+$', dec)
-                if (not found_key
-                        and 3 <= len(dec) <= 32
-                        and _alnum_only
-                        and not dec.isdigit()
-                        and not _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dec)
-                        and not _re.match(r'^[A-Z_]{3,}$', dec)   # skip Android constants
-                        ):
-                    found_key     = dec
-                    found_key_b64 = raw.decode()
+        # Key: scan entire DEX (key can be far from IP — 35KB apart in practice).
+        # Criteria: b64 decodes to mixed-case alphanumeric (has BOTH upper & lower),
+        # length 3–32, not all-digits, not IPv4, not all-uppercase Android constant.
+        # Among all candidates, pick the one closest to IP position.
+        ip_pos_abs = dex.find(found_ip_b64.encode()) if found_ip_b64 else len(dex) // 2
+        best_key_dist = None
+        for m in b64_pat.finditer(dex):
+            raw = m.group()
+            # Only pure-alphanumeric base64 tokens (no + or /)
+            if not _re.match(rb'^[A-Za-z0-9]+=*$', raw):
+                continue
+            try:
+                dec = base64.b64decode(raw + b"==").decode("ascii")
+            except Exception:
+                continue
+            if not (3 <= len(dec) <= 32):
+                continue
+            # Decoded value must be fully alphanumeric
+            if not _re.match(r'^[A-Za-z0-9]+$', dec):
+                continue
+            if dec.isdigit():
+                continue
+            if _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dec):
+                continue
+            # Skip all-uppercase Android constants (e.g. VIEW_ID, SCROLL)
+            if _re.match(r'^[A-Z0-9]{3,}$', dec):
+                continue
+            # Key must be mixed-case: has both uppercase and lowercase letters.
+            # This is the strongest discriminator — real keys like TxTxT have both.
+            has_upper = any(c.isupper() for c in dec)
+            has_lower = any(c.islower() for c in dec)
+            if not (has_upper and has_lower):
+                continue
+            # Skip strings that look like Java class/method names (StartNewScan etc.)
+            # by requiring at least one digit or non-word char pattern,
+            # OR length ≤ 10 (short keys). Longer readable words are likely code names.
+            if len(dec) > 10 and dec.isalpha():
+                continue
+            # Pick candidate closest to IP position in the DEX
+            dist = abs(m.start() - ip_pos_abs)
+            if best_key_dist is None or dist < best_key_dist:
+                found_key      = dec
+                found_key_b64  = raw.decode()
+                best_key_dist  = dist
 
         result.update({
             "ip":       found_ip,
