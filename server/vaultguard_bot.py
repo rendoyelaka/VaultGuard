@@ -3732,8 +3732,9 @@ def handle_callback(call):
     elif data.startswith("confirm_delete_"):
         client_id = int(data.split("_")[2])
         db        = get_db()
-        db.execute(
-            "UPDATE clients SET active=0 WHERE id=?", (client_id,))
+        db.execute("UPDATE clients SET active=0 WHERE id=?", (client_id,))
+        db.execute("UPDATE builds  SET client_id=NULL WHERE client_id=?", (client_id,))
+        db.execute("UPDATE devices SET client_id=NULL, status='detached' WHERE client_id=?", (client_id,))
         db.commit()
         db.close()
         show_clients(chat_id, msg_id)
