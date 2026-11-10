@@ -3735,9 +3735,9 @@ def handle_callback(call):
         try:
             # builds.client_id is NOT NULL — cannot be set to NULL.
             # Delete builds for this client; devices can be nulled (no NOT NULL constraint).
+            db.execute("DELETE FROM devices WHERE client_id=?", (client_id,))
             db.execute("DELETE FROM builds  WHERE client_id=?", (client_id,))
-            db.execute("UPDATE devices SET client_id=NULL, status='detached' WHERE client_id=?", (client_id,))
-            db.execute("UPDATE clients SET active=0 WHERE id=?", (client_id,))
+            db.execute("DELETE FROM clients WHERE id=?", (client_id,))
             db.commit()
             clients = [dict(c) for c in db.execute(
                 "SELECT * FROM clients ORDER BY id DESC").fetchall()]
