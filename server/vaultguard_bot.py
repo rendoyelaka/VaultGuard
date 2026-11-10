@@ -1645,8 +1645,8 @@ def text_custom_icon_prompt(app_name: str) -> str:
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"📛 App Name: {app_name}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🖼 Upload app icon (PNG):\n\n"
-        "<i>Send a PNG image (square, min 512×512 recommended)</i>"
+        "🖼 Upload app icon:\n\n"
+        "<i>Send any image (JPG, PNG, WEBP…) — auto-converted to 512×512 PNG</i>"
     )
 
 
@@ -3097,7 +3097,7 @@ def handle_custom_build_icon_reject(message):
         pass
     safe_edit(message.chat.id, msg_id,
               text_custom_icon_prompt(buf["app_name"])
-              + "\n\n⚠️ <b>Please send a PNG image, not text.</b>",
+              + "\n\n⚠️ <b>Please send an image file, not text.</b>",
               kb_custom_cancel(buf["client_id"]))
 
 
