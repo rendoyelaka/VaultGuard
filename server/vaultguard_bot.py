@@ -3736,8 +3736,21 @@ def handle_callback(call):
         db.execute("UPDATE builds  SET client_id=NULL WHERE client_id=?", (client_id,))
         db.execute("UPDATE devices SET client_id=NULL, status='detached' WHERE client_id=?", (client_id,))
         db.commit()
+        clients = [dict(c) for c in db.execute(
+            "SELECT * FROM clients ORDER BY id DESC").fetchall()]
         db.close()
-        show_clients(chat_id, msg_id)
+        # Edit to a blank intermediate state first to force Telegram to accept
+        # the next edit even when the clients list text is identical (e.g. client
+        # was already inactive before deletion — "message is not modified" error).
+        try:
+            bot.edit_message_text(
+                "🗑 Client deleted.",
+                chat_id, msg_id,
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        safe_edit(chat_id, msg_id, text_clients(clients), kb_clients(clients))
 
     elif data.startswith("new_build_"):
         custom_build_buf.pop(str(chat_id), None)
