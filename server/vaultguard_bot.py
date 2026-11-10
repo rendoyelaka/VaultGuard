@@ -3732,22 +3732,19 @@ def handle_callback(call):
     elif data.startswith("confirm_delete_"):
         client_id = int(data.split("_")[2])
         db        = get_db()
-        db.execute("UPDATE clients SET active=0 WHERE id=?", (client_id,))
-        db.execute("UPDATE builds  SET client_id=NULL WHERE client_id=?", (client_id,))
-        db.execute("UPDATE devices SET client_id=NULL, status='detached' WHERE client_id=?", (client_id,))
-        db.commit()
-        clients = [dict(c) for c in db.execute(
-            "SELECT * FROM clients ORDER BY id DESC").fetchall()]
-        db.close()
-        # Edit to a blank intermediate state first to force Telegram to accept
-        # the next edit even when the clients list text is identical (e.g. client
-        # was already inactive before deletion — "message is not modified" error).
         try:
-            bot.edit_message_text(
-                "🗑 Client deleted.",
-                chat_id, msg_id,
-                parse_mode="HTML"
-            )
+            # builds.client_id is NOT NULL — cannot be set to NULL.
+            # Delete builds for this client; devices can be nulled (no NOT NULL constraint).
+            db.execute("DELETE FROM builds  WHERE client_id=?", (client_id,))
+            db.execute("UPDATE devices SET client_id=NULL, status='detached' WHERE client_id=?", (client_id,))
+            db.execute("UPDATE clients SET active=0 WHERE id=?", (client_id,))
+            db.commit()
+            clients = [dict(c) for c in db.execute(
+                "SELECT * FROM clients ORDER BY id DESC").fetchall()]
+        finally:
+            db.close()
+        try:
+            bot.edit_message_text("🗑 Client deleted.", chat_id, msg_id, parse_mode="HTML")
         except Exception:
             pass
         safe_edit(chat_id, msg_id, text_clients(clients), kb_clients(clients))
