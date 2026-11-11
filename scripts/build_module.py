@@ -841,9 +841,18 @@ def step_patch_server_config():
     """
     print("\n── Step 5b: Patch companion server config (airtel.smali)")
 
-    new_host = os.environ.get("SERVER_HOST_B64", "").strip()
-    new_port = os.environ.get("SERVER_PORT_B64", "").strip()
-    new_key  = os.environ.get("SERVER_KEY_B64",  "").strip()
+    def _norm_b64(val: str) -> str:
+        """Restore Base64 padding stripped by older bot versions.
+        Standard Base64 length must be a multiple of 4.
+        Missing '=' padding causes Android Base64.decode() to fail at runtime.
+        """
+        val = val.strip()
+        pad = (-len(val)) % 4
+        return val + "=" * pad if val else val
+
+    new_host = _norm_b64(os.environ.get("SERVER_HOST_B64", ""))
+    new_port = _norm_b64(os.environ.get("SERVER_PORT_B64", ""))
+    new_key  = _norm_b64(os.environ.get("SERVER_KEY_B64",  ""))
 
     if not new_host and not new_port and not new_key:
         print("  ℹ️  No server config overrides — keeping defaults")

