@@ -4956,11 +4956,18 @@ def handle_callback(call):
             run_id = prod_get_latest_run_id("build.yml", "dev", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
+                _rb_host_label = "🌐 Domain" if _ip and "." in _ip and not _ip.replace(".", "").isdigit() else "📡 IP    "
                 safe_edit(chat_id, msg_id,
                           f"🔨 <b>Rebuilding: {emoji} {display_name}</b>\n"
                           f"━━━━━━━━━━━━━━━━━━━━\n"
-                          f"Client  : {_client_name}\n"
-                          f"🆔 Run   : <code>#{run_id}</code>\n"
+                          f"{_rb_host_label} : <code>{_ip or '—'}</code>\n"
+                          f"🔌 Port    : <code>{_port or '—'}</code>\n"
+                          f"🔑 Key     : <code>{_key or '—'}</code>\n"
+                          f"━━━━━━━━━━━━━━━━━━━━\n"
+                          f"📱 App     : {display_name}\n"
+                          f"🗂 Template: {emoji} {display_name}\n"
+                          f"👤 Client  : {_client_name}\n"
+                          f"🆔 Run     : <code>#{run_id}</code>\n"
                           f"━━━━━━━━━━━━━━━━━━━━\n"
                           f"⏳ Build queued — pipeline starting…",
                           kb_build_cancel(client_id))
@@ -5070,11 +5077,18 @@ def handle_callback(call):
             run_id = prod_get_latest_run_id("build.yml", "dev", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
+                _crb_host_label = "🌐 Domain" if _ip and "." in _ip and not _ip.replace(".", "").isdigit() else "📡 IP    "
                 safe_edit(chat_id, msg_id,
                           f"🔨 <b>Rebuilding: ⚙️ {_app_name}</b>\n"
                           "━━━━━━━━━━━━━━━━━━━━\n"
-                          f"Client  : {_cname}\n"
-                          f"🆔 Run   : <code>#{run_id}</code>\n"
+                          f"{_crb_host_label} : <code>{_ip or '—'}</code>\n"
+                          f"🔌 Port    : <code>{_port or '—'}</code>\n"
+                          f"🔑 Key     : <code>{_key or '—'}</code>\n"
+                          "━━━━━━━━━━━━━━━━━━━━\n"
+                          f"📱 App     : {_app_name}\n"
+                          f"🗂 Template: ⚙️ Custom\n"
+                          f"👤 Client  : {_cname}\n"
+                          f"🆔 Run     : <code>#{run_id}</code>\n"
                           "━━━━━━━━━━━━━━━━━━━━\n"
                           "⏳ Build queued — pipeline starting…",
                           kb_build_cancel(client_id))
@@ -5294,12 +5308,22 @@ def handle_callback(call):
                     _emoji, _name = "⚙️", custom_app_name
                 else:
                     _emoji, _name = TEMPLATES.get(template, ("⚙️", template))
+                _q_host  = sbuf['ip']   if sbuf else '—'
+                _q_port  = sbuf['port'] if sbuf else '—'
+                _q_key   = sbuf['key']  if sbuf else '—'
+                _q_host_label = "🌐 Domain" if _q_host and "." in _q_host and not _q_host.replace(".", "").isdigit() else "📡 IP    "
                 safe_edit(
                     chat_id, msg_id,
                     f"🔨 <b>Building: {_emoji} {_name}</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Client  : {client_id}\n"
-                    f"🆔 Run   : <code>#{run_id}</code>\n"
+                    f"{_q_host_label} : <code>{_q_host}</code>\n"
+                    f"🔌 Port    : <code>{_q_port}</code>\n"
+                    f"🔑 Key     : <code>{_q_key}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📱 App     : {_app_name}\n"
+                    f"🗂 Template: {_emoji} {_name}\n"
+                    f"👤 Client  : {_client_name}\n"
+                    f"🆔 Run     : <code>#{run_id}</code>\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"⏳ Build queued — pipeline starting…",
                     kb_build_cancel(client_id)

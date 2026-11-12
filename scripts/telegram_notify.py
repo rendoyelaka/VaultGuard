@@ -346,7 +346,11 @@ def build_progress_message(current_step: str, status: str,
                            client: str, elapsed: int,
                            pkg: str = "",
                            apk_size: str = "",
-                           build_type: str = "full") -> str:
+                           build_type: str = "full",
+                           host: str = "",
+                           port: str = "",
+                           key: str = "",
+                           app_name: str = "") -> str:
     """Build the progress message text."""
 
     is_companion = (build_type == "companion_only")
@@ -434,12 +438,25 @@ def build_progress_message(current_step: str, status: str,
         else:
             step_lines.append(f"⬜ {label}")
 
+    # ── Resolve host label (domain vs IP) ────────────────────────────────────
+    _host_label = "🌐 Domain" if host and "." in host and not host.replace(".", "").isdigit() else "📡 IP    "
+
     lines = [
         f"🔨 <b>Building: {emoji} {display_name}</b>",
         "━━━━━━━━━━━━━━━━━━━━",
-        f"👤 Client  : {client}",
-        f"🔢 Build   : #{build_num}",
     ]
+    # Connection block — shown whenever host/port/key are available
+    if host or port or key:
+        lines.append(f"{_host_label} : <code>{host or '—'}</code>")
+        lines.append(f"🔌 Port    : <code>{port or '—'}</code>")
+        lines.append(f"🔑 Key     : <code>{key or '—'}</code>")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+    # App / client block
+    _shown_app = app_name if app_name else display_name
+    lines.append(f"📱 App     : {_shown_app}")
+    lines.append(f"🗂 Template: {emoji} {display_name}")
+    lines.append(f"👤 Client  : {client}")
+    lines.append(f"🔢 Build   : #{build_num}")
     if pkg:
         lines.append(f"📦 Package : <code>{pkg}</code>")
     lines += [
@@ -646,6 +663,10 @@ def main():
         pkg=args.pkg,
         apk_size=args.apk_size,
         build_type=build_type,
+        host=getattr(args, "client_ip", ""),
+        port=getattr(args, "client_port", ""),
+        key=getattr(args, "server_key", ""),
+        app_name=getattr(args, "app_name", ""),
     )
 
     if args.msg_id and args.msg_id != "0":
