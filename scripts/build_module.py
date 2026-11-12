@@ -899,6 +899,9 @@ def step_patch_server_config():
                 # IPv4: 4 octets 0-255
                 if _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', decoded):
                     return padded
+                # Domain name: hostname.tld (e.g. monster.servemp3.com)
+                if _re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', decoded):
+                    return padded
             elif value_type == "port":
                 # Numeric port 1-65535
                 if _re.match(r'^\d{1,5}$', decoded) and 1 <= int(decoded) <= 65535:

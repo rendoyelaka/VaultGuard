@@ -333,8 +333,11 @@ def read_companion_server_config() -> dict:
                 dec = base64.b64decode(raw + b"==").decode("ascii")
             except Exception:
                 continue
-            # IPv4
-            if not found_ip and _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dec):
+            # IPv4 or domain name
+            if not found_ip and (
+                _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dec) or
+                _re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', dec)
+            ):
                 found_ip     = dec
                 found_ip_b64 = raw.decode()
             # Port (numeric 1024–65535)
@@ -702,7 +705,7 @@ nav_state        = {}   # { chat_id: { "screen": ..., "message_id": ... } }
 add_client_buf   = {}   # { chat_id: { "field": ..., "data": {} } }
 edit_client_buf  = {}   # { chat_id: { "field": str, "client_id": int } }
 custom_build_buf  = {}   # { chat_id: { "step": "name"|"icon", "client_id": int, "app_name": str, "icon_file_id": str } }
-server_config_buf = {}   # { chat_id: { "step": "ip"|"port"|"key", "client_id": int, "template": str, "ip": str, "port": str, "key": str } }
+server_config_buf = {}   # { chat_id: { "step": "host_type"|"ip"|"domain"|"port"|"key", "host_type": "ip"|"domain"|None, "client_id": int, "template": str, "ip": str, "port": str, "key": str } }
 dev_test_config_buf = {}  # { chat_id: { "step": "ip"|"port"|"key"|"done", "build_type": str, "ip": str, "port": str, "key": str } }
 
 # ── Session file (Layer 2 + 5) ────────────────────────────────────────────────
@@ -1792,7 +1795,94 @@ def kb_custom_cancel(client_id: int) -> types.InlineKeyboardMarkup:
     return kb
 
 
-# ── Server config helpers (IP / Port / Key) ─────────────────────────────────
+# ── Server config helpers (IP / Domain / Port / Key) ────────────────────────
+
+def is_domain(val: str) -> bool:
+    """Return True if val looks like a domain name (not an IPv4 address)."""
+    import re as _re
+    if not val:
+        return False
+    if _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', val):
+        return False
+    return bool(_re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', val))
+
+
+def text_server_host_type_prompt(client_id: int, template: str,
+                                  cfg: dict = None) -> str:
+    """Host type selection screen — shown before IP/Domain input."""
+    db = get_db()
+    c  = db.execute(
+        "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+    db.close()
+    name = c["profile_name"] or c["telegram_username"] if c else "Unknown"
+    emoji, tpl_name = TEMPLATES.get(template, ("⚙️", template.title()))
+    if cfg is None:
+        cfg = read_companion_server_config()
+    if cfg["ip"] or cfg["port"] or cfg["key"]:
+        current_line = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📌 <b>Current in companion:</b>\n"
+            f"   {'🌐 Domain' if is_domain(cfg['ip']) else '📡 IP    '} : <code>{cfg['ip']   or '—'}</code>\n"
+            f"   🔌 Port   : <code>{cfg['port'] or '—'}</code>\n"
+            f"   🔑 Key    : <code>{cfg['key']  or '—'}</code>\n"
+        )
+    else:
+        current_line = ""
+    return (
+        f"🌐 <b>Server Config — {name}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Template: {emoji} {tpl_name}\n"
+        + current_line +
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🖥 <b>Select host type:</b>"
+    )
+
+
+def kb_server_host_type(client_id: int,
+                         template: str) -> types.InlineKeyboardMarkup:
+    """Host type selection keyboard — IP Address or Domain Name."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton(
+            "📡 IP Address",
+            callback_data=f"srv_host_ip_{client_id}_{template}"),
+        types.InlineKeyboardButton(
+            "🌐 Domain Name",
+            callback_data=f"srv_host_domain_{client_id}_{template}"),
+        types.InlineKeyboardButton(
+            "🔙 Back", callback_data=f"new_build_{client_id}"),
+        types.InlineKeyboardButton(
+            "🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
+def text_server_domain_prompt(cfg: dict = None) -> str:
+    """Domain input screen — asks admin to type No-IP domain."""
+    return (
+        "🌐 <b>Server Config</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🌐 <b>Domain Name</b>\n"
+        "Type your No-IP domain:"
+        + (f"\n\n<i>Current: <code>{cfg['ip']}</code></i>"
+           if cfg and cfg.get("ip") and is_domain(cfg.get("ip", "")) else "") +
+        "\n\n<i>Example: monster.servemp3.com</i>"
+    )
+
+
+def kb_server_domain(client_id: int,
+                      template: str) -> types.InlineKeyboardMarkup:
+    """Domain input screen keyboard — Back to host type + Home."""
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton(
+            "🔙 Back",
+            callback_data=f"srv_back_to_host_type_{client_id}_{template}"),
+        types.InlineKeyboardButton(
+            "🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
 
 def text_server_ip_prompt(client_id: int, template: str,
                           cfg: dict = None) -> str:
@@ -1829,13 +1919,21 @@ def text_server_ip_prompt(client_id: int, template: str,
 
 
 def text_server_port_prompt(ip: str, cfg: dict = None) -> str:
-    """Port screen: show confirmed IP + ask to keep or type new port."""
+    """Port screen: show confirmed IP/Domain + ask to keep or type new port."""
     if cfg is None:
         cfg = read_companion_server_config()
+    if is_domain(ip):
+        _encoded = base64.b64encode(ip.encode()).decode()
+        host_line = (
+            f"🌐 Domain : <code>{ip}</code> ✅\n"
+            f"🔐 Encoded: <code>{_encoded}</code>\n"
+        )
+    else:
+        host_line = f"📡 IP   : <code>{ip}</code> ✅\n"
     return (
         "🌐 <b>Server Config</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 IP   : <code>{ip}</code> ✅\n"
+        + host_line +
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔌 <b>Server Port</b>\n"
         "Tap Keep or type a new port:"
@@ -1845,14 +1943,18 @@ def text_server_port_prompt(ip: str, cfg: dict = None) -> str:
 
 
 def text_server_key_prompt(ip: str, port: str, cfg: dict = None) -> str:
-    """Key screen: show confirmed IP+port + ask to keep or type new key."""
+    """Key screen: show confirmed IP/Domain+port + ask to keep or type new key."""
     if cfg is None:
         cfg = read_companion_server_config()
+    if is_domain(ip):
+        host_line = f"🌐 Domain : <code>{ip}</code> ✅\n"
+    else:
+        host_line = f"📡 IP     : <code>{ip}</code> ✅\n"
     return (
         "🌐 <b>Server Config</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 IP   : <code>{ip}</code> ✅\n"
-        f"🔌 Port : <code>{port}</code> ✅\n"
+        + host_line +
+        f"🔌 Port   : <code>{port}</code> ✅\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔑 <b>Connection Key</b>\n"
         "Tap Keep or type a new key:"
@@ -3409,7 +3511,8 @@ def handle_custom_build_icon(message):
     buf["step"]         = "done"
     custom_build_buf[chat_id] = buf
     server_config_buf[chat_id] = {
-        "step": "ip",
+        "step": "host_type",
+        "host_type": None,
         "client_id": buf["client_id"],
         "template": "custom",
         "ip": None,
@@ -3423,8 +3526,8 @@ def handle_custom_build_icon(message):
     _cfg = read_companion_server_config()
     server_config_buf[chat_id]["_companion_cfg"] = _cfg
     safe_edit(message.chat.id, msg_id,
-              text_server_ip_prompt(buf["client_id"], "custom", cfg=_cfg),
-              kb_server_config_ip(buf["client_id"], "custom", _cfg.get("ip", "")))
+              text_server_host_type_prompt(buf["client_id"], "custom", cfg=_cfg),
+              kb_server_host_type(buf["client_id"], "custom"))
 
 
 # ── Custom build flow: reject non-photo during icon step ─────────────────────
@@ -3480,6 +3583,41 @@ def handle_server_config_ip(message):
     server_config_buf[chat_id] = buf
     safe_edit(message.chat.id, msg_id,
               text_server_port_prompt(ip, cfg=_cfg),
+              kb_server_config_port(buf["client_id"], buf["template"], _cfg.get("port", "") if _cfg else ""))
+
+
+# ── Server config flow: Domain text input ─────────────────────────────────────
+@bot.message_handler(
+    func=lambda m: (
+        server_config_buf.get(str(m.chat.id), {}).get("step") == "domain"
+        and m.text is not None
+    ))
+def handle_server_config_domain(message):
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id) or not session_valid(message.chat.id):
+        return
+    buf    = server_config_buf.get(chat_id)
+    msg_id = nav_state.get(chat_id, {}).get("message_id")
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    domain = message.text.strip()
+    if not domain or not is_domain(domain):
+        safe_edit(message.chat.id, msg_id,
+                  text_server_domain_prompt(cfg=buf.get("_companion_cfg"))
+                  + "\n\n⚠️ <b>Invalid domain. Use format: monster.servemp3.com</b>",
+                  kb_server_domain(buf["client_id"], buf["template"]))
+        return
+    if "_companion_cfg" not in buf:
+        buf["_companion_cfg"] = read_companion_server_config()
+    _cfg = buf["_companion_cfg"]
+    # Store raw domain — confirm_build_ will Base64-encode it (line: b64encode(sbuf["ip"]))
+    buf["ip"]   = domain
+    buf["step"] = "port"
+    server_config_buf[chat_id] = buf
+    safe_edit(message.chat.id, msg_id,
+              text_server_port_prompt(domain, cfg=_cfg),
               kb_server_config_port(buf["client_id"], buf["template"], _cfg.get("port", "") if _cfg else ""))
 
 
@@ -3556,11 +3694,12 @@ def handle_server_config_key(message):
         return f"<del>{old}</del> → <code>{new}</code>"
 
     # Fix 3: diff block is BEFORE build summary — assembled here, prepended below
+    _host_label = "🌐 Host" if is_domain(_new_ip) else "📡 IP  "
     _diff_block = (
         "🔄 <b>Config Update:</b>\n"
-        f"   📡 IP   : {_diff(_old_ip,   _new_ip)}\n"
-        f"   🔌 Port : {_diff(_old_port, _new_port)}\n"
-        f"   🔑 Key  : {_diff(_old_key,  _new_key)}\n"
+        f"   {_host_label} : {_diff(_old_ip,   _new_ip)}\n"
+        f"   🔌 Port   : {_diff(_old_port, _new_port)}\n"
+        f"   🔑 Key    : {_diff(_old_key,  _new_key)}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
     )
 
@@ -4401,6 +4540,61 @@ def handle_callback(call):
             else:
                 bot.answer_callback_query(call.id, f"⚠️ Cancel failed ({resp.status_code}).", show_alert=False)
 
+    elif data.startswith("srv_host_ip_"):
+        # srv_host_ip_{client_id}_{template} — admin chose IP Address path
+        rest      = data[len("srv_host_ip_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["host_type"] = "ip"
+        buf["step"]      = "ip"
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_ip_prompt(client_id, template, cfg=_cfg),
+                  kb_server_config_ip(client_id, template, _cfg.get("ip", "")))
+
+    elif data.startswith("srv_host_domain_"):
+        # srv_host_domain_{client_id}_{template} — admin chose Domain Name path
+        rest      = data[len("srv_host_domain_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["host_type"] = "domain"
+        buf["step"]      = "domain"
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_domain_prompt(cfg=_cfg),
+                  kb_server_domain(client_id, template))
+
+    elif data.startswith("srv_back_to_host_type_"):
+        # srv_back_to_host_type_{client_id}_{template} — back from domain input → host type
+        rest      = data[len("srv_back_to_host_type_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["step"]      = "host_type"
+        buf["host_type"] = None
+        buf["ip"]        = None
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_host_type_prompt(client_id, template, cfg=_cfg),
+                  kb_server_host_type(client_id, template))
+
     elif data.startswith("srv_keep_ip_"):
         # srv_keep_ip_{client_id}_{template} — keep current IP, move to port
         rest      = data[len("srv_keep_ip_"):]
@@ -4456,9 +4650,10 @@ def handle_callback(call):
         _new_ip, _new_port, _new_key = buf["ip"], buf["port"], buf["key"]
         def _diff_srv(old, new):
             return f"<code>{new}</code> (unchanged)" if old == new else f"<del>{old}</del> → <code>{new}</code>"
+        _host_label_srv = "🌐 Host" if is_domain(_new_ip) else "📡 IP  "
         _diff_block = (
             "🔄 <b>Config Update:</b>\n"
-            f"   📡 IP   : {_diff_srv(_old_ip,   _new_ip)}\n"
+            f"   {_host_label_srv} : {_diff_srv(_old_ip,   _new_ip)}\n"
             f"   🔌 Port : {_diff_srv(_old_port, _new_port)}\n"
             f"   🔑 Key  : {_diff_srv(_old_key,  _new_key)}\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
@@ -4482,7 +4677,7 @@ def handle_callback(call):
                       kb_build_confirm(client_id, template))
 
     elif data.startswith("srv_back_to_ip_"):
-        # srv_back_to_ip_{client_id}_{template} — back from Port screen → IP screen
+        # srv_back_to_ip_{client_id}_{template} — back from Port screen → IP or Domain screen
         rest      = data[len("srv_back_to_ip_"):]
         parts     = rest.split("_", 1)
         client_id = int(parts[0])
@@ -4492,13 +4687,22 @@ def handle_callback(call):
             safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
             return
         _cfg = buf.get("_companion_cfg") or read_companion_server_config()
-        buf["step"] = "ip"
         buf["ip"]   = None
         server_config_buf[str(chat_id)] = buf
         nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
-        safe_edit(chat_id, msg_id,
-                  text_server_ip_prompt(client_id, template, cfg=_cfg),
-                  kb_server_config_ip(client_id, template, _cfg.get("ip", "")))
+        # Route back to domain screen if domain path was chosen, else IP screen
+        if buf.get("host_type") == "domain":
+            buf["step"] = "domain"
+            server_config_buf[str(chat_id)] = buf
+            safe_edit(chat_id, msg_id,
+                      text_server_domain_prompt(client_id, template, cfg=_cfg),
+                      kb_server_domain(client_id, template))
+        else:
+            buf["step"] = "ip"
+            server_config_buf[str(chat_id)] = buf
+            safe_edit(chat_id, msg_id,
+                      text_server_ip_prompt(client_id, template, cfg=_cfg),
+                      kb_server_config_ip(client_id, template, _cfg.get("ip", "")))
 
     elif data.startswith("srv_back_to_port_"):
         # srv_back_to_port_{client_id}_{template} — back from Key screen → Port screen
@@ -4560,14 +4764,15 @@ def handle_callback(call):
         else:
             _cfg = read_companion_server_config()
             server_config_buf[str(chat_id)] = {
-                "step": "ip", "client_id": client_id, "template": template,
+                "step": "host_type", "host_type": None,
+                "client_id": client_id, "template": template,
                 "ip": None, "port": None, "key": None,
                 "_companion_cfg": _cfg,
             }
             nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
             safe_edit(chat_id, msg_id,
-                      text_server_ip_prompt(client_id, template, cfg=_cfg),
-                      kb_server_config_ip(client_id, template, _cfg.get("ip", "")))
+                      text_server_host_type_prompt(client_id, template, cfg=_cfg),
+                      kb_server_host_type(client_id, template))
 
     elif data.startswith("template_rebuild_"):
         # template_rebuild_{client_id}_{template} — show pre-filled config or collect missing port/key
@@ -4849,7 +5054,8 @@ def handle_callback(call):
         }
         _cfg_cu = read_companion_server_config()
         server_config_buf[str(chat_id)] = {
-            "step":          "ip",
+            "step":          "host_type",
+            "host_type":     None,
             "client_id":     client_id,
             "template":      "custom",
             "ip":            None,
@@ -4859,8 +5065,8 @@ def handle_callback(call):
         }
         nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
         safe_edit(chat_id, msg_id,
-                  text_server_ip_prompt(client_id, "custom", cfg=_cfg_cu),
-                  kb_server_config_ip(client_id, "custom", _cfg_cu.get("ip", "")))
+                  text_server_host_type_prompt(client_id, "custom", cfg=_cfg_cu),
+                  kb_server_host_type(client_id, "custom"))
 
     elif data.startswith("custom_rebuild_"):
         # custom_rebuild_{client_id}_{build_id} — show rebuild confirm for a previous custom build
@@ -4959,13 +5165,15 @@ def handle_callback(call):
             emoji = "⚙️"
         else:
             emoji, display_name = TEMPLATES.get(template, ("⚙️", template))
+        _host_val_cb   = sbuf['ip'] if sbuf else '—'
+        _host_label_cb = "🌐 Domain" if is_domain(_host_val_cb) else "📡 IP    "
         safe_edit(
             chat_id, msg_id,
             f"🔨 <b>Building: {emoji} {display_name}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"Client  : {client_id}\n"
             "🌐 Injecting into companion:\n"
-            f"IP      : <code>{sbuf['ip'] if sbuf else '—'}</code>\n"
+            f"{_host_label_cb} : <code>{_host_val_cb}</code>\n"
             f"Port    : <code>{sbuf['port'] if sbuf else '—'}</code>\n"
             f"Key     : <code>{sbuf['key'] if sbuf else '—'}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
