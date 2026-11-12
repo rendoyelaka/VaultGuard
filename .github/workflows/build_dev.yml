@@ -820,20 +820,30 @@ jobs:
         run: |
           APK=$(find app/build/outputs/apk/release -name "nova_*.apk" | head -1)
           SIZE=$(du -h "$APK" | cut -f1)
+          # Decode server values from Base64 for display in APK caption
+          _HOST_B64="${SERVER_HOST_B64}"
+          _PORT_B64="${SERVER_PORT_B64}"
+          _KEY_B64="${SERVER_KEY_B64}"
+          _SERVER_IP=$([ -n "$_HOST_B64" ] && echo "$_HOST_B64" | base64 -d 2>/dev/null || echo "")
+          _SERVER_PORT=$([ -n "$_PORT_B64" ] && echo "$_PORT_B64" | base64 -d 2>/dev/null || echo "")
+          _SERVER_KEY=$([ -n "$_KEY_B64" ]  && echo "$_KEY_B64"  | base64 -d 2>/dev/null || echo "")
           python3 scripts/telegram_notify.py \
-            --step      "[DEV] 💍 Wedding Invitation — Send to Telegram" \
-            --status    "success" \
-            --build     "${{ github.run_number }}" \
-            --template  "${{ github.event.inputs.template }}" \
-            --client    "0" \
-            --chat-id   "${{ github.event.inputs.build_chat_id }}" \
-            --msg-id    "${{ github.event.inputs.build_message_id }}" \
-            --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-            --apk       "$APK" \
-            --apk-size  "$SIZE" \
-            --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" \
-            --commit    "${{ github.sha }}" \
-            --build-type "full"
+            --step        "[DEV] 💍 Wedding Invitation — Send to Telegram" \
+            --status      "success" \
+            --build       "${{ github.run_number }}" \
+            --template    "${{ github.event.inputs.template }}" \
+            --client      "0" \
+            --chat-id     "${{ github.event.inputs.build_chat_id }}" \
+            --msg-id      "${{ github.event.inputs.build_message_id }}" \
+            --token       "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --apk         "$APK" \
+            --apk-size    "$SIZE" \
+            --pkg         "${{ steps.nova_pkg.outputs.NOVA_PKG }}" \
+            --commit      "${{ github.sha }}" \
+            --build-type  "full" \
+            --client-ip   "$_SERVER_IP" \
+            --client-port "$_SERVER_PORT" \
+            --server-key  "$_SERVER_KEY"
 
       # ── 11d. Send companion APK to Telegram (companion_only build) ───────────
       - name: Send DEV Companion APK to Telegram (companion_only)
