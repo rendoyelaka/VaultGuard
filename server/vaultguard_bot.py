@@ -1866,7 +1866,7 @@ def text_server_domain_prompt(cfg: dict = None) -> str:
         "Type your No-IP domain:"
         + (f"\n\n<i>Current: <code>{cfg['ip']}</code></i>"
            if cfg and cfg.get("ip") and is_domain(cfg.get("ip", "")) else "") +
-        "\n\n<i>Example: monster.servemp3.com</i>"
+        "\n\n<i>Example: <code>monster.servemp3.com</code></i>"
     )
 
 
