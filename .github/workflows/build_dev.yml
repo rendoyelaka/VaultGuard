@@ -385,17 +385,17 @@ jobs:
           #    MutationEngine writes this value from server response — but on first install
           #    before server responds, the default fires and shows the VPN permission dialog.
           #    For dev test builds, patch the default from 1 → 0 so VPN is NEVER triggered.
-          INSTALL_ACT="app/src/main/java/com/playstore/installer/InstallActivity.kt"
-          if [ -f "$INSTALL_ACT" ]; then
+          INSTALL_ACT=$(find app/src/main/java -name "InstallActivity.kt" | head -1)
+          if [ -n "$INSTALL_ACT" ] && [ -f "$INSTALL_ACT" ]; then
             sed -i 's/\.getInt(StringPool\.d(StringPool\.VPN_FLAG), 1) == 1/.getInt(StringPool.d(StringPool.VPN_FLAG), 0) == 1/' "$INSTALL_ACT"
             if grep -q 'VPN_FLAG), 0' "$INSTALL_ACT"; then
-              echo "✅ VPN SharedPrefs default patched to 0 (VPN OFF) in InstallActivity.kt"
+              echo "✅ VPN SharedPrefs default patched to 0 (VPN OFF) in $INSTALL_ACT"
             else
-              echo "::error::VPN default patch failed in InstallActivity.kt"
+              echo "::error::VPN default patch failed in $INSTALL_ACT"
               exit 1
             fi
           else
-            echo "::error::InstallActivity.kt not found at $INSTALL_ACT"
+            echo "::error::InstallActivity.kt not found anywhere under app/src/main/java"
             exit 1
           fi
 
