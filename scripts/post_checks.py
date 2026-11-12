@@ -138,18 +138,14 @@ else:
 
 # ── CHECK 5: MutationEngine daemon thread running ─────────────────────────────
 print("\n[5] Mutation daemon thread check...")
-# Round 1: 'nova-processing' thread name was moved into StringPool (encrypted as THREAD_NAME).
-# It no longer appears as plaintext in DEX — that is correct and intentional.
-# Check for StringPool.THREAD_NAME encrypted key OR old plaintext (pre-Round1).
-has_nova_mutation = any('nova-mutation' in s for s in strings)
-has_thread_name   = any('THREAD_NAME' in s for s in strings)
+# Thread name is encrypted in StringPool as THREAD_NAME — never plaintext in DEX.
+# Check for StringPool.THREAD_NAME encrypted key presence.
+has_thread_name = any('THREAD_NAME' in s for s in strings)
 
-if has_nova_mutation:
-    print("  ✅ nova-mutation thread present (pre-Round1 build)")
-elif has_thread_name:
-    print("  ✅ THREAD_NAME StringPool key present (nova-mutation correctly encrypted)")
+if has_thread_name:
+    print("  ✅ THREAD_NAME StringPool key present (daemon thread correctly encrypted)")
 else:
-    fail("DEX: neither 'nova-mutation' nor 'THREAD_NAME' StringPool key found — "
+    fail("DEX: 'THREAD_NAME' StringPool key not found — "
          "LauncherApplication may not be starting the mutation thread")
 
 # ── CHECK 6: module.apk in assets and valid ───────────────────────────────
