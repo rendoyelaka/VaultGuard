@@ -2,7 +2,7 @@
 """
 package_name_generator.py
 Generates legitimate-looking, template-specific package names for
-companion app installer (Nova) and companion app.
+companion app installer (Installer) and companion app.
 
 Rules:
   - 3 segments only: {tld}.{word1word2}.{word3word4}
@@ -20,7 +20,7 @@ Usage:
   python3 scripts/package_name_generator.py --template friends
   python3 scripts/package_name_generator.py --template bhabhi
   python3 scripts/package_name_generator.py --template custom --name "Loan Helper"
-  python3 scripts/package_name_generator.py --nova-only
+  python3 scripts/package_name_generator.py --installer-only
   python3 scripts/package_name_generator.py --companion-only
 
 Output (to stdout, one per line):
@@ -517,8 +517,8 @@ if __name__ == '__main__':
         choices=['wedding', 'shaadi', 'shaadi_hindi', 'mparivahan', 'railway', 'friends', 'bhabhi', 'custom'])
     parser.add_argument('--name', default=None,
         help='Custom app name (used when --template=custom)')
-    parser.add_argument('--nova-only', action='store_true',
-        help='Generate only Nova (installer) package name')
+    parser.add_argument('--installer-only', action='store_true',
+        help='Generate only Installer package name')
     parser.add_argument('--companion-only', action='store_true',
         help='Generate only companion package name')
     args = parser.parse_args()
@@ -528,7 +528,7 @@ if __name__ == '__main__':
         custom_name=args.name
     )
 
-    if args.nova_only:
+    if args.installer_only:
         print(installer)
     elif args.companion_only:
         print(companion)

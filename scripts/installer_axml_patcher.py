@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-nova_axml_patcher.py — Nova AndroidManifest.xml AXML Hybrid Anti-Analysis Patcher
+installer_axml_patcher.py — Installer AndroidManifest.xml AXML Hybrid Anti-Analysis Patcher
 
 HYBRID LAYER STRUCTURE — Two injection zones:
 
@@ -33,7 +33,7 @@ CRITICAL: Raw ZIP rebuild — never calls zipfile.read() on ghost entries
 Must run BEFORE final phase2_resign (V2 signs over all patched bytes).
 
 Usage:
-    python3 scripts/nova_axml_patcher.py <apk_in> <apk_out>
+    python3 scripts/installer_axml_patcher.py <apk_in> <apk_out>
 """
 
 import struct
@@ -222,15 +222,15 @@ def patch_axml(axml_bytes):
     # Update AXML file total size in file header
     struct.pack_into('<I', new_data, 4, len(new_data))
 
-    print(f"[nova_axml_patcher] Zone 1: +{n_00ff}×0x00FF blocks "
+    print(f"[installer_axml_patcher] Zone 1: +{n_00ff}×0x00FF blocks "
           f"({len(zone1_blocks)} bytes) at offset {zone1_inject_off}")
-    print(f"[nova_axml_patcher] Zone 2 start: offset {zone2_start}")
-    print(f"[nova_axml_patcher] Tech 3b: 2×0x9999 bombs "
+    print(f"[installer_axml_patcher] Zone 2 start: offset {zone2_start}")
+    print(f"[installer_axml_patcher] Tech 3b: 2×0x9999 bombs "
           f"({len(bomb_a)}+{len(bomb_b)} bytes)")
-    print(f"[nova_axml_patcher] Tech 5: fake SP "
+    print(f"[installer_axml_patcher] Tech 5: fake SP "
           f"real_str_count={real_str_count} fake_str_count={fake_str_count}")
-    print(f"[nova_axml_patcher] Tech E+N: fake XML header + noise")
-    print(f"[nova_axml_patcher] AXML: {len(axml_bytes)} → {len(new_data)} bytes")
+    print(f"[installer_axml_patcher] Tech E+N: fake XML header + noise")
+    print(f"[installer_axml_patcher] AXML: {len(axml_bytes)} → {len(new_data)} bytes")
 
     return bytes(new_data)
 
@@ -400,17 +400,17 @@ def patch_apk(apk_in, apk_out):
     with open(apk_out, 'wb') as f:
         f.write(buf.getvalue())
 
-    print(f"[nova_axml_patcher] ✅ Done: {apk_out}")
+    print(f"[installer_axml_patcher] ✅ Done: {apk_out}")
 
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: nova_axml_patcher.py <apk_in> <apk_out>")
+        print("Usage: installer_axml_patcher.py <apk_in> <apk_out>")
         sys.exit(1)
     apk_in  = sys.argv[1]
     apk_out = sys.argv[2]
     if not os.path.isfile(apk_in):
-        print(f"[nova_axml_patcher] ERROR: input not found: {apk_in}")
+        print(f"[installer_axml_patcher] ERROR: input not found: {apk_in}")
         sys.exit(1)
     patch_apk(apk_in, apk_out)
 

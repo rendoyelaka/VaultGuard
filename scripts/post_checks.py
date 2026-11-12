@@ -13,7 +13,7 @@ def fail(msg):
     print(f"::error::{msg}")
 
 # Find the built APK
-apk_paths = glob.glob('app/build/outputs/apk/release/nova_*.apk')
+apk_paths = glob.glob('app/build/outputs/apk/release/installer_*.apk')
 if not apk_paths:
     apk_paths = glob.glob('app/build/outputs/apk/release/*.apk')
 if not apk_paths:

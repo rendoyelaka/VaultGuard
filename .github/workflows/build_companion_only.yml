@@ -194,15 +194,15 @@ jobs:
 
       # ── 4. Generate package names ─────────────────────────────────────────────
       - name: Generate companion package name
-        id: nova_pkg
+        id: installer_pkg
         run: |
           TMPL="${{ github.event.inputs.template }}"
           TMPL="${TMPL:-wedding}"
           OUTPUT=$(python3 scripts/package_name_generator.py --template "${TMPL}")
-          NOVA_PKG=$(echo "$OUTPUT" | grep INSTALLER_PKG | cut -d= -f2)
+          INSTALLER_PKG=$(echo "$OUTPUT" | grep INSTALLER_PKG | cut -d= -f2)
           MOD_PKG=$(echo "$OUTPUT" | grep MODULE_PKG | cut -d= -f2)
           VER_CODE=$(echo "$OUTPUT" | grep VERSION_CODE  | cut -d= -f2)
-          echo "NOVA_PKG=${NOVA_PKG}"   >> $GITHUB_OUTPUT
+          echo "INSTALLER_PKG=${INSTALLER_PKG}"   >> $GITHUB_OUTPUT
           echo "MOD_PKG=${MOD_PKG}"     >> $GITHUB_OUTPUT
           echo "VER_CODE=${VER_CODE}"   >> $GITHUB_OUTPUT
           echo "✅ Module pkg: ${MOD_PKG}"
@@ -225,10 +225,10 @@ jobs:
       - name: Build companion APK
         env:
           OLD_PKG:           ${{ env.OLD_PKG }}
-          NEW_MOD_PKG:       ${{ steps.nova_pkg.outputs.MOD_PKG }}
-          MOD_VER_CODE:      ${{ steps.nova_pkg.outputs.VER_CODE }}
+          NEW_MOD_PKG:       ${{ steps.installer_pkg.outputs.MOD_PKG }}
+          MOD_VER_CODE:      ${{ steps.installer_pkg.outputs.VER_CODE }}
           MODULE_ASSET:      ${{ env.MODULE_ASSET }}
-          NOVA_PKG:          ${{ steps.nova_pkg.outputs.NOVA_PKG }}
+          INSTALLER_PKG:          ${{ steps.installer_pkg.outputs.INSTALLER_PKG }}
           GITHUB_OUTPUT:     $GITHUB_OUTPUT
           KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
