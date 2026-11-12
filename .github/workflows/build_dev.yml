@@ -864,7 +864,8 @@ jobs:
             --build-type  "full" \
             --client-ip   "$_SERVER_IP" \
             --client-port "$_SERVER_PORT" \
-            --server-key  "$_SERVER_KEY"
+            --server-key  "$_SERVER_KEY" \
+            --app-name    "${{ github.event.inputs.app_name || '' }}"
 
       # ── 11d. Send companion APK to Telegram (companion_only build) ───────────
       - name: Send DEV Companion APK to Telegram (companion_only)

