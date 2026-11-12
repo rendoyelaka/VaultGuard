@@ -2528,7 +2528,7 @@ def text_edit_client_menu(c: dict) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def safe_edit(chat_id, message_id, text, reply_markup=None):
-    """Edit message in-place — message mutation."""
+    """Edit message in-place — falls back to send_message for document/media messages."""
     try:
         bot.edit_message_text(
             text, chat_id, message_id,
@@ -2536,7 +2536,27 @@ def safe_edit(chat_id, message_id, text, reply_markup=None):
             reply_markup=reply_markup
         )
     except Exception as e:
-        if "message is not modified" not in str(e).lower():
+        err = str(e).lower()
+        if "message is not modified" in err:
+            return  # silent — no change needed
+        # Telegram rejects edit_message_text on document/media messages.
+        # Fall back to sending a new message so buttons always respond.
+        _non_editable = (
+            "there is no text in the message" in err
+            or "message can't be edited" in err
+            or "message to edit not found" in err
+            or "chat not found" in err
+        )
+        if _non_editable:
+            try:
+                bot.send_message(
+                    chat_id, text,
+                    parse_mode="HTML",
+                    reply_markup=reply_markup
+                )
+            except Exception as e2:
+                log.warning(f"safe_edit fallback send error: {e2}")
+        else:
             log.warning(f"edit_message error: {e}")
 
 
