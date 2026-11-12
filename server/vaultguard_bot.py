@@ -107,7 +107,7 @@ OBSOLETE_FILES = [
 # ── Smart restart map (Layer 10) — which file change restarts which service ──
 FILE_SERVICE_MAP = {
     "server/update_server.py":          "vaultguard_mutation",
-    "server/package_name_generator.py": "vaultguard_mutation",
+    "scripts/package_name_generator.py": "vaultguard_mutation",
     "server/vaultguard_bot.py":               "vaultguard_telegram",
     "server/config.py":                 "vaultguard_telegram",
     "scripts/telegram_notify.py":       None,
