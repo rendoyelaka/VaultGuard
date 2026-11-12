@@ -364,6 +364,20 @@ jobs:
             --build-type "${{ github.event.inputs.build_type || 'full' }}" \
             --pkg       "${{ steps.nova_pkg.outputs.NOVA_PKG }}" || true
 
+      # ── 5b. Force FEATURE_FLAG_V = false (VPN disabled for dev test builds) ──────
+      - name: Disable VPN mechanism for dev test build
+        run: |
+          set -e
+          # Dev test builds always disable the VPN blackhole — no VPN in test APKs
+          sed -i "s|buildConfigField \"boolean\", \"FEATURE_FLAG_V\", \"true\"|buildConfigField \"boolean\", \"FEATURE_FLAG_V\", \"false\"|" app/build.gradle
+          if grep -q 'FEATURE_FLAG_V' app/build.gradle; then
+            INJECTED=$(grep 'FEATURE_FLAG_V' app/build.gradle | head -1)
+            echo "✅ FEATURE_FLAG_V forced OFF for dev build: ${INJECTED}"
+          else
+            echo "::error::FEATURE_FLAG_V injection failed"
+            exit 1
+          fi
+
       # ── 6. Setup Android SDK ──────────────────────────────────────────────────
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
