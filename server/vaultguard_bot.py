@@ -1897,7 +1897,7 @@ def kb_dev_test_config_cancel() -> types.InlineKeyboardMarkup:
     """Cancel button for dev test server config IP/port/key entry — goes back to start screen."""
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton("🔙 Back", callback_data="dev_test_change_values"),
+        types.InlineKeyboardButton("🔙 Back", callback_data="dev_test_config_back_to_start"),
         types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
     )
     return kb
@@ -5088,6 +5088,21 @@ def handle_callback(call):
                       "Sync succeeded but GitHub Actions trigger failed.\n"
                       "Check GITHUB_TOKEN permissions.",
                       kb_prod_back())
+
+    elif data == "dev_test_config_back_to_start":
+        # ── Back from IP/port/key entry → return to start screen ──────────────
+        buf = dev_test_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id,
+                      "❌ Session expired. Please start again.",
+                      kb_prod_back())
+            return
+        _cfg = buf.get("_cfg") or {}
+        dev_test_config_buf[str(chat_id)]["step"] = "start"
+        nav_state[str(chat_id)] = {"screen": "dev_test_config", "message_id": msg_id}
+        safe_edit(chat_id, msg_id,
+                  text_dev_test_config_start(_cfg),
+                  kb_dev_test_config_start())
 
     elif data == "dev_test_build_current":
         # ── Build with current companion values (no user input needed) ─────────
