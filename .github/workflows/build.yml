@@ -508,11 +508,6 @@ jobs:
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
 
-      # Phase 3 DEX chunk pipeline removed — Step 8A.
-      # companion.apk is now an encrypted blob. data_processor.py cannot
-      # open it as a zip. Companion encryption is handled by build_module.py
-      # step_encrypt_companion(). DexLoader.kt decrypts at runtime.
-
       # ── 7. Cache Gradle wrapper ───────────────────────────────────────────────
       - name: Cache Gradle wrapper
         uses: actions/cache@v4
