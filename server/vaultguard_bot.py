@@ -655,8 +655,9 @@ def check_service_running(name: str) -> bool:
     return "SERVICE_RUNNING" in get_service_status(name)
 
 
-def send_telegram_alert(msg: str):
-    """Send plain Telegram alert — used by watchdog (no bot instance needed)."""
+def send_telegram_alert(msg: str) -> int | None:
+    """Send plain Telegram alert — used by watchdog (no bot instance needed).
+    Returns the message_id on success, None on failure."""
     try:
         url  = f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage"
         data = json.dumps({
@@ -668,9 +669,34 @@ def send_telegram_alert(msg: str):
             url, data=data,
             headers={"Content-Type": "application/json"}
         )
-        urllib.request.urlopen(req, timeout=10)
+        resp = urllib.request.urlopen(req, timeout=10)
+        result = json.loads(resp.read().decode())
+        return result.get("result", {}).get("message_id")
     except Exception as e:
         log_w.error(f"Telegram alert error: {e}")
+        return None
+
+
+def _delete_telegram_message_after(delay_seconds: int, message_id: int):
+    """Background thread: delete a Telegram message after a delay."""
+    import threading
+    def _do_delete():
+        time.sleep(delay_seconds)
+        try:
+            url  = f"https://api.telegram.org/bot{config.BOT_TOKEN}/deleteMessage"
+            data = json.dumps({
+                "chat_id":    config.MASTER_CHAT_ID,
+                "message_id": message_id
+            }).encode()
+            req = urllib.request.Request(
+                url, data=data,
+                headers={"Content-Type": "application/json"}
+            )
+            urllib.request.urlopen(req, timeout=10)
+        except Exception as e:
+            log_w.error(f"Auto-delete message error: {e}")
+    t = threading.Thread(target=_do_delete, daemon=True)
+    t.start()
 
 
 def generate_client_token(username: str) -> str:
@@ -7054,7 +7080,7 @@ def _force_sync_inner() -> list:
                 f"  ...and {len(all_changed) - 8} more")
         files_str = "\n".join(file_lines)
 
-        send_telegram_alert(
+        _sync_msg_id = send_telegram_alert(
             f"🔄 <b>RDP Auto-Synced</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📦 <code>{cb}</code> → <code>{ca}</code>\n"
@@ -7067,6 +7093,9 @@ def _force_sync_inner() -> list:
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🔍 Probation: 5 min"
         )
+        # Auto-delete the sync notification after 2 minutes
+        if _sync_msg_id:
+            _delete_telegram_message_after(120, _sync_msg_id)
 
         # Layer 5: Start probation
         global _probation
