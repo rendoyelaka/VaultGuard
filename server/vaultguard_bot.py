@@ -733,6 +733,8 @@ edit_client_buf  = {}   # { chat_id: { "field": str, "client_id": int } }
 custom_build_buf  = {}   # { chat_id: { "step": "name"|"icon", "client_id": int, "app_name": str, "icon_file_id": str } }
 server_config_buf = {}   # { chat_id: { "step": "host_type"|"ip"|"domain"|"port"|"key", "host_type": "ip"|"domain"|None, "client_id": int, "template": str, "ip": str, "port": str, "key": str } }
 dev_test_config_buf = {}  # { chat_id: { "step": "ip"|"port"|"key"|"done", "build_type": str, "ip": str, "port": str, "key": str } }
+# Transient notification message IDs — deleted automatically on /start
+_pending_delete_msg_ids: list[int] = []  # message IDs to delete when admin taps /start
 
 # ── Session file (Layer 2 + 5) ────────────────────────────────────────────────
 SESSION_FILE     = os.path.join(
@@ -3218,6 +3220,13 @@ def handle_start(message):
         bot.delete_message(message.chat.id, message.message_id)
     except Exception:
         pass
+    # Auto-clean stale notification messages (RDP Auto-Synced, Bot Self-Restarting)
+    while _pending_delete_msg_ids:
+        _mid = _pending_delete_msg_ids.pop(0)
+        try:
+            bot.delete_message(message.chat.id, _mid)
+        except Exception:
+            pass
     # If session is still valid (loaded from file at startup), skip PIN
     if session_valid(message.chat.id):
         msg = bot.send_message(
@@ -6615,11 +6624,14 @@ def smart_restart_services(changed: list):
         if svc == "vaultguard_telegram":
             log_w.info(
                 "vaultguard_bot.py changed — self-restarting vaultguard_telegram")
-            send_telegram_alert(
+            _restart_msg_id = send_telegram_alert(
                 "♻️ <b>Bot Self-Restarting</b>\n"
                 "vaultguard_bot.py updated in GitHub.\n"
                 "vaultguard_telegram restarting ✅"
             )
+            # Queue for deletion when admin taps /start
+            if _restart_msg_id:
+                _pending_delete_msg_ids.append(_restart_msg_id)
             time.sleep(2)
             # Cannot call restart_service() on ourselves — use BAT launcher
             _self_restart_via_bat()
@@ -7113,9 +7125,9 @@ def _force_sync_inner() -> list:
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🔍 Probation: 5 min"
         )
-        # Auto-delete the sync notification after 2 minutes
+        # Queue for deletion when admin taps /start
         if _sync_msg_id:
-            _delete_telegram_message_after(120, _sync_msg_id)
+            _pending_delete_msg_ids.append(_sync_msg_id)
 
         # Layer 5: Start probation
         global _probation
