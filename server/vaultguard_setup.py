@@ -1312,6 +1312,11 @@ def step13_install_start_services():
         'nssm set vaultguard_telegram AppRotateFiles 1',
         'nssm set vaultguard_telegram AppRotateSeconds 86400',
         'nssm set vaultguard_telegram AppRestartDelay 5000',
+        # Disable NSSM throttle — prevents NSSM from stopping auto-restart
+        # after repeated self-restarts triggered by bot updates (os._exit(0))
+        'nssm set vaultguard_telegram AppThrottle 0',
+        # Always restart regardless of exit code (clean exit, crash, etc.)
+        'nssm set vaultguard_telegram AppExit Default Restart',
     ]
     for cmd in cmds:
         run(cmd, timeout=10)
