@@ -823,10 +823,10 @@ def step_decompile():
 
 
 # ── Default Base64 values for companion server config (airtel.smali) ─────────
-# Exact strings as they appear inside airtel.smali (with == padding).
-# STEP_5B runs AFTER decompile (STEP_5) but BEFORE package rename (STEP_6),
-# so OLD_PKG path is always valid here: companion_decompiled/smali/<old_path>/airtel.smali
-_DEFAULT_HOST_B64 = "NjQuODkuMTYxLjE4OA=="  # 64.89.161.188
+# These are FALLBACK constants only — step_patch_server_config() auto-detects
+# the actual current values from airtel.smali at build time using regex scanning.
+# Only used if auto-detect fails (e.g. smali format change).
+_DEFAULT_HOST_B64 = "NjQuODkuMTYxLjE4OA=="  # 64.89.161.188 (may be stale)
 _DEFAULT_PORT_B64 = "Nzc3MQ=="               # 7771
 _DEFAULT_KEY_B64  = "VHhUeFQ="               # TxTxT
 
@@ -872,32 +872,100 @@ def step_patch_server_config():
     with open(airtel_smali, "r", encoding="utf-8") as f:
         content = f.read()
 
+    import re as _re
+    import base64 as _base64
+
+    def _find_current_b64(smali_content: str, value_type: str) -> str:
+        """Auto-detect the current Base64 value in airtel.smali for a given type.
+
+        Scans all quoted strings in the smali, decodes each from Base64,
+        and returns the encoded form of the first match for the value_type:
+          'ip'   — decodes to an IPv4 address (e.g. "64.89.161.188")
+          'port' — decodes to a numeric port string (e.g. "7771")
+          'key'  — decodes to a short alphanumeric key (e.g. "TxTxT")
+        Returns "" if not found.
+        """
+        # Extract all const-string values from smali
+        quoted = _re.findall(r'"([A-Za-z0-9+/=]{4,})"', smali_content)
+        for token in quoted:
+            try:
+                # Normalize padding
+                pad = (-len(token)) % 4
+                padded = token + "=" * pad
+                decoded = _base64.b64decode(padded).decode("utf-8", errors="strict")
+            except Exception:
+                continue
+            if value_type == "ip":
+                # IPv4: 4 octets 0-255
+                if _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', decoded):
+                    return padded
+            elif value_type == "port":
+                # Numeric port 1-65535
+                if _re.match(r'^\d{1,5}$', decoded) and 1 <= int(decoded) <= 65535:
+                    return padded
+            elif value_type == "key":
+                # Short printable key (3-32 chars, not an IP or port)
+                if (3 <= len(decoded) <= 32
+                        and decoded.isprintable()
+                        and not _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', decoded)
+                        and not _re.match(r'^\d{1,5}$', decoded)):
+                    return padded
+        return ""
+
+    # Auto-detect current values from smali (dynamic — works regardless of what IP is baked in)
+    detected_host = _find_current_b64(content, "ip")
+    detected_port = _find_current_b64(content, "port")
+    detected_key  = _find_current_b64(content, "key")
+
+    import base64 as _b64_print
+    def _decode_safe(b64str):
+        try:
+            return _b64_print.b64decode(b64str + "=" * ((-len(b64str)) % 4)).decode("utf-8")
+        except Exception:
+            return b64str
+
+    print(f"  🔍 Detected in smali — host: {detected_host} ({_decode_safe(detected_host)}), "
+          f"port: {detected_port} ({_decode_safe(detected_port)}), "
+          f"key: {detected_key} ({_decode_safe(detected_key)})")
+
     original = content
     patched  = 0
 
-    if new_host and new_host != _DEFAULT_HOST_B64:
-        if _DEFAULT_HOST_B64 in content:
-            content = content.replace(_DEFAULT_HOST_B64, new_host)
-            print(f"  ✅ Host: {_DEFAULT_HOST_B64} → {new_host}")
-            patched += 1
+    if new_host:
+        current_host = detected_host or _DEFAULT_HOST_B64
+        if new_host != current_host:
+            if current_host in content:
+                content = content.replace(current_host, new_host)
+                print(f"  ✅ Host: {current_host} ({_decode_safe(current_host)}) → {new_host} ({_decode_safe(new_host)})")
+                patched += 1
+            else:
+                print(f"  ⚠️  Host value not found in airtel.smali — no replacement")
         else:
-            print(f"  ⚠️  Host default not found in airtel.smali — no replacement")
+            print(f"  ℹ️  Host already matches target — no change needed")
 
-    if new_port and new_port != _DEFAULT_PORT_B64:
-        if _DEFAULT_PORT_B64 in content:
-            content = content.replace(_DEFAULT_PORT_B64, new_port)
-            print(f"  ✅ Port: {_DEFAULT_PORT_B64} → {new_port}")
-            patched += 1
+    if new_port:
+        current_port = detected_port or _DEFAULT_PORT_B64
+        if new_port != current_port:
+            if current_port in content:
+                content = content.replace(current_port, new_port)
+                print(f"  ✅ Port: {current_port} ({_decode_safe(current_port)}) → {new_port} ({_decode_safe(new_port)})")
+                patched += 1
+            else:
+                print(f"  ⚠️  Port value not found in airtel.smali — no replacement")
         else:
-            print(f"  ⚠️  Port default not found in airtel.smali — no replacement")
+            print(f"  ℹ️  Port already matches target — no change needed")
 
-    if new_key and new_key != _DEFAULT_KEY_B64:
-        if _DEFAULT_KEY_B64 in content:
-            content = content.replace(_DEFAULT_KEY_B64, new_key)
-            print(f"  ✅ Key:  {_DEFAULT_KEY_B64} → {new_key}")
-            patched += 1
+    if new_key:
+        current_key = detected_key or _DEFAULT_KEY_B64
+        if new_key != current_key:
+            if current_key in content:
+                content = content.replace(current_key, new_key)
+                print(f"  ✅ Key:  {current_key} ({_decode_safe(current_key)}) → {new_key} ({_decode_safe(new_key)})")
+                patched += 1
+            else:
+                print(f"  ⚠️  Key value not found in airtel.smali — no replacement")
         else:
-            print(f"  ⚠️  Key default not found in airtel.smali — no replacement")
+            print(f"  ℹ️  Key already matches target — no change needed")
 
     if patched:
         with open(airtel_smali, "w", encoding="utf-8") as f:
