@@ -6746,6 +6746,29 @@ def fix_remote_url_if_wrong():
         )
 
 
+def fix_nssm_restart_throttle():
+    """Self-heal: ensure NSSM never throttles vaultguard_telegram restarts.
+
+    Root cause: NSSM default throttle stops auto-restart after repeated
+    os._exit(0) calls (triggered by bot self-updates). Fix: AppThrottle 0
+    + AppExit Default Restart — applied live on every startup so existing
+    RDPs are patched without re-running server_setup.bat.
+    """
+    svc = "vaultguard_telegram"
+    # Check current AppThrottle
+    _, throttle_val, _ = run_cmd(f"nssm get {svc} AppThrottle")
+    throttle_val = throttle_val.strip()
+    if throttle_val != "0":
+        run_cmd(f"nssm set {svc} AppThrottle 0")
+        log_w.info(f"NSSM self-heal: set {svc} AppThrottle 0 (was: {throttle_val!r})")
+    # Check current AppExit
+    _, exit_val, _ = run_cmd(f"nssm get {svc} AppExit Default")
+    exit_val = exit_val.strip()
+    if "Restart" not in exit_val:
+        run_cmd(f"nssm set {svc} AppExit Default Restart")
+        log_w.info(f"NSSM self-heal: set {svc} AppExit Default Restart (was: {exit_val!r})")
+
+
 def fix_service_path_if_wrong():
     rc, current_path, err = run_cmd(
         "nssm get vaultguard_mutation AppParameters")
@@ -7159,6 +7182,7 @@ def git_pull_loop():
     fix_remote_url_if_wrong()
     delete_obsolete_files()
     fix_service_path_if_wrong()
+    fix_nssm_restart_throttle()   # Self-heal: prevent NSSM throttle on self-restart
 
     # Baseline file hashes
     for rel_path in FILE_SERVICE_MAP:

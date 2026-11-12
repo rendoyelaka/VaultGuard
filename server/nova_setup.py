@@ -1312,6 +1312,11 @@ def step13_install_start_services():
         'nssm set nova_telegram AppRotateFiles 1',
         'nssm set nova_telegram AppRotateSeconds 86400',
         'nssm set nova_telegram AppRestartDelay 5000',
+        # Disable NSSM throttle — prevents NSSM from stopping auto-restart
+        # after repeated self-restarts triggered by bot updates (os._exit(0))
+        'nssm set nova_telegram AppThrottle 0',
+        # Always restart regardless of exit code (clean exit, crash, etc.)
+        'nssm set nova_telegram AppExit Default Restart',
     ]
     for cmd in cmds:
         run(cmd, timeout=10)
