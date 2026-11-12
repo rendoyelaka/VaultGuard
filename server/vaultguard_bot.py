@@ -1306,8 +1306,6 @@ def kb_build() -> types.InlineKeyboardMarkup:
     # ── Step 2: Build & test ──────────────────────────────────────────────────
     kb.add(types.InlineKeyboardButton(
         "🧪 Dev Test Build",       callback_data="prod_test_build"))
-    kb.add(types.InlineKeyboardButton(
-        "📦 Companion Only",       callback_data="prod_companion_only"))
     # ── Step 3: Deploy ────────────────────────────────────────────────────────
     kb.add(types.InlineKeyboardButton(
         "🚀 Deploy to Production", callback_data="prod_deploy"))
@@ -4657,16 +4655,6 @@ def handle_callback(call):
                   "⏳ Loading branch status…",
                   kb_build())
         safe_edit(chat_id, msg_id, text_prod_menu(), kb_build())
-
-    elif data == "prod_companion_only":
-        # Companion-only quick build — routes into test-build companion flow
-        safe_edit(chat_id, msg_id,
-                  "📦 <b>Companion Only Build</b>\n"
-                  "━━━━━━━━━━━━━━━━━━━━\n"
-                  "Build companion APK only (no dropper).\n"
-                  "   No Nova, no dropper — fast build\n\n"
-                  "⚠️ No client delivery — admin only.",
-                  kb_prod_test_build_type())
 
     elif data == "prod_dev_status":
         safe_edit(chat_id, msg_id,
