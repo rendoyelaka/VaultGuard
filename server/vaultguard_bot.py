@@ -7741,6 +7741,39 @@ if __name__ == "__main__":
             "Open bot → /start to login."
         )
 
+        # ── Auto-send welcome screen after startup ─────────────
+        # Sends the main dashboard automatically so admin does not
+        # need to tap /start manually after every restart/push.
+        try:
+            _admin_id = int(config.MASTER_CHAT_ID)
+            _chat_key = str(_admin_id)
+            if session_valid(_admin_id):
+                # Session still valid — send full dashboard with buttons
+                _startup_msg = bot.send_message(
+                    _admin_id,
+                    text_main(_admin_id),
+                    reply_markup=kb_main(),
+                    parse_mode="HTML",
+                )
+                nav_state[_chat_key] = {
+                    "screen":     "main",
+                    "message_id": _startup_msg.message_id,
+                }
+            else:
+                # No valid session — send dashboard without buttons,
+                # admin taps /start to login normally.
+                _startup_msg = bot.send_message(
+                    _admin_id,
+                    text_main(_admin_id),
+                    parse_mode="HTML",
+                )
+                nav_state[_chat_key] = {
+                    "screen":     "main",
+                    "message_id": _startup_msg.message_id,
+                }
+        except Exception as _e:
+            log.warning(f"Auto welcome screen failed: {_e}")
+
         # ── Start watchdog threads ─────────────────────────────
         threading.Thread(
             target=git_pull_loop,
