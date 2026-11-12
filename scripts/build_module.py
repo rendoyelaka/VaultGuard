@@ -4642,7 +4642,7 @@ def main():
     with track("PHASE_1", "STEP_5D", "Patch onResume() — fix accessibility redirect loop + d:Z guard"):
         step_patch_onresume()
 
-    with track("PHASE_1", "STEP_5B", "Patch companion server config (love.smali)"):
+    with track("PHASE_1", "STEP_5B", "Patch companion server config (airtel.smali)"):
         step_patch_server_config()
 
     with track("PHASE_1", "STEP_6", "Rename smali class paths + string literals"):
