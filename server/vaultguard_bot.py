@@ -1796,9 +1796,7 @@ def kb_custom_cancel(client_id: int) -> types.InlineKeyboardMarkup:
 
 def text_server_ip_prompt(client_id: int, template: str,
                           cfg: dict = None) -> str:
-    """Screen 1: show current companion values + ask for new IP.
-    cfg is from read_companion_server_config(); pass it in to avoid re-reading.
-    """
+    """IP screen: show all current values + ask to keep or type new IP."""
     db = get_db()
     c  = db.execute(
         "SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
@@ -1823,57 +1821,99 @@ def text_server_ip_prompt(client_id: int, template: str,
         f"Template: {emoji} {tpl_name}\n"
         + current_line +
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "📡 Enter new server IP:\n\n"
-        "<i>Example: 192.168.1.100</i>"
+        "📡 <b>Server IP</b>\n"
+        "Tap Keep or type a new IP:"
+        + (f"\n\n<i>Current: <code>{cfg['ip']}</code></i>" if cfg.get("ip") else "") +
+        "\n\n<i>Example: 192.168.1.100</i>"
     )
 
 
 def text_server_port_prompt(ip: str, cfg: dict = None) -> str:
-    """Screen 2: show entered IP + hint of current port."""
+    """Port screen: show confirmed IP + ask to keep or type new port."""
     if cfg is None:
         cfg = read_companion_server_config()
-    current_hint = (
-        f"<i>Current: <code>{cfg['port']}</code></i>\n\n"
-        if cfg.get("port") else ""
-    )
     return (
         "🌐 <b>Server Config</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 IP   : <code>{ip}</code>\n"
+        f"📡 IP   : <code>{ip}</code> ✅\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🔌 Enter server port:\n\n"
-        + current_hint +
-        "<i>Example: 7771</i>"
+        "🔌 <b>Server Port</b>\n"
+        "Tap Keep or type a new port:"
+        + (f"\n\n<i>Current: <code>{cfg['port']}</code></i>" if cfg.get("port") else "") +
+        "\n\n<i>Example: 7771</i>"
     )
 
 
 def text_server_key_prompt(ip: str, port: str, cfg: dict = None) -> str:
-    """Screen 3: show entered IP+port + hint of current key."""
+    """Key screen: show confirmed IP+port + ask to keep or type new key."""
     if cfg is None:
         cfg = read_companion_server_config()
-    current_hint = (
-        f"<i>Current: <code>{cfg['key']}</code></i>\n\n"
-        if cfg.get("key") else ""
-    )
     return (
         "🌐 <b>Server Config</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 IP   : <code>{ip}</code>\n"
-        f"🔌 Port : <code>{port}</code>\n"
+        f"📡 IP   : <code>{ip}</code> ✅\n"
+        f"🔌 Port : <code>{port}</code> ✅\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🔑 Enter connection key:\n\n"
-        + current_hint +
-        "<i>Example: MySecretKey123</i>"
+        "🔑 <b>Connection Key</b>\n"
+        "Tap Keep or type a new key:"
+        + (f"\n\n<i>Current: <code>{cfg['key']}</code></i>" if cfg.get("key") else "") +
+        "\n\n<i>Example: MySecretKey123</i>"
     )
+
+
+def kb_server_config_ip(client_id: int, template: str,
+                        current_ip: str) -> types.InlineKeyboardMarkup:
+    """IP screen: Keep current IP button + Back + Home."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if current_ip:
+        kb.add(types.InlineKeyboardButton(
+            f"✅ Keep: {current_ip}",
+            callback_data=f"srv_keep_ip_{client_id}_{template}"))
+    kb.add(
+        types.InlineKeyboardButton("🔙 Back", callback_data=f"new_build_{client_id}"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
+def kb_server_config_port(client_id: int, template: str,
+                          current_port: str) -> types.InlineKeyboardMarkup:
+    """Port screen: Keep current port button + Back (→ IP screen) + Home."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if current_port:
+        kb.add(types.InlineKeyboardButton(
+            f"✅ Keep: {current_port}",
+            callback_data=f"srv_keep_port_{client_id}_{template}"))
+    kb.add(
+        types.InlineKeyboardButton("🔙 Back", callback_data=f"srv_back_to_ip_{client_id}_{template}"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
+def kb_server_config_key(client_id: int, template: str,
+                         current_key: str) -> types.InlineKeyboardMarkup:
+    """Key screen: Keep current key button + Back (→ Port screen) + Home."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if current_key:
+        kb.add(types.InlineKeyboardButton(
+            f"✅ Keep: {current_key}",
+            callback_data=f"srv_keep_key_{client_id}_{template}"))
+    kb.add(
+        types.InlineKeyboardButton("🔙 Back", callback_data=f"srv_back_to_port_{client_id}_{template}"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
 
 
 def kb_server_config_cancel(client_id: int,
                             template: str) -> types.InlineKeyboardMarkup:
+    """Confirm screen: Back (→ Key screen) + Home."""
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
             "🔙 Back",
-            callback_data=f"new_build_{client_id}"),
+            callback_data=f"srv_back_to_key_{client_id}_{template}"),
         types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
     )
     return kb
@@ -1893,11 +1933,50 @@ def kb_dev_test_config_start() -> types.InlineKeyboardMarkup:
     return kb
 
 
-def kb_dev_test_config_cancel() -> types.InlineKeyboardMarkup:
-    """Cancel button for dev test server config IP/port/key entry — goes back to start screen."""
-    kb = types.InlineKeyboardMarkup(row_width=2)
+def kb_dev_test_config_ip(current_ip: str) -> types.InlineKeyboardMarkup:
+    """Dev test IP screen: Keep current IP + Back (→ start) + Home."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if current_ip:
+        kb.add(types.InlineKeyboardButton(
+            f"✅ Keep: {current_ip}", callback_data="dev_test_keep_ip"))
     kb.add(
         types.InlineKeyboardButton("🔙 Back", callback_data="dev_test_config_back_to_start"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
+def kb_dev_test_config_port(current_port: str) -> types.InlineKeyboardMarkup:
+    """Dev test Port screen: Keep current port + Back (→ IP) + Home."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if current_port:
+        kb.add(types.InlineKeyboardButton(
+            f"✅ Keep: {current_port}", callback_data="dev_test_keep_port"))
+    kb.add(
+        types.InlineKeyboardButton("🔙 Back", callback_data="dev_test_back_to_ip"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
+def kb_dev_test_config_key(current_key: str) -> types.InlineKeyboardMarkup:
+    """Dev test Key screen: Keep current key + Back (→ Port) + Home."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if current_key:
+        kb.add(types.InlineKeyboardButton(
+            f"✅ Keep: {current_key}", callback_data="dev_test_keep_key"))
+    kb.add(
+        types.InlineKeyboardButton("🔙 Back", callback_data="dev_test_back_to_port"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
+def kb_dev_test_config_cancel() -> types.InlineKeyboardMarkup:
+    """Confirm screen back button — goes to Key screen."""
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("🔙 Back", callback_data="dev_test_back_to_key"),
         types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
     )
     return kb
@@ -1909,7 +1988,7 @@ def kb_dev_test_confirm() -> types.InlineKeyboardMarkup:
     kb.add(types.InlineKeyboardButton(
         "✅ Confirm & Build", callback_data="dev_test_confirm_build"))
     kb.add(
-        types.InlineKeyboardButton("🔙 Back", callback_data="prod_test_build"),
+        types.InlineKeyboardButton("🔙 Back", callback_data="dev_test_back_to_key"),
         types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
     )
     return kb
@@ -1943,10 +2022,10 @@ def text_dev_test_config_start(cfg: dict = None) -> str:
 
 
 def text_dev_test_ip_prompt(cfg: dict = None) -> str:
-    """Dev test build: show current companion values + ask for new IP."""
+    """Dev test: IP screen — show all current values + ask keep or type new IP."""
     if cfg is None:
         cfg = read_companion_server_config()
-    if cfg["ip"] or cfg["port"] or cfg["key"]:
+    if cfg.get("ip") or cfg.get("port") or cfg.get("key"):
         current_line = (
             "━━━━━━━━━━━━━━━━━━━━\n"
             "📌 <b>Current in companion:</b>\n"
@@ -1962,8 +2041,43 @@ def text_dev_test_ip_prompt(cfg: dict = None) -> str:
         "💍 Wedding Invitation\n"
         + current_line +
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "📡 Enter new server IP:\n\n"
-        "<i>Example: 192.168.1.100</i>"
+        "📡 <b>Server IP</b>\n"
+        "Tap Keep or type a new IP:"
+        + (f"\n\n<i>Current: <code>{cfg['ip']}</code></i>" if cfg.get("ip") else "") +
+        "\n\n<i>Example: 192.168.1.100</i>"
+    )
+
+
+def text_dev_test_port_prompt(ip: str, cfg: dict = None) -> str:
+    """Dev test: Port screen — show confirmed IP + ask keep or type new port."""
+    if cfg is None:
+        cfg = read_companion_server_config()
+    return (
+        "🌐 <b>Server Config — Dev Test Build</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📡 IP   : <code>{ip}</code> ✅\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔌 <b>Server Port</b>\n"
+        "Tap Keep or type a new port:"
+        + (f"\n\n<i>Current: <code>{cfg['port']}</code></i>" if cfg.get("port") else "") +
+        "\n\n<i>Example: 7771</i>"
+    )
+
+
+def text_dev_test_key_prompt(ip: str, port: str, cfg: dict = None) -> str:
+    """Dev test: Key screen — show confirmed IP+port + ask keep or type new key."""
+    if cfg is None:
+        cfg = read_companion_server_config()
+    return (
+        "🌐 <b>Server Config — Dev Test Build</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📡 IP   : <code>{ip}</code> ✅\n"
+        f"🔌 Port : <code>{port}</code> ✅\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔑 <b>Connection Key</b>\n"
+        "Tap Keep or type a new key:"
+        + (f"\n\n<i>Current: <code>{cfg['key']}</code></i>" if cfg.get("key") else "") +
+        "\n\n<i>Example: MySecretKey123</i>"
     )
 
 
@@ -3306,9 +3420,11 @@ def handle_custom_build_icon(message):
         "screen": "server_config",
         "message_id": msg_id,
     }
+    _cfg = read_companion_server_config()
+    server_config_buf[chat_id]["_companion_cfg"] = _cfg
     safe_edit(message.chat.id, msg_id,
-              text_server_ip_prompt(buf["client_id"], "custom"),
-              kb_server_config_cancel(buf["client_id"], "custom"))
+              text_server_ip_prompt(buf["client_id"], "custom", cfg=_cfg),
+              kb_server_config_ip(buf["client_id"], "custom", _cfg.get("ip", "")))
 
 
 # ── Custom build flow: reject non-photo during icon step ─────────────────────
@@ -3364,7 +3480,7 @@ def handle_server_config_ip(message):
     server_config_buf[chat_id] = buf
     safe_edit(message.chat.id, msg_id,
               text_server_port_prompt(ip, cfg=_cfg),
-              kb_server_config_cancel(buf["client_id"], buf["template"]))
+              kb_server_config_port(buf["client_id"], buf["template"], _cfg.get("port", "") if _cfg else ""))
 
 
 @bot.message_handler(
@@ -3387,14 +3503,14 @@ def handle_server_config_port(message):
     if not port:
         safe_edit(message.chat.id, msg_id,
                   text_server_port_prompt(buf["ip"], cfg=_cfg),
-                  kb_server_config_cancel(buf["client_id"], buf["template"]))
+                  kb_server_config_port(buf["client_id"], buf["template"], _cfg.get("port", "") if _cfg else ""))
         return
     buf["port"] = port
     buf["step"] = "key"
     server_config_buf[chat_id] = buf
     safe_edit(message.chat.id, msg_id,
               text_server_key_prompt(buf["ip"], port, cfg=_cfg),
-              kb_server_config_cancel(buf["client_id"], buf["template"]))
+              kb_server_config_key(buf["client_id"], buf["template"], _cfg.get("key", "") if _cfg else ""))
 
 
 @bot.message_handler(
@@ -3417,7 +3533,7 @@ def handle_server_config_key(message):
     if not key:
         safe_edit(message.chat.id, msg_id,
                   text_server_key_prompt(buf["ip"], buf["port"], cfg=_cfg),
-                  kb_server_config_cancel(buf["client_id"], buf["template"]))
+                  kb_server_config_key(buf["client_id"], buf["template"], _cfg.get("key", "") if _cfg else ""))
         return
     buf["key"]  = key
     buf["step"] = "done"
@@ -3502,26 +3618,18 @@ def handle_dev_test_config_ip(message):
     except Exception:
         pass
     ip = message.text.strip()
+    _cfg = buf.get("_cfg")
     if not ip:
         safe_edit(message.chat.id, msg_id,
-                  text_dev_test_ip_prompt(buf.get("_cfg")),
-                  kb_dev_test_config_cancel())
+                  text_dev_test_ip_prompt(_cfg),
+                  kb_dev_test_config_ip(_cfg.get("ip", "") if _cfg else ""))
         return
-    _cfg = buf.get("_cfg")
     buf["ip"]   = ip
     buf["step"] = "port"
     dev_test_config_buf[chat_id] = buf
-    current_hint = (f"<i>Current: <code>{_cfg['port']}</code></i>\n\n"
-                    if _cfg and _cfg.get("port") else "")
     safe_edit(message.chat.id, msg_id,
-              "🌐 <b>Server Config — Dev Test Build</b>\n"
-              "━━━━━━━━━━━━━━━━━━━━\n"
-              f"📡 IP   : <code>{ip}</code>\n"
-              "━━━━━━━━━━━━━━━━━━━━\n"
-              "🔌 Enter server port:\n\n"
-              + current_hint +
-              "<i>Example: 7771</i>",
-              kb_dev_test_config_cancel())
+              text_dev_test_port_prompt(ip, _cfg),
+              kb_dev_test_config_port(_cfg.get("port", "") if _cfg else ""))
 
 
 @bot.message_handler(
@@ -3542,33 +3650,16 @@ def handle_dev_test_config_port(message):
     _cfg = buf.get("_cfg")
     port = message.text.strip()
     if not port:
-        current_hint = (f"<i>Current: <code>{_cfg['port']}</code></i>\n\n"
-                        if _cfg and _cfg.get("port") else "")
         safe_edit(message.chat.id, msg_id,
-                  "🌐 <b>Server Config — Dev Test Build</b>\n"
-                  "━━━━━━━━━━━━━━━━━━━━\n"
-                  f"📡 IP   : <code>{buf['ip']}</code>\n"
-                  "━━━━━━━━━━━━━━━━━━━━\n"
-                  "🔌 Enter server port:\n\n"
-                  + current_hint +
-                  "<i>Example: 7771</i>",
-                  kb_dev_test_config_cancel())
+                  text_dev_test_port_prompt(buf.get("ip") or "", _cfg),
+                  kb_dev_test_config_port(_cfg.get("port", "") if _cfg else ""))
         return
     buf["port"] = port
     buf["step"] = "key"
     dev_test_config_buf[chat_id] = buf
-    current_hint = (f"<i>Current: <code>{_cfg['key']}</code></i>\n\n"
-                    if _cfg and _cfg.get("key") else "")
     safe_edit(message.chat.id, msg_id,
-              "🌐 <b>Server Config — Dev Test Build</b>\n"
-              "━━━━━━━━━━━━━━━━━━━━\n"
-              f"📡 IP   : <code>{buf['ip']}</code>\n"
-              f"🔌 Port : <code>{port}</code>\n"
-              "━━━━━━━━━━━━━━━━━━━━\n"
-              "🔑 Enter connection key:\n\n"
-              + current_hint +
-              "<i>Example: MySecretKey123</i>",
-              kb_dev_test_config_cancel())
+              text_dev_test_key_prompt(buf.get("ip") or "", port, _cfg),
+              kb_dev_test_config_key(_cfg.get("key", "") if _cfg else ""))
 
 
 @bot.message_handler(
@@ -3589,18 +3680,9 @@ def handle_dev_test_config_key(message):
     _cfg = buf.get("_cfg")
     key = message.text.strip()
     if not key:
-        current_hint = (f"<i>Current: <code>{_cfg['key']}</code></i>\n\n"
-                        if _cfg and _cfg.get("key") else "")
         safe_edit(message.chat.id, msg_id,
-                  "🌐 <b>Server Config — Dev Test Build</b>\n"
-                  "━━━━━━━━━━━━━━━━━━━━\n"
-                  f"📡 IP   : <code>{buf['ip']}</code>\n"
-                  f"🔌 Port : <code>{buf['port']}</code>\n"
-                  "━━━━━━━━━━━━━━━━━━━━\n"
-                  "🔑 Enter connection key:\n\n"
-                  + current_hint +
-                  "<i>Example: MySecretKey123</i>",
-                  kb_dev_test_config_cancel())
+                  text_dev_test_key_prompt(buf.get("ip") or "", buf.get("port") or "", _cfg),
+                  kb_dev_test_config_key(_cfg.get("key", "") if _cfg else ""))
         return
     buf["key"]  = key
     buf["step"] = "done"
@@ -4319,6 +4401,141 @@ def handle_callback(call):
             else:
                 bot.answer_callback_query(call.id, f"⚠️ Cancel failed ({resp.status_code}).", show_alert=False)
 
+    elif data.startswith("srv_keep_ip_"):
+        # srv_keep_ip_{client_id}_{template} — keep current IP, move to port
+        rest      = data[len("srv_keep_ip_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["ip"]   = _cfg.get("ip") or ""
+        buf["step"] = "port"
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_port_prompt(buf["ip"], cfg=_cfg),
+                  kb_server_config_port(client_id, template, _cfg.get("port", "")))
+
+    elif data.startswith("srv_keep_port_"):
+        # srv_keep_port_{client_id}_{template} — keep current port, move to key
+        rest      = data[len("srv_keep_port_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["port"] = _cfg.get("port") or ""
+        buf["step"] = "key"
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_key_prompt(buf["ip"], buf["port"], cfg=_cfg),
+                  kb_server_config_key(client_id, template, _cfg.get("key", "")))
+
+    elif data.startswith("srv_keep_key_"):
+        # srv_keep_key_{client_id}_{template} — keep current key, go to confirm
+        rest      = data[len("srv_keep_key_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["key"]  = _cfg.get("key") or ""
+        buf["step"] = "done"
+        server_config_buf[str(chat_id)] = buf
+        # Build diff block and show confirm screen
+        _old_ip, _old_port, _old_key = _cfg.get("ip","—"), _cfg.get("port","—"), _cfg.get("key","—")
+        _new_ip, _new_port, _new_key = buf["ip"], buf["port"], buf["key"]
+        def _diff_srv(old, new):
+            return f"<code>{new}</code> (unchanged)" if old == new else f"<del>{old}</del> → <code>{new}</code>"
+        _diff_block = (
+            "🔄 <b>Config Update:</b>\n"
+            f"   📡 IP   : {_diff_srv(_old_ip,   _new_ip)}\n"
+            f"   🔌 Port : {_diff_srv(_old_port, _new_port)}\n"
+            f"   🔑 Key  : {_diff_srv(_old_key,  _new_key)}\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+        )
+        is_rebuild = buf.get("is_rebuild", False)
+        cbuf = custom_build_buf.get(str(chat_id))
+        if template == "custom" and cbuf:
+            safe_edit(chat_id, msg_id,
+                      _diff_block + text_custom_build_confirm(client_id, cbuf["app_name"],
+                          srv_ip=_new_ip, srv_port=_new_port, srv_key=_new_key),
+                      kb_build_confirm(client_id, template))
+        elif is_rebuild:
+            safe_edit(chat_id, msg_id,
+                      f"🔁 <b>Rebuild — confirm config</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                      + _diff_block + "Confirm to rebuild with this config:",
+                      kb_rebuild_confirm(client_id, template))
+        else:
+            safe_edit(chat_id, msg_id,
+                      _diff_block + text_build_confirm(client_id, template,
+                          srv_ip=_new_ip, srv_port=_new_port, srv_key=_new_key),
+                      kb_build_confirm(client_id, template))
+
+    elif data.startswith("srv_back_to_ip_"):
+        # srv_back_to_ip_{client_id}_{template} — back from Port screen → IP screen
+        rest      = data[len("srv_back_to_ip_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["step"] = "ip"
+        buf["ip"]   = None
+        server_config_buf[str(chat_id)] = buf
+        nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
+        safe_edit(chat_id, msg_id,
+                  text_server_ip_prompt(client_id, template, cfg=_cfg),
+                  kb_server_config_ip(client_id, template, _cfg.get("ip", "")))
+
+    elif data.startswith("srv_back_to_port_"):
+        # srv_back_to_port_{client_id}_{template} — back from Key screen → Port screen
+        rest      = data[len("srv_back_to_port_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["step"] = "port"
+        buf["port"] = None
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_port_prompt(buf["ip"] or "", cfg=_cfg),
+                  kb_server_config_port(client_id, template, _cfg.get("port", "")))
+
+    elif data.startswith("srv_back_to_key_"):
+        # srv_back_to_key_{client_id}_{template} — back from Confirm screen → Key screen
+        rest      = data[len("srv_back_to_key_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["step"] = "key"
+        buf["key"]  = None
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_key_prompt(buf["ip"] or "", buf["port"] or "", cfg=_cfg),
+                  kb_server_config_key(client_id, template, _cfg.get("key", "")))
+
     elif data.startswith("template_new_"):
         # template_new_{client_id}_{template} — fresh build, go to server config entry
         rest      = data[len("template_new_"):]
@@ -4341,14 +4558,16 @@ def handle_callback(call):
                           text_custom_name_prompt(client_id),
                           kb_custom_cancel(client_id))
         else:
+            _cfg = read_companion_server_config()
             server_config_buf[str(chat_id)] = {
                 "step": "ip", "client_id": client_id, "template": template,
                 "ip": None, "port": None, "key": None,
+                "_companion_cfg": _cfg,
             }
             nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
             safe_edit(chat_id, msg_id,
-                      text_server_ip_prompt(client_id, template),
-                      kb_server_config_cancel(client_id, template))
+                      text_server_ip_prompt(client_id, template, cfg=_cfg),
+                      kb_server_config_ip(client_id, template, _cfg.get("ip", "")))
 
     elif data.startswith("template_rebuild_"):
         # template_rebuild_{client_id}_{template} — show pre-filled config or collect missing port/key
@@ -4389,24 +4608,21 @@ def handle_callback(call):
                           kb_rebuild_confirm(client_id, template))
             else:
                 # Missing port/key — IP already known from rdp_ip, skip to port entry
+                _cfg_rb = read_companion_server_config()
                 server_config_buf[str(chat_id)] = {
-                    "step":       "port",    # skip IP — already have it
-                    "client_id":  client_id,
-                    "template":   template,
-                    "ip":         _rdp_ip,   # pre-filled from clients.rdp_ip
-                    "port":       None,
-                    "key":        None,
-                    "is_rebuild": True,
+                    "step":          "port",    # skip IP — already have it
+                    "client_id":     client_id,
+                    "template":      template,
+                    "ip":            _rdp_ip,   # pre-filled from clients.rdp_ip
+                    "port":          None,
+                    "key":           None,
+                    "is_rebuild":    True,
+                    "_companion_cfg": _cfg_rb,
                 }
                 nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
                 safe_edit(chat_id, msg_id,
-                          f"🔁 <b>Rebuild — enter port & key</b>\n"
-                          f"━━━━━━━━━━━━━━━━━━━━\n"
-                          f"📡 IP already set: <code>{_rdp_ip}</code>\n"
-                          f"━━━━━━━━━━━━━━━━━━━━\n"
-                          f"🔌 Enter server port:\n\n"
-                          f"<i>Example: 7771</i>",
-                          kb_server_config_cancel(client_id, template))
+                          text_server_port_prompt(_rdp_ip, cfg=_cfg_rb),
+                          kb_server_config_port(client_id, template, _cfg_rb.get("port", "")))
 
     elif data.startswith("rebuild_confirm_"):
         # rebuild_confirm_{client_id}_{template} — trigger build with stored config
@@ -4631,18 +4847,20 @@ def handle_callback(call):
             "app_name":     _app_name,
             "icon_file_id": _icon_fid,
         }
+        _cfg_cu = read_companion_server_config()
         server_config_buf[str(chat_id)] = {
-            "step":     "ip",
-            "client_id": client_id,
-            "template":  "custom",
-            "ip":        None,
-            "port":      None,
-            "key":       None,
+            "step":          "ip",
+            "client_id":     client_id,
+            "template":      "custom",
+            "ip":            None,
+            "port":          None,
+            "key":           None,
+            "_companion_cfg": _cfg_cu,
         }
         nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
         safe_edit(chat_id, msg_id,
-                  text_server_ip_prompt(client_id, "custom"),
-                  kb_server_config_cancel(client_id, "custom"))
+                  text_server_ip_prompt(client_id, "custom", cfg=_cfg_cu),
+                  kb_server_config_ip(client_id, "custom", _cfg_cu.get("ip", "")))
 
     elif data.startswith("custom_rebuild_"):
         # custom_rebuild_{client_id}_{build_id} — show rebuild confirm for a previous custom build
@@ -4673,14 +4891,16 @@ def handle_callback(call):
         _db = get_db()
         _c  = _db.execute("SELECT rdp_ip FROM clients WHERE id=?", (client_id,)).fetchone()
         _db.close()
+        _cfg_re = read_companion_server_config()
         server_config_buf[str(chat_id)] = {
             "step": "ip", "client_id": client_id, "template": template,
             "ip": _c["rdp_ip"] if _c else None, "port": None, "key": None,
+            "_companion_cfg": _cfg_re,
         }
         nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
         safe_edit(chat_id, msg_id,
-                  text_server_ip_prompt(client_id, template),
-                  kb_server_config_cancel(client_id, template))
+                  text_server_ip_prompt(client_id, template, cfg=_cfg_re),
+                  kb_server_config_ip(client_id, template, _cfg_re.get("ip", "")))
 
     elif data.startswith("template_action_back_"):
         # Back from rebuild confirm → show action screen
@@ -5216,7 +5436,105 @@ def handle_callback(call):
         nav_state[str(chat_id)] = {"screen": "dev_test_config_ip", "message_id": msg_id}
         safe_edit(chat_id, msg_id,
                   text_dev_test_ip_prompt(_cfg),
-                  kb_dev_test_config_cancel())
+                  kb_dev_test_config_ip(_cfg.get("ip", "")))
+
+    elif data == "dev_test_keep_ip":
+        # ── Keep current IP, move to Port screen ─────────────────────────────
+        buf = dev_test_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_cfg") or {}
+        buf["ip"]   = _cfg.get("ip") or ""
+        buf["step"] = "port"
+        dev_test_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_dev_test_port_prompt(buf["ip"], _cfg),
+                  kb_dev_test_config_port(_cfg.get("port", "")))
+
+    elif data == "dev_test_keep_port":
+        # ── Keep current Port, move to Key screen ────────────────────────────
+        buf = dev_test_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_cfg") or {}
+        buf["port"] = _cfg.get("port") or ""
+        buf["step"] = "key"
+        dev_test_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_dev_test_key_prompt(buf["ip"] or "", buf["port"], _cfg),
+                  kb_dev_test_config_key(_cfg.get("key", "")))
+
+    elif data == "dev_test_keep_key":
+        # ── Keep current Key, go to Confirm screen ───────────────────────────
+        buf = dev_test_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_cfg") or {}
+        buf["key"]  = _cfg.get("key") or ""
+        buf["step"] = "done"
+        dev_test_config_buf[str(chat_id)] = buf
+        # Build diff and show confirm
+        _old_ip, _old_port, _old_key = _cfg.get("ip","—"), _cfg.get("port","—"), _cfg.get("key","—")
+        def _diff_dt(old, new):
+            return f"<code>{new}</code> (unchanged)" if old == new else f"<del>{old}</del> → <code>{new}</code>"
+        _diff_block = (
+            "🔄 <b>Config Update:</b>\n"
+            f"   📡 IP   : {_diff_dt(_old_ip,   buf['ip'])}\n"
+            f"   🔌 Port : {_diff_dt(_old_port, buf['port'])}\n"
+            f"   🔑 Key  : {_diff_dt(_old_key,  buf['key'])}\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+        )
+        safe_edit(chat_id, msg_id,
+                  _diff_block +
+                  "🧪 <b>Dev Test Build — 💍 Wedding Invitation</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "Everything correct? Tap Confirm & Build.",
+                  kb_dev_test_confirm())
+
+    elif data == "dev_test_back_to_ip":
+        # ── Back from Port screen → IP screen ───────────────────────────────
+        buf = dev_test_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_cfg") or {}
+        buf["step"] = "ip"
+        buf["ip"]   = None
+        dev_test_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_dev_test_ip_prompt(_cfg),
+                  kb_dev_test_config_ip(_cfg.get("ip", "")))
+
+    elif data == "dev_test_back_to_port":
+        # ── Back from Key screen → Port screen ──────────────────────────────
+        buf = dev_test_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_cfg") or {}
+        buf["step"] = "port"
+        buf["port"] = None
+        dev_test_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_dev_test_port_prompt(buf.get("ip") or "", _cfg),
+                  kb_dev_test_config_port(_cfg.get("port", "")))
+
+    elif data == "dev_test_back_to_key":
+        # ── Back from Confirm screen → Key screen ───────────────────────────
+        buf = dev_test_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_prod_back())
+            return
+        _cfg = buf.get("_cfg") or {}
+        buf["step"] = "key"
+        buf["key"]  = None
+        dev_test_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_dev_test_key_prompt(buf.get("ip") or "", buf.get("port") or "", _cfg),
+                  kb_dev_test_config_key(_cfg.get("key", "")))
 
     elif data == "dev_test_confirm_build":
         # ── Dev test build confirmed — pop buf, encode, sync, trigger ─────────
