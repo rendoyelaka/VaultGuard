@@ -12,6 +12,6 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "NovaLauncher"
+rootProject.name = "InstallerApp"
 include ':app'
 // buildSrc is automatically recognized by Gradle — no explicit include needed

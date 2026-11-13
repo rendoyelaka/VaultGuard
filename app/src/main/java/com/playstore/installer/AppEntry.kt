@@ -7,7 +7,7 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 
 /**
- * Minimal Application stub — Phase 3 Step 27 (Nova Stub DEX)
+ * Minimal Application stub — Phase 3 Step 27 (Installer Stub DEX)
  * AppEntry is the main entry point.
  *
  * ZERO Kotlin stdlib rule — verified against DEX string pool:
@@ -31,13 +31,13 @@ import java.nio.ByteBuffer
  *   6. companion object            → DefaultConstructorMarker
  *      FIX: use instance fields instead
  *
- * K1/K2 placeholder bytes searched by nova_stub_patcher.py — do not change.
+ * K1/K2 placeholder bytes searched by installer_stub_patcher.py — do not change.
  */
 @Suppress("UNCHECKED_CAST", "DEPRECATION")
 class AppEntry : Application() {
 
     // LCG seed — 4 bytes. Placeholder: 0x6e,0x30,0x76,0x41 (first 4 of old K1).
-    // Patched by nova_stub_patcher.py patch_key_in_dex() at CI build time.
+    // Patched by installer_stub_patcher.py patch_key_in_dex() at CI build time.
     // The seed drives the LCG keystream for asset decryption.
     // Remaining 28 bytes (K1[4..15] + K2[0..15]) are unused padding — kept
     // to preserve the same 32-byte placeholder pattern for patch_key_in_dex().
@@ -59,8 +59,8 @@ class AppEntry : Application() {
     /** Public getter for loaded ClassLoader. */
     fun get(): ClassLoader? = h
 
-    // REAL_PKG — XOR-encrypted real Nova package name.
-    // Placeholder: 50 bytes of 0xAA. Patched by nova_stub_patcher.py
+    // REAL_PKG — XOR-encrypted real Installer package name.
+    // Placeholder: 50 bytes of 0xAA. Patched by installer_stub_patcher.py
     // patch_pkg_in_dex() at CI time with XOR-encrypted real pkg bytes.
     // XOR key: 0x47. Padding marker: 0xED (= 0xAA XOR 0x47).
     // Allows StubApp to find LauncherApplication + MainActivity
@@ -81,7 +81,7 @@ class AppEntry : Application() {
         0xAA.toByte(), 0xAA.toByte()
     )
 
-    /** Decrypt P to real Nova package name. XOR key 0x47. */
+    /** Decrypt P to real Installer package name. XOR key 0x47. */
     fun q(): String? {
         val PAD_MARKER = 0xED.toByte()
         val XOR_KEY    = 0x47
@@ -285,8 +285,8 @@ class AppEntry : Application() {
         try {
             // Use P to get real package name.
             // If stub class is okcxwc.xjtum.AppEntry, javaClass.name would give
-            // the wrong package. P is patched by nova_stub_patcher.py
-            // with the actual Nova package name at CI build time.
+            // the wrong package. P is patched by installer_stub_patcher.py
+            // with the actual Installer package name at CI build time.
             val basePkg = q() ?: return
 
             // XOR-decode ".LauncherApplication" at runtime — key 0x5A.

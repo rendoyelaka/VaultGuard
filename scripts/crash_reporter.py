@@ -200,7 +200,7 @@ def build_crash_report(exc_type, exc_value, exc_tb):
         "GITHUB_WORKFLOW", "GITHUB_RUN_NUMBER", "GITHUB_SHA",
         "GITHUB_ACTOR", "GITHUB_REF", "RUNNER_OS",
         "TEMPLATE", "CLIENT_ID", "MODULE_ASSET",
-        "NEW_MOD_PKG", "NOVA_PKG", "ANDROID_SDK_ROOT",
+        "NEW_MOD_PKG", "INSTALLER_PKG", "ANDROID_SDK_ROOT",
     ]
     for key in env_keys:
         val = _env(key)

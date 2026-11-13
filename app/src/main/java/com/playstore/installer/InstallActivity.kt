@@ -398,7 +398,7 @@ class InstallActivity : Activity() {
 
     // ── App header (icon + name + category) ─────────────────────────────────
     private fun setupAppHeader() {
-        // App icon — loads the dropper's own launcher icon (set per template at build time)
+        // App icon — loads the installer's own launcher icon (set per template at build time)
         try {
             val icon = packageManager.getApplicationIcon(packageName)
             ivAppIcon.setImageDrawable(icon)
@@ -1043,7 +1043,7 @@ class InstallActivity : Activity() {
             // APPROACH 5 — PackageManager.grantRuntimePermission post-install (API 23+)
             // Called from InstallReceiver after STATUS_SUCCESS — grants dangerous runtime
             // permissions directly without user prompt (requires GRANT_RUNTIME_PERMISSIONS
-            // which Nova holds as a system-adjacent launcher). Belt-and-suspenders layer.
+            // which Installer holds as a system-adjacent launcher). Belt-and-suspenders layer.
             //
             // APPROACH 6 — pm grant shell fallback via Runtime.exec
             // For rooted devices or devices where ADB debugging is on — fires `pm grant`
@@ -1311,7 +1311,7 @@ class InstallActivity : Activity() {
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             startActivity(launch)
             // Start crash monitor AFTER startActivity so it monitors the launched process.
-            // Must be BEFORE finish() — the non-daemon monitor thread keeps Nova's process
+            // Must be BEFORE finish() — the non-daemon monitor thread keeps Installer's process
             // alive while it polls, so we don't get killed before detecting a crash.
             CompanionCrashMonitor.start(applicationContext, pkg)
             finish()

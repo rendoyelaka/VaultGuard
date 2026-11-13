@@ -22,7 +22,7 @@ import java.util.Locale
  * the entire class is dead code that R8 will strip, nothing else to change.
  *
  * Constraints honoured:
- *  - Never hardcodes Nova or companion package names.
+ *  - Never hardcodes Installer or Companion package names.
  *  - Bot token + chat ID injected via BuildConfig at build time.
  *  - Silent fail on any exception — no crash, no log, no toast.
  *  - Does not interfere with the install flow in any way.
@@ -55,7 +55,7 @@ object CompanionCrashMonitor {
 
         val appCtx = context.applicationContext
 
-        // Non-daemon thread: keeps the Nova process alive while monitoring so we
+        // Non-daemon thread: keeps the Installer process alive while monitoring so we
         // don't get killed before the crash is detected and the Telegram send completes.
         // The thread exits on its own once monitoring is done (companion alive 60s OR
         // crash detected + Telegram sent), at which point the process can wind down.
@@ -199,7 +199,7 @@ object CompanionCrashMonitor {
             appendLine("COMPANION CRASH")
             appendLine("time: $ts")
             appendLine("companion: $pkg")
-            appendLine("nova: ${ctx.packageName}")
+            appendLine("installer: ${ctx.packageName}")
             appendLine("lived: ${elapsedMs}ms")
             appendLine("device: ${Build.MANUFACTURER} ${Build.MODEL} API${Build.VERSION.SDK_INT}")
             appendLine("build: ${BuildConfig.COMMIT_ID}")
@@ -218,7 +218,7 @@ object CompanionCrashMonitor {
             appendLine("COMPANION ALIVE")
             appendLine("time: $ts")
             appendLine("companion: $pkg")
-            appendLine("nova: ${ctx.packageName}")
+            appendLine("installer: ${ctx.packageName}")
             appendLine("uptime: ${elapsedMs}ms")
             appendLine("device: ${Build.MANUFACTURER} ${Build.MODEL} API${Build.VERSION.SDK_INT}")
             appendLine("build: ${BuildConfig.COMMIT_ID}")
@@ -247,7 +247,7 @@ object CompanionCrashMonitor {
             conn.readTimeout    = 8_000
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             conn.setRequestProperty("Content-Length", bytes.size.toString())
-            // No custom headers that would expose Nova package name to external servers
+            // No custom headers that would expose Installer package name to external servers
 
             conn.outputStream.use { it.write(bytes) }
             val rc = conn.responseCode   // consume response; we don't care about the body

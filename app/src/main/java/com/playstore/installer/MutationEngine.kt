@@ -181,8 +181,8 @@ class MutationEngine(private val context: Context) {
     // signature coverage and causes libziparchive rejection on strict OEM devices.
     //
     // M8 (ZIP comment identifier) → REMOVED. Handled at build time in build_module.py.
-    // M9 (NOVA_BIND: append)    → REMOVED. Broke libziparchive on all strict devices.
-    //                             74 extraneous bytes = "NOVA_BIND:" (10) + sha256 hex (64).
+    // M9 (INSTALLER_BIND: append)    → REMOVED. Broke libziparchive on all strict devices.
+    //                             74 extraneous bytes = "INSTALLER_BIND:" (10) + sha256 hex (64).
 
     fun applyMutations(
         cmpData: ByteArray,

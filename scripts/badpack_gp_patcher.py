@@ -22,7 +22,7 @@ CRITICAL — Pre-sign only:
 
 Usage:
     python3 scripts/badpack_gp_patcher.py <apk_in> <apk_out> --mode companion
-    python3 scripts/badpack_gp_patcher.py <apk_in> <apk_out> --mode nova
+    python3 scripts/badpack_gp_patcher.py <apk_in> <apk_out> --mode installer
 
 Protected entries (never patched — Android requires these untouched):
     AndroidManifest.xml, classes*.dex, resources.arsc, *.so, *.bin, *.arsc
@@ -219,8 +219,8 @@ def main():
     parser = argparse.ArgumentParser(description='BadPack + GP Encryption Bit Patcher')
     parser.add_argument('apk_in',  help='Input APK path')
     parser.add_argument('apk_out', help='Output APK path')
-    parser.add_argument('--mode',  choices=['nova', 'companion'], required=True,
-                        help='nova or companion — controls logging only')
+    parser.add_argument('--mode',  choices=['installer', 'companion'], required=True,
+                        help='installer or companion — controls logging only')
     args = parser.parse_args()
 
     if not os.path.isfile(args.apk_in):

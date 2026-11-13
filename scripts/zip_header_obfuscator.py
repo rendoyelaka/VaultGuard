@@ -339,7 +339,7 @@ def obfuscate(apk_in: str, apk_out: str, skip_17b: bool = False, only_17b: bool 
 
     # Locate V2 signing block (magic = b"APK Sig Block 42")
     # CRITICAL: Do NOT use rfind() across entire file — encrypted payload bytes
-    # (e.g. nova_payload.bin AES-GCM ciphertext) may contain these 16 bytes by
+    # (e.g. installer_payload.bin AES-GCM ciphertext) may contain these 16 bytes by
     # chance, causing a false positive that corrupts the file_data split position.
     # The V2 signing block ALWAYS ends exactly at cd_offset — check only there.
     MAGIC = b'APK Sig Block 42'

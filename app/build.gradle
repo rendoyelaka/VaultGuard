@@ -2,16 +2,16 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
     id 'build-env-verifier'      // Step 7  — environment check before anything
-    id 'keystore-generator'      // Step 8  — Nova independent keystore
-    id 'fingerprint-generator'   // Step 9  — Nova independent fingerprint (SHA-512 + BLAKE3)
+    id 'keystore-generator'      // Step 8  — Installer independent keystore
+    id 'fingerprint-generator'   // Step 9  — Installer independent fingerprint (SHA-512 + BLAKE3)
     id 'version-randomizer'      // Step 9A — random versionCode + versionName per build
     id 'build-hash-filename'     // Step 4  — random hash in APK filename
     id 'watermark-injector'      // Step 21 — ZIP comment watermark (leak traceability)
-    id 'string-encryptor'        // Step 71 — Build-time string encryption (Nova)
+    id 'string-encryptor'        // Step 71 — Build-time string encryption (Installer)
 }
 
 // Step 10: Build order enforced by CI workflow (build.yml).
-// build_companion.py runs in CI BEFORE Gradle assembleRelease for Nova.
+// build_companion.py runs in CI BEFORE Gradle assembleRelease for Installer.
 
 android {
     namespace 'com.playstore.installer'
@@ -51,7 +51,7 @@ android {
         buildConfigField "boolean", "FEATURE_ANALYTICS", "true"
         buildConfigField "boolean", "FEATURE_CRASH_REPORT", "false"
         // IS_DEV_BUILD — true only for dev test builds (set via IS_DEV_BUILD env var in build_dev.yml)
-        // Production build.yml never sets this → false → R8 strips NovaCrashReporter entirely
+        // Production build.yml never sets this → false → R8 strips InstallerCrashReporter entirely
         def isDevBuild = (System.getenv("IS_DEV_BUILD") ?: "false") == "true"
         buildConfigField "boolean", "IS_DEV_BUILD", "${isDevBuild}"
         buildConfigField "int",     "API_LEVEL",      "${project.ext.rand_versionCode % 100}"
@@ -136,7 +136,7 @@ keystoreGenerator {
 }
 
 buildHashFilename {
-    prefix = 'nova'
+    prefix = 'installer'
 }
 
 dependencies {

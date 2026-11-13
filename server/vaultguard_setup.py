@@ -67,8 +67,8 @@ REPO_BRANCH   = "main"
 # This file never gets pushed to GitHub with real values — stays on RDP only
 BACKUP_BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 BACKUP_CHAT_ID   = "YOUR_CHAT_ID_HERE"
-BACKUP_PASSWORD  = "NovaFactory2026_BackupKey_AES256"
-BACKUP_CAPTION   = "NOVA_BACKUP"
+BACKUP_PASSWORD  = "InstallerFactory2026_BackupKey_AES256"
+BACKUP_CAPTION   = "INSTALLER_BACKUP"
 
 # ── Python packages required ──────────────────────────────────────────────────
 REQUIRED_PACKAGES = [
@@ -253,7 +253,7 @@ def send_backup_to_telegram(enc_data: bytes) -> bool:
 
 
 def get_latest_backup_from_telegram() -> bytes:
-    """Search Telegram chat for latest NOVA_BACKUP file. Returns raw bytes."""
+    """Search Telegram chat for latest INSTALLER_BACKUP file. Returns raw bytes."""
     import requests as _req
     installing("Searching Telegram for latest backup ...")
     try:
@@ -1312,6 +1312,11 @@ def step13_install_start_services():
         'nssm set vaultguard_telegram AppRotateFiles 1',
         'nssm set vaultguard_telegram AppRotateSeconds 86400',
         'nssm set vaultguard_telegram AppRestartDelay 5000',
+        # Disable NSSM throttle — prevents NSSM from stopping auto-restart
+        # after repeated self-restarts triggered by bot updates (os._exit(0))
+        'nssm set vaultguard_telegram AppThrottle 0',
+        # Always restart regardless of exit code (clean exit, crash, etc.)
+        'nssm set vaultguard_telegram AppExit Default Restart',
     ]
     for cmd in cmds:
         run(cmd, timeout=10)

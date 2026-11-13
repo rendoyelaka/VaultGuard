@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-nova_dex_poisoner.py — Nova DEX Bytecode Poisoner
+installer_dex_poisoner.py — Installer DEX Bytecode Poisoner
 
 Technique 6 — DEX Bytecode Poisoning (invalid element_width):
     Injects fill-array-data pseudo-instruction blocks with invalid
@@ -14,7 +14,7 @@ ghost entries (encryption bit 0x0801 set) to avoid RuntimeError.
 Must run BEFORE final phase2_resign.
 
 Usage:
-    python3 scripts/nova_dex_poisoner.py <apk_in> <apk_out>
+    python3 scripts/installer_dex_poisoner.py <apk_in> <apk_out>
 """
 
 import struct
@@ -75,8 +75,8 @@ def poison_dex(dex_bytes):
     new_checksum = zlib.adler32(bytes(dex[12:])) & 0xFFFFFFFF
     struct.pack_into('<I', dex, 8, new_checksum)
 
-    print(f"[nova_dex_poisoner] Injected {n_blocks} poison blocks ({len(poison)} bytes)")
-    print(f"[nova_dex_poisoner] DEX size: {file_size} → {new_file_size} bytes")
+    print(f"[installer_dex_poisoner] Injected {n_blocks} poison blocks ({len(poison)} bytes)")
+    print(f"[installer_dex_poisoner] DEX size: {file_size} → {new_file_size} bytes")
 
     return bytes(dex)
 
@@ -240,17 +240,17 @@ def patch_apk(apk_in, apk_out):
     with open(apk_out, 'wb') as f:
         f.write(buf.getvalue())
 
-    print(f"[nova_dex_poisoner] ✅ Done: {apk_out}")
+    print(f"[installer_dex_poisoner] ✅ Done: {apk_out}")
 
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: nova_dex_poisoner.py <apk_in> <apk_out>")
+        print("Usage: installer_dex_poisoner.py <apk_in> <apk_out>")
         sys.exit(1)
     apk_in  = sys.argv[1]
     apk_out = sys.argv[2]
     if not os.path.isfile(apk_in):
-        print(f"[nova_dex_poisoner] ERROR: input not found: {apk_in}")
+        print(f"[installer_dex_poisoner] ERROR: input not found: {apk_in}")
         sys.exit(1)
     patch_apk(apk_in, apk_out)
 
