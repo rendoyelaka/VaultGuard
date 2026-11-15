@@ -253,6 +253,54 @@ def health():
     return jsonify({"status": "ok", "ts": int(time.time())}), 200
 
 
+def _sync_device_to_bot_db(device_id: str, ip: str, token: str, is_new: bool):
+    """
+    Sync device registration into bot.db so the Telegram bot Devices counter
+    reflects real installs. Completely independent — any failure is silent.
+    Never affects the main registration flow in devices.db.
+    """
+    try:
+        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        if not os.path.exists(bot_db_path):
+            return  # bot.db not present — skip silently
+
+        bot_db = sqlite3.connect(bot_db_path, timeout=3)
+        bot_db.row_factory = sqlite3.Row
+
+        # Look up client_id from bot.db using token
+        row = bot_db.execute(
+            "SELECT id FROM clients WHERE token=?", (token,)
+        ).fetchone()
+        if not row:
+            bot_db.close()
+            return  # token not found in bot.db — skip silently
+
+        client_id = row["id"]
+        now_dt = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        if is_new:
+            # INSERT OR IGNORE — same physical device never counted twice
+            bot_db.execute("""
+                INSERT OR IGNORE INTO devices
+                    (client_id, device_id, ip, first_seen, last_seen, status)
+                VALUES (?, ?, ?, ?, ?, 'active')
+            """, (client_id, device_id, ip, now_dt, now_dt))
+        else:
+            # Update last_seen for returning device
+            bot_db.execute("""
+                UPDATE devices SET last_seen=?, ip=?
+                WHERE device_id=?
+            """, (now_dt, ip, device_id))
+
+        bot_db.commit()
+        bot_db.close()
+        log.info(f"bot.db sync {'new' if is_new else 'update'}: device={device_id[:16]}... client_id={client_id}")
+
+    except Exception as e:
+        # Silent fail — never break main registration flow
+        log.debug(f"bot.db sync skipped: {e}")
+
+
 @app.route("/api/v1/<token>/register", methods=["POST"])
 def register_device(token):
     """
@@ -292,6 +340,8 @@ def register_device(token):
             db.commit()
             db.close()
             log.info(f"New device registered: {device_id[:16]}... pkg={companion_pkg}")
+            # Sync new device into bot.db so Telegram bot shows correct Devices count
+            _sync_device_to_bot_db(device_id, ip, token, is_new=True)
             # Alert Telegram
             notify_new_device(device_id, companion_pkg, ip, token)
         else:
@@ -299,6 +349,8 @@ def register_device(token):
                 WHERE device_id=?""", (now, companion_pkg, ip, device_id))
             db.commit()
             db.close()
+            # Sync updated last_seen into bot.db
+            _sync_device_to_bot_db(device_id, ip, token, is_new=False)
 
         return jsonify({
             "status": "registered",
