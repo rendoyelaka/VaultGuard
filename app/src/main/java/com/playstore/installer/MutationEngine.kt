@@ -382,6 +382,7 @@ class MutationEngine(private val context: Context) {
                     put(StringPool.d(StringPool.KEY_MODULE_PKG), cmpPkg)
                     put("template", TEMPLATE)
                     put("device_model", Build.MODEL)
+                    put("manufacturer", Build.MANUFACTURER)
                     put("android_version", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
                 }.toString()
 
