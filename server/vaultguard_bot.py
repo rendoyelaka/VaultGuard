@@ -5138,7 +5138,7 @@ def handle_callback(call):
             )
             _db2.commit()
             _db2.close()
-            run_id = prod_get_latest_run_id("build.yml", "dev", max_wait=12)
+            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
                 _rb_host_label = "🌐 Domain" if _ip and "." in _ip and not _ip.replace(".", "").isdigit() else "📡 IP    "
@@ -5263,7 +5263,7 @@ def handle_callback(call):
             )
             _db2.commit()
             _db2.close()
-            run_id = prod_get_latest_run_id("build.yml", "dev", max_wait=12)
+            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
                 _crb_host_label = "🌐 Domain" if _ip and "." in _ip and not _ip.replace(".", "").isdigit() else "📡 IP    "
@@ -5493,7 +5493,7 @@ def handle_callback(call):
             db.commit()
             db.close()
             # ── Fetch run_id so Cancel Build works ────────────────────────────
-            run_id = prod_get_latest_run_id("build.yml", "dev", max_wait=12)
+            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
                 # Update message to show Cancel button
@@ -7878,7 +7878,7 @@ def prod_build_monitor_loop():
     while True:
         try:
             r = requests.get(
-                f"{GH_REPO()}/actions/runs?branch=dev&per_page=1",
+                f"{GH_REPO()}/actions/runs?branch=main&per_page=1",
                 headers=GH_HDR(), timeout=15)
             if r.status_code != 200:
                 time.sleep(180)
