@@ -7941,18 +7941,29 @@ def prod_build_monitor_loop():
                     if str(_rid) == str(run_id):
                         _matched_chat = _cid
                         break
-                if _matched_chat and _run_number:
+                if _matched_chat and run_id:
                     try:
-                        _dbu = get_db()
-                        _dbu.execute(
-                            "UPDATE builds SET build_number=?, status=?, finished_at=? "
-                            "WHERE chat_id=? AND status='building'",
-                            (_run_number, _final_status, _finished, str(_matched_chat))
-                        )
-                        _dbu.commit()
-                        _dbu.close()
-                        prod_active_run.pop(_matched_chat, None)
-                        log_w.info(f"Build #{_run_number} → {_final_status} saved to DB (chat {_matched_chat})")
+                        # Fetch the specific run to get its per-workflow run_number
+                        _run_resp = requests.get(
+                            f"{GH_REPO()}/actions/runs/{run_id}",
+                            headers=GH_HDR(), timeout=15)
+                        if _run_resp.status_code == 200:
+                            _run_number = _run_resp.json().get("run_number")
+                        else:
+                            _run_number = None
+                        if _run_number:
+                            _dbu = get_db()
+                            _dbu.execute(
+                                "UPDATE builds SET build_number=?, status=?, finished_at=? "
+                                "WHERE chat_id=? AND status='building'",
+                                (_run_number, _final_status, _finished, str(_matched_chat))
+                            )
+                            _dbu.commit()
+                            _dbu.close()
+                            prod_active_run.pop(_matched_chat, None)
+                            log_w.info(f"Build #{_run_number} → {_final_status} saved to DB (chat {_matched_chat})")
+                        else:
+                            log_w.error(f"Could not fetch run_number for run_id {run_id}")
                     except Exception as _e:
                         log_w.error(f"DB update build_number failed: {_e}")
 
