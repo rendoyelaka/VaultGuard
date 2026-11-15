@@ -7897,6 +7897,33 @@ def prod_build_monitor_loop():
                 _last_seen_run_id = run_id
                 _rollback_alerted = False
 
+            # ── Update build_number + status in DB when a client build completes ─
+            if status == "completed" and run_id:
+                import datetime as _dt
+                _finished = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                _final_status = "success" if conclusion == "success" else "failed"
+                _run_number = run.get("run_number")
+                # Find any chat_id whose active run matches this run_id
+                _matched_chat = None
+                for _cid, _rid in list(prod_active_run.items()):
+                    if str(_rid) == str(run_id):
+                        _matched_chat = _cid
+                        break
+                if _matched_chat and _run_number:
+                    try:
+                        _dbu = get_db()
+                        _dbu.execute(
+                            "UPDATE builds SET build_number=?, status=?, finished_at=? "
+                            "WHERE chat_id=? AND status='building'",
+                            (_run_number, _final_status, _finished, str(_matched_chat))
+                        )
+                        _dbu.commit()
+                        _dbu.close()
+                        prod_active_run.pop(_matched_chat, None)
+                        log_w.info(f"Build #{_run_number} → {_final_status} saved to DB (chat {_matched_chat})")
+                    except Exception as _e:
+                        log_w.error(f"DB update build_number failed: {_e}")
+
             # Alert only once per failed run
             if (status == "completed" and conclusion == "failure"
                     and not _rollback_alerted):
