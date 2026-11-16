@@ -616,6 +616,60 @@ def admin_stats():
     }), 200
 
 
+@app.route("/api/v1/build/complete", methods=["POST"])
+def build_complete():
+    """Called by build.yml on build completion to save APK metadata to bot.db."""
+    auth = request.headers.get("X-Admin-Secret", "")
+    if auth != SERVER_SECRET:
+        abort(403)
+
+    data         = request.get_json(silent=True) or {}
+    chat_id      = str(data.get("chat_id", "")).strip()
+    build_number = data.get("build_number", "")
+    package_name = str(data.get("package_name", "")).strip()
+    apk_size     = str(data.get("apk_size", "")).strip()
+    duration_secs = int(data.get("duration_secs", 0))
+
+    if not chat_id:
+        return jsonify({"ok": False, "error": "chat_id required"}), 400
+
+    try:
+        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        if not os.path.exists(bot_db_path):
+            return jsonify({"ok": False, "error": "bot.db not found"}), 500
+
+        bot_db = sqlite3.connect(bot_db_path, timeout=5)
+
+        # Match by build_number if provided, else latest success/building row for chat_id
+        if build_number:
+            row = bot_db.execute(
+                "SELECT id FROM builds WHERE chat_id=? AND build_number=? LIMIT 1",
+                (chat_id, int(build_number))
+            ).fetchone()
+        else:
+            row = bot_db.execute(
+                "SELECT id FROM builds WHERE chat_id=? ORDER BY id DESC LIMIT 1",
+                (chat_id,)
+            ).fetchone()
+
+        if not row:
+            bot_db.close()
+            return jsonify({"ok": False, "error": "build record not found"}), 404
+
+        bot_db.execute(
+            "UPDATE builds SET package_name=?, apk_size=?, duration_secs=? WHERE id=?",
+            (package_name, apk_size, duration_secs, row[0])
+        )
+        bot_db.commit()
+        bot_db.close()
+        log.info(f"build_complete: chat_id={chat_id} build={build_number} pkg={package_name} size={apk_size} dur={duration_secs}s")
+        return jsonify({"ok": True}), 200
+
+    except Exception as e:
+        log.error(f"build_complete error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 # ── Error handlers ────────────────────────────────────────────────────────────
 @app.errorhandler(404)
 def not_found(e):

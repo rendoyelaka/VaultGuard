@@ -2315,18 +2315,40 @@ def text_build_detail(b: dict, client_name: str) -> str:
         "WHERE build_id=? AND status='active'",
         (b["id"],)).fetchone()["cnt"]
     db.close()
+
+    # Connection section — only show if at least IP is known
+    ip   = b.get("server_ip") or ""
+    port = b.get("server_port") or ""
+    key  = b.get("server_key") or ""
+    if ip:
+        conn_section = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📡 <b>Connection</b>\n"
+            f"IP       : <code>{ip}</code>\n"
+            f"Port     : {port or '—'}\n"
+            f"Key      : <code>{key or '—'}</code>\n"
+        )
+    else:
+        conn_section = ""
+
+    date_str = b['started_at'][:16] if b.get('started_at') else '—'
+
     return (
         f"📋 <b>Build #{b['build_number']}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"Client   : {client_name}\n"
         f"Template : {emoji} {display_name}\n"
-        f"Package  : <code>{b['package_name'] or '—'}</code>\n"
-        f"Size     : {b['apk_size'] or '—'}\n"
-        f"Duration : {format_secs(b['duration_secs'])}\n"
         f"Status   : {status}\n"
-        f"Date     : {b['started_at'][:16] if b['started_at'] else '—'} UTC\n"
+        f"{conn_section}"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"Devices  : {total_dev} total  |  {active_dev} active"
+        "📦 <b>APK Info</b>\n"
+        f"Package  : <code>{b.get('package_name') or '—'}</code>\n"
+        f"Size     : {b.get('apk_size') or '—'}\n"
+        f"Duration : {format_secs(b.get('duration_secs'))}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕐 Date  : {date_str} UTC\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 Devices : {total_dev} total  |  {active_dev} active"
     )
 
 
