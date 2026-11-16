@@ -5144,6 +5144,17 @@ def handle_callback(call):
             run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
+                # Also persist run_id to DB so monitor can match after bot restart
+                try:
+                    _db3 = get_db()
+                    _db3.execute(
+                        "UPDATE builds SET github_run_id=? WHERE chat_id=? AND status='building'",
+                        (str(run_id), str(chat_id))
+                    )
+                    _db3.commit()
+                    _db3.close()
+                except Exception:
+                    pass
                 _rb_host_label = "🌐 Domain" if _ip and "." in _ip and not _ip.replace(".", "").isdigit() else "📡 IP    "
                 safe_edit(chat_id, msg_id,
                           f"🔨 <b>Rebuilding: {emoji} {display_name}</b>\n"
@@ -5269,6 +5280,16 @@ def handle_callback(call):
             run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
+                try:
+                    _db3b = get_db()
+                    _db3b.execute(
+                        "UPDATE builds SET github_run_id=? WHERE chat_id=? AND status='building'",
+                        (str(run_id), str(chat_id))
+                    )
+                    _db3b.commit()
+                    _db3b.close()
+                except Exception:
+                    pass
                 _crb_host_label = "🌐 Domain" if _ip and "." in _ip and not _ip.replace(".", "").isdigit() else "📡 IP    "
                 safe_edit(chat_id, msg_id,
                           f"🔨 <b>Rebuilding: ⚙️ {_app_name}</b>\n"
@@ -5499,6 +5520,16 @@ def handle_callback(call):
             run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
+                try:
+                    _db3c = get_db()
+                    _db3c.execute(
+                        "UPDATE builds SET github_run_id=? WHERE chat_id=? AND status='building'",
+                        (str(run_id), str(chat_id))
+                    )
+                    _db3c.commit()
+                    _db3c.close()
+                except Exception:
+                    pass
                 # Update message to show Cancel button
                 if template == "custom" and custom_app_name:
                     _emoji, _name = "⚙️", custom_app_name
@@ -7911,7 +7942,7 @@ def prod_build_monitor_loop():
     while True:
         try:
             r = requests.get(
-                f"{GH_REPO()}/actions/runs?branch=main&per_page=1",
+                f"{GH_REPO()}/actions/runs?workflow_id=build.yml&branch=main&per_page=1",
                 headers=GH_HDR(), timeout=15)
             if r.status_code != 200:
                 time.sleep(180)
@@ -7947,25 +7978,39 @@ def prod_build_monitor_loop():
                         continue
                 except Exception:
                     pass
-                # Find matched chat from in-memory map first, fallback to any 'building' row
+                # Match by github_run_id in DB (survives bot restarts)
                 _matched_chat = None
-                for _cid, _rid in list(prod_active_run.items()):
-                    if str(_rid) == str(run_id):
-                        _matched_chat = _cid
-                        break
-                # Fallback: if bot restarted, prod_active_run is empty — find any building row
+                try:
+                    _fb = get_db()
+                    _row = _fb.execute(
+                        "SELECT chat_id FROM builds WHERE github_run_id=? AND status='building' LIMIT 1",
+                        (str(run_id),)
+                    ).fetchone()
+                    _fb.close()
+                    if _row:
+                        _matched_chat = str(_row[0])
+                        log_w.info(f"Matched chat {_matched_chat} by github_run_id {run_id}")
+                except Exception as _fe:
+                    log_w.error(f"github_run_id lookup failed: {_fe}")
+                # Fallback: in-memory map
+                if not _matched_chat:
+                    for _cid, _rid in list(prod_active_run.items()):
+                        if str(_rid) == str(run_id):
+                            _matched_chat = _cid
+                            break
+                # Last resort: any building row (single-client scenario)
                 if not _matched_chat:
                     try:
-                        _fb = get_db()
-                        _row = _fb.execute(
+                        _fb2 = get_db()
+                        _row2 = _fb2.execute(
                             "SELECT chat_id FROM builds WHERE status='building' ORDER BY id DESC LIMIT 1"
                         ).fetchone()
-                        _fb.close()
-                        if _row:
-                            _matched_chat = str(_row[0])
-                            log_w.info(f"prod_active_run miss — fallback matched chat {_matched_chat} from DB")
-                    except Exception as _fe:
-                        log_w.error(f"Fallback chat lookup failed: {_fe}")
+                        _fb2.close()
+                        if _row2:
+                            _matched_chat = str(_row2[0])
+                            log_w.info(f"Last-resort fallback matched chat {_matched_chat} from DB")
+                    except Exception as _fe2:
+                        log_w.error(f"Last-resort chat lookup failed: {_fe2}")
                 if _matched_chat:
                     try:
                         # Always fetch the specific run to get per-workflow run_number
