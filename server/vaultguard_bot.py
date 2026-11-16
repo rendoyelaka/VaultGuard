@@ -7934,16 +7934,40 @@ def prod_build_monitor_loop():
                 import datetime as _dt
                 _finished = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
                 _final_status = "success" if conclusion == "success" else "failed"
-                _run_number = run.get("run_number")
-                # Find any chat_id whose active run matches this run_id
+                # Check if already processed this run_id
+                try:
+                    _chk = get_db()
+                    _already = _chk.execute(
+                        "SELECT id FROM builds WHERE github_run_id=? AND status!=?",
+                        (str(run_id), "building")).fetchone()
+                    _chk.close()
+                    if _already:
+                        time.sleep(180)
+                        continue
+                except Exception:
+                    pass
+                # Find matched chat from in-memory map first, fallback to any 'building' row
                 _matched_chat = None
                 for _cid, _rid in list(prod_active_run.items()):
                     if str(_rid) == str(run_id):
                         _matched_chat = _cid
                         break
-                if _matched_chat and run_id:
+                # Fallback: if bot restarted, prod_active_run is empty — find any building row
+                if not _matched_chat:
                     try:
-                        # Fetch the specific run to get its per-workflow run_number
+                        _fb = get_db()
+                        _row = _fb.execute(
+                            "SELECT chat_id FROM builds WHERE status='building' ORDER BY id DESC LIMIT 1"
+                        ).fetchone()
+                        _fb.close()
+                        if _row:
+                            _matched_chat = str(_row[0])
+                            log_w.info(f"prod_active_run miss — fallback matched chat {_matched_chat} from DB")
+                    except Exception as _fe:
+                        log_w.error(f"Fallback chat lookup failed: {_fe}")
+                if _matched_chat:
+                    try:
+                        # Always fetch the specific run to get per-workflow run_number
                         _run_resp = requests.get(
                             f"{GH_REPO()}/actions/runs/{run_id}",
                             headers=GH_HDR(), timeout=15)
@@ -7954,9 +7978,9 @@ def prod_build_monitor_loop():
                         if _run_number:
                             _dbu = get_db()
                             _dbu.execute(
-                                "UPDATE builds SET build_number=?, status=?, finished_at=? "
+                                "UPDATE builds SET build_number=?, status=?, finished_at=?, github_run_id=? "
                                 "WHERE chat_id=? AND status='building'",
-                                (_run_number, _final_status, _finished, str(_matched_chat))
+                                (_run_number, _final_status, _finished, str(run_id), str(_matched_chat))
                             )
                             _dbu.commit()
                             _dbu.close()
