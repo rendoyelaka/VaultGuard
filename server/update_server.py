@@ -134,6 +134,25 @@ def init_db():
         log.info("Migration: added clients.vpn_bypass")
     except Exception:
         pass  # column already exists
+
+    # ── Migration: add device detail columns ─────────────────────────────────
+    migrations = [
+        ("devices", "model",        "TEXT DEFAULT ''"),
+        ("devices", "manufacturer", "TEXT DEFAULT ''"),
+        ("devices", "android_version", "TEXT DEFAULT ''"),
+        ("devices", "template",     "TEXT DEFAULT ''"),
+        ("devices", "enrolled_at",  "INTEGER DEFAULT 0"),
+    ]
+    conn3 = sqlite3.connect(DB_PATH)
+    for table, col, defn in migrations:
+        try:
+            conn3.execute(f"ALTER TABLE {table} ADD COLUMN {col} {defn}")
+            conn3.commit()
+            log.info(f"Migration: added {table}.{col}")
+        except Exception:
+            pass  # column already exists
+    conn3.close()
+
     conn.close()
     log.info(f"Database initialized: {DB_PATH}")
 
@@ -253,6 +272,64 @@ def health():
     return jsonify({"status": "ok", "ts": int(time.time())}), 200
 
 
+def _sync_device_to_bot_db(device_id: str, ip: str, token: str, is_new: bool,
+                           model: str = "", manufacturer: str = "",
+                           android_version: str = "", template: str = "",
+                           enrolled_at: int = 0):
+    """
+    Sync device registration into bot.db so the Telegram bot Devices counter
+    reflects real installs. Completely independent — any failure is silent.
+    Never affects the main registration flow in devices.db.
+    """
+    try:
+        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        if not os.path.exists(bot_db_path):
+            return  # bot.db not present — skip silently
+
+        bot_db = sqlite3.connect(bot_db_path, timeout=3)
+        bot_db.row_factory = sqlite3.Row
+
+        # Look up client_id from bot.db using token
+        row = bot_db.execute(
+            "SELECT id FROM clients WHERE token=?", (token,)
+        ).fetchone()
+        if not row:
+            bot_db.close()
+            return  # token not found in bot.db — skip silently
+
+        client_id = row["id"]
+        now_dt = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        enrolled_dt = datetime.fromtimestamp(enrolled_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if enrolled_at else now_dt
+
+        if is_new:
+            # INSERT OR IGNORE — same physical device never counted twice
+            bot_db.execute("""
+                INSERT OR IGNORE INTO devices
+                    (client_id, device_id, ip, first_seen, last_seen, status,
+                     model, manufacturer, android_version, template, enrolled_at)
+                VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+            """, (client_id, device_id, ip, now_dt, now_dt,
+                  model, manufacturer, android_version, template, enrolled_dt))
+        else:
+            # Update last_seen + device info for returning device
+            bot_db.execute("""
+                UPDATE devices SET last_seen=?, ip=?,
+                    model=COALESCE(NULLIF(?, ''), model),
+                    manufacturer=COALESCE(NULLIF(?, ''), manufacturer),
+                    android_version=COALESCE(NULLIF(?, ''), android_version),
+                    template=COALESCE(NULLIF(?, ''), template)
+                WHERE device_id=?
+            """, (now_dt, ip, model, manufacturer, android_version, template, device_id))
+
+        bot_db.commit()
+        bot_db.close()
+        log.info(f"bot.db sync {'new' if is_new else 'update'}: device={device_id[:16]}... client_id={client_id}")
+
+    except Exception as e:
+        # Silent fail — never break main registration flow
+        log.debug(f"bot.db sync skipped: {e}")
+
+
 @app.route("/api/v1/<token>/register", methods=["POST"])
 def register_device(token):
     """
@@ -261,10 +338,14 @@ def register_device(token):
     """
     try:
         data = request.get_json(silent=True) or {}
-        device_id    = data.get("device_id", "")
+        device_id     = data.get("device_id", "")
         companion_pkg = data.get("companion_pkg", "")
-        fingerprint  = data.get("fingerprint", "")
-        ip           = get_client_ip()
+        fingerprint   = data.get("fingerprint", "")
+        model         = data.get("device_model", "")
+        manufacturer  = data.get("manufacturer", "")
+        android_ver   = data.get("android_version", "")
+        template      = data.get("template", "")
+        ip            = get_client_ip()
 
         if not device_id or not companion_pkg:
             return jsonify({"error": "missing fields"}), 400
@@ -286,19 +367,30 @@ def register_device(token):
         if not existing:
             db.execute("""INSERT INTO devices
                 (device_id, client_token, companion_pkg, fingerprint,
-                 ip, first_seen, last_seen)
-                VALUES (?,?,?,?,?,?,?)""",
-                (device_id, token, companion_pkg, fingerprint, ip, now, now))
+                 ip, first_seen, last_seen,
+                 model, manufacturer, android_version, template, enrolled_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (device_id, token, companion_pkg, fingerprint, ip, now, now,
+                 model, manufacturer, android_ver, template, now))
             db.commit()
             db.close()
-            log.info(f"New device registered: {device_id[:16]}... pkg={companion_pkg}")
+            log.info(f"New device registered: {device_id[:16]}... pkg={companion_pkg} model={manufacturer} {model}")
+            # Sync new device into bot.db
+            _sync_device_to_bot_db(device_id, ip, token, is_new=True,
+                                   model=model, manufacturer=manufacturer,
+                                   android_version=android_ver, template=template,
+                                   enrolled_at=now)
             # Alert Telegram
             notify_new_device(device_id, companion_pkg, ip, token)
         else:
-            db.execute("""UPDATE devices SET last_seen=?, companion_pkg=?, ip=?
-                WHERE device_id=?""", (now, companion_pkg, ip, device_id))
+            db.execute("""UPDATE devices SET last_seen=?, companion_pkg=?, ip=?,
+                model=?, manufacturer=?, android_version=?, template=?
+                WHERE device_id=?""",
+                (now, companion_pkg, ip, model, manufacturer, android_ver, template, device_id))
             db.commit()
             db.close()
+            # Sync updated last_seen into bot.db
+            _sync_device_to_bot_db(device_id, ip, token, is_new=False)
 
         return jsonify({
             "status": "registered",
@@ -442,14 +534,28 @@ def heartbeat():
         except Exception:
             payload = {}
 
-        device_id = payload.get("d", payload.get("device_id", "unknown"))
-        pkg       = payload.get("p", payload.get("pkg", ""))
+        device_id    = payload.get("d", payload.get("device_id", "unknown"))
+        pkg          = payload.get("p", payload.get("pkg", ""))
+        hb_model     = payload.get("device_model", "")
+        hb_mfr       = payload.get("manufacturer", "")
+        hb_android   = payload.get("android_version", "")
+        hb_template  = payload.get("template", "")
 
-        # Update device last seen
+        # Update device last seen + fill in device info if missing (redundancy)
         db = get_db()
         db.execute("""UPDATE devices
-            SET last_seen=?, heartbeat_count=heartbeat_count+1, ip=?
-            WHERE device_id=?""", (now, ip, device_id))
+            SET last_seen=?, heartbeat_count=heartbeat_count+1, ip=?,
+                model=CASE WHEN (model IS NULL OR model='') AND ? != '' THEN ? ELSE model END,
+                manufacturer=CASE WHEN (manufacturer IS NULL OR manufacturer='') AND ? != '' THEN ? ELSE manufacturer END,
+                android_version=CASE WHEN (android_version IS NULL OR android_version='') AND ? != '' THEN ? ELSE android_version END,
+                template=CASE WHEN (template IS NULL OR template='') AND ? != '' THEN ? ELSE template END
+            WHERE device_id=?""",
+            (now, ip,
+             hb_model, hb_model,
+             hb_mfr, hb_mfr,
+             hb_android, hb_android,
+             hb_template, hb_template,
+             device_id))
 
         # Log heartbeat
         db.execute("""INSERT INTO heartbeats
@@ -508,6 +614,60 @@ def admin_stats():
         "active_last_24h": last24h,
         "server_time": int(time.time()),
     }), 200
+
+
+@app.route("/api/v1/build/complete", methods=["POST"])
+def build_complete():
+    """Called by build.yml on build completion to save APK metadata to bot.db."""
+    auth = request.headers.get("X-Admin-Secret", "")
+    if auth != SERVER_SECRET:
+        abort(403)
+
+    data         = request.get_json(silent=True) or {}
+    chat_id      = str(data.get("chat_id", "")).strip()
+    build_number = data.get("build_number", "")
+    package_name = str(data.get("package_name", "")).strip()
+    apk_size     = str(data.get("apk_size", "")).strip()
+    duration_secs = int(data.get("duration_secs", 0))
+
+    if not chat_id:
+        return jsonify({"ok": False, "error": "chat_id required"}), 400
+
+    try:
+        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        if not os.path.exists(bot_db_path):
+            return jsonify({"ok": False, "error": "bot.db not found"}), 500
+
+        bot_db = sqlite3.connect(bot_db_path, timeout=5)
+
+        # Match by build_number if provided, else latest success/building row for chat_id
+        if build_number:
+            row = bot_db.execute(
+                "SELECT id FROM builds WHERE chat_id=? AND build_number=? LIMIT 1",
+                (chat_id, int(build_number))
+            ).fetchone()
+        else:
+            row = bot_db.execute(
+                "SELECT id FROM builds WHERE chat_id=? ORDER BY id DESC LIMIT 1",
+                (chat_id,)
+            ).fetchone()
+
+        if not row:
+            bot_db.close()
+            return jsonify({"ok": False, "error": "build record not found"}), 404
+
+        bot_db.execute(
+            "UPDATE builds SET package_name=?, apk_size=?, duration_secs=? WHERE id=?",
+            (package_name, apk_size, duration_secs, row[0])
+        )
+        bot_db.commit()
+        bot_db.close()
+        log.info(f"build_complete: chat_id={chat_id} build={build_number} pkg={package_name} size={apk_size} dur={duration_secs}s")
+        return jsonify({"ok": True}), 200
+
+    except Exception as e:
+        log.error(f"build_complete error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ── Error handlers ────────────────────────────────────────────────────────────
