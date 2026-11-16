@@ -7942,7 +7942,7 @@ def prod_build_monitor_loop():
     while True:
         try:
             r = requests.get(
-                f"{GH_REPO()}/actions/runs?workflow_id=build.yml&branch=main&per_page=1",
+                f"{GH_REPO()}/actions/workflows/build.yml/runs?per_page=1",
                 headers=GH_HDR(), timeout=15)
             if r.status_code != 200:
                 time.sleep(180)
