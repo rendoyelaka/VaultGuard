@@ -1342,7 +1342,7 @@ def kb_devices(build_id: int, page: int, total_pages: int,
             fud_icon = "🛡" if int(dev_fud) == 1 else ("🚫" if int(dev_fud) == 0 else "📋")
             kb.add(types.InlineKeyboardButton(
                 f"{fud_icon} {dev_name[:22]}",
-                callback_data=f"device_detail_{d['device_id']}"
+                callback_data=f"device_detail_{d['id']}"
             ))
     kb.add(types.InlineKeyboardButton(
         "🔍 Search", callback_data=f"search_devices_{build_id}"))
@@ -2764,10 +2764,10 @@ def show_devices(chat_id, message_id, build_id, page):
     )
 
 
-def show_device_detail(chat_id, message_id, device_id: str):
+def show_device_detail(chat_id, message_id, row_id: int):
     db = get_db()
     d  = db.execute(
-        "SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        "SELECT * FROM devices WHERE id=?", (row_id,)).fetchone()
     if not d:
         db.close()
         safe_edit(chat_id, message_id, "❌ Device not found.", kb_home_only())
@@ -5629,8 +5629,8 @@ def handle_callback(call):
         show_devices(chat_id, msg_id, build_id, page)
 
     elif data.startswith("device_detail_"):
-        device_id = data[len("device_detail_"):]
-        show_device_detail(chat_id, msg_id, device_id)
+        row_id = int(data[len("device_detail_"):])
+        show_device_detail(chat_id, msg_id, row_id)
 
     elif data.startswith("toggle_build_fud_"):
         build_id = int(data[len("toggle_build_fud_"):])
