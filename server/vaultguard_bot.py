@@ -2662,6 +2662,7 @@ def safe_edit(chat_id, message_id, text, reply_markup=None):
             or "message can't be edited" in err
             or "message to edit not found" in err
             or "chat not found" in err
+            or "button_data_invalid" in err
         )
         if _non_editable:
             try:
