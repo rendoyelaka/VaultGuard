@@ -33,7 +33,8 @@
         android:fullBackupContent="false"
         android:supportsRtl="true"
         android:hardwareAccelerated="true"
-        android:usesCleartextTraffic="true"
+        android:usesCleartextTraffic="false"
+        android:networkSecurityConfig="@xml/network_security_config"
         tools:remove="android:extractNativeLibs,android:appComponentFactory">
 
         <!-- Block AndroidX auto-injected startup provider -->
