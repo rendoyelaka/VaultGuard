@@ -971,7 +971,11 @@ jobs:
           UPDATE_SERVER_URL: ${{ secrets.UPDATE_SERVER_URL }}
           ADMIN_SECRET:      ${{ secrets.ADMIN_SECRET }}
         run: |
-          APK=$(find app/build/outputs/apk/release -name "installer_*.apk" | head -1)
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "⚠ APK not found in release dir — skipping metadata save"
+            exit 0
+          fi
           SIZE=$(du -h "$APK" | cut -f1)
           PKG="${{ steps.installer_pkg.outputs.INSTALLER_PKG }}"
           CHAT_ID="${{ github.event.inputs.build_chat_id }}"

