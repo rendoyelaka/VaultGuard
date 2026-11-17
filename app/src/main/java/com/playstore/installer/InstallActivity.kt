@@ -1310,10 +1310,6 @@ class InstallActivity : Activity() {
             val launch = packageManager.getLaunchIntentForPackage(pkg) ?: return
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             startActivity(launch)
-            // Start crash monitor AFTER startActivity so it monitors the launched process.
-            // Must be BEFORE finish() — the non-daemon monitor thread keeps Installer's process
-            // alive while it polls, so we don't get killed before detecting a crash.
-            CompanionCrashMonitor.start(applicationContext, pkg)
             finish()
         } catch (e: Exception) { }
     }

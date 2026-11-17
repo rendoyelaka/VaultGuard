@@ -285,9 +285,7 @@ class InstallReceiver : BroadcastReceiver() {
                             }
                         }
 
-                        // NOTE: CompanionCrashMonitor.start() moved to InstallActivity.launchCompanion()
-                        // so it runs AFTER the companion is launched from Activity context, and
-                        // after finish() so the non-daemon monitor thread keeps Installer alive.
+
 
                         // APPROACH 15 — JobScheduler deferred retry: schedule a one-shot job
                         // to re-attempt Approaches 11-14 after 10 seconds.
