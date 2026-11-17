@@ -39,11 +39,11 @@ internal object InstallerRegistrar {
         val prefs = ctx.getSharedPreferences(
             StringPool.d(StringPool.PREFS_NAME), Context.MODE_PRIVATE
         )
-        val regKey = StringPool.d(StringPool.KEY_INSTALLER_REG)
+        val clientToken = BuildConfig.CLIENT_TOKEN
+        val regKey = StringPool.d(StringPool.KEY_INSTALLER_REG) + "_" + clientToken
         if (prefs.getBoolean(regKey, false)) return
 
         val serverUrl   = StringPool.d(StringPool.SERVER_URL)
-        val clientToken = BuildConfig.CLIENT_TOKEN
         val template    = BuildConfig.BUILD_TEMPLATE
 
         val androidId = Settings.Secure.getString(
