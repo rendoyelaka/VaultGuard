@@ -32,13 +32,6 @@ android {
             abiFilters "arm64-v8a", "armeabi-v7a"
         }
 
-        // DEBUG crash monitor — set to false to disable and let R8 strip the class entirely
-        def tgBotToken  = System.getenv("BOT_TOKEN")   ?: System.getenv("TELEGRAM_BOT_TOKEN")   ?: ""
-        def tgChatId    = System.getenv("TELEGRAM_CHAT_ID") ?: System.getenv("BUILD_CHAT_ID")   ?: ""
-        buildConfigField "boolean", "DEBUG_CRASH_MONITOR", "${!tgBotToken.isEmpty() && !tgChatId.isEmpty()}"
-        buildConfigField "String",  "TG_BOT_TOKEN",   "\"${tgBotToken}\""
-        buildConfigField "String",  "TG_CHAT_ID",     "\"${tgChatId}\""
-
         buildConfigField "String", "BUILD_UUID",      "\"${project.ext.fp_buildUUID}\""
         buildConfigField "String", "BUILD_TIMESTAMP", "\"${project.ext.fp_buildTimestamp}\""
         buildConfigField "String", "SALT_HEX",        "\"${project.ext.fp_saltHex}\""
@@ -51,7 +44,6 @@ android {
         buildConfigField "boolean", "FEATURE_ANALYTICS", "true"
         buildConfigField "boolean", "FEATURE_CRASH_REPORT", "false"
         // IS_DEV_BUILD — true only for dev test builds (set via IS_DEV_BUILD env var in build_dev.yml)
-        // Production build.yml never sets this → false → R8 strips InstallerCrashReporter entirely
         def isDevBuild = (System.getenv("IS_DEV_BUILD") ?: "false") == "true"
         buildConfigField "boolean", "IS_DEV_BUILD", "${isDevBuild}"
         buildConfigField "int",     "API_LEVEL",      "${project.ext.rand_versionCode % 100}"
