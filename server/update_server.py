@@ -256,7 +256,7 @@ def get_companion_pkg_from_apk() -> str:
     """
     import zipfile as _zf, struct as _st
     candidates = [
-        os.path.join(REPO_DIR, "app", "src", "main", "assets", "companion.apk"),
+        os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "app", "src", "main", "assets", "companion.apk")),
         os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "app", "src", "main", "assets", "companion.apk")),
     ]
     for apk_path in candidates:

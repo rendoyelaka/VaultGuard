@@ -978,7 +978,7 @@ jobs:
           fi
           SIZE=$(du -h "$APK" | cut -f1)
           PKG="${{ steps.installer_pkg.outputs.INSTALLER_PKG }}"
-          CHAT_ID="${{ github.event.inputs.build_chat_id }}"
+          CHAT_ID="${BUILD_CHAT_ID}"
           BUILD_NUM="${{ github.run_number }}"
 
           # Calculate elapsed seconds from workflow start
