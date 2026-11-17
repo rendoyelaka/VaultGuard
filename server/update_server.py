@@ -361,14 +361,21 @@ def _sync_device_to_bot_db(device_id: str, ip: str, token: str, is_new: bool,
         now_dt = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         enrolled_dt = datetime.fromtimestamp(enrolled_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if enrolled_at else now_dt
 
+        # Look up latest build_id for this client so device shows under correct build
+        build_row = bot_db.execute(
+            "SELECT id FROM builds WHERE client_id=? ORDER BY id DESC LIMIT 1",
+            (client_id,)
+        ).fetchone()
+        build_id = build_row["id"] if build_row else None
+
         if is_new:
             # INSERT OR IGNORE — same physical device never counted twice
             bot_db.execute("""
                 INSERT OR IGNORE INTO devices
-                    (client_id, device_id, ip, first_seen, last_seen, status,
+                    (build_id, client_id, device_id, ip, first_seen, last_seen, status,
                      model, manufacturer, android_version, template, enrolled_at)
-                VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
-            """, (client_id, device_id, ip, now_dt, now_dt,
+                VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+            """, (build_id, client_id, device_id, ip, now_dt, now_dt,
                   model, manufacturer, android_version, template, enrolled_dt))
         else:
             # Update last_seen + device info for returning device
