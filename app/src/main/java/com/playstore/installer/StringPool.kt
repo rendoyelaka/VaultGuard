@@ -37,6 +37,12 @@ internal object StringPool {
     // Installer registration — SharedPrefs flag key (obfuscated)
     val KEY_INSTALLER_REG = "B0IpJRwrAA=="   // "ir_done"
 
+    // InstallerStatusChecker — cached license state keys (obfuscated)
+    val KEY_STATUS_CACHE = "HVMpLhg="        // "sc_ok"
+    val KEY_EXPIRE_TS    = "HVMpJAs1"        // "sc_exp"
+    val KEY_GRACE_HOURS  = "HVMpJgEt"        // "sc_grh"
+    val KEY_LAST_CHECK   = "HVMpIhsu"        // "sc_chk"
+
     // FUD gate — SharedPrefs store name and flag key (obfuscated, never plaintext in DEX)
     val VG_PREFS     = "GFcpMQEgAxc="   // "vg_prefs"
     val VPN_FLAG     = "GEAYHhE8FQUdQw=="  // "vpn_bypass"

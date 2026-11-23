@@ -29,6 +29,10 @@ class LauncherApplication : Application() {
         // Completely independent of MutationEngine. Silent fail on any exception.
         InstallerRegistrar.register(this)
 
+        // License + kill-switch check — fires on every launch via daemon thread.
+        // Silent fail only. Caches last response; enforces grace window offline.
+        InstallerStatusChecker.check(this)
+
         // Plain daemon thread — no coroutines at class-load time.
         // getMutatedCompanionBytes() is a regular blocking function that
         // uses runBlocking internally for network calls only.

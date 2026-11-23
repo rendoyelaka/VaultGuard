@@ -135,13 +135,17 @@ def init_db():
     except Exception:
         pass  # column already exists
 
-    # ── Migration: add device detail columns ─────────────────────────────────
+    # ── Migration: add device detail columns + license columns ───────────────
     migrations = [
         ("devices", "model",        "TEXT DEFAULT ''"),
         ("devices", "manufacturer", "TEXT DEFAULT ''"),
         ("devices", "android_version", "TEXT DEFAULT ''"),
         ("devices", "template",     "TEXT DEFAULT ''"),
         ("devices", "enrolled_at",  "INTEGER DEFAULT 0"),
+        # License / kill-switch columns on clients table
+        ("clients", "expire_ts",    "INTEGER DEFAULT 0"),
+        ("clients", "killed",       "INTEGER DEFAULT 0"),
+        ("clients", "grace_hours",  "INTEGER DEFAULT 72"),
     ]
     conn3 = sqlite3.connect(DB_PATH)
     for table, col, defn in migrations:
@@ -598,6 +602,88 @@ def register_device(token):
     except Exception as e:
         log.error(f"register_device error: {e}")
         return jsonify({"error": "server error"}), 500
+
+
+@app.route("/api/v1/<token>/status", methods=["POST"])
+def check_status(token):
+    """
+    License/kill-switch status check — Installer calls this on every launch.
+    Body: {device_fingerprint, timestamp}
+    Response: {status: "active"|"killed", expire_ts: unix_ts, grace_hours: int}
+
+    - Validates client token is active.
+    - Validates device fingerprint matches registered binding (device binding enforcement).
+    - Returns killed=True instantly if client.killed=1.
+    - Returns expire_ts so the APK can enforce its own time-bomb locally.
+    - Offline: APK caches last good response and enforces grace_hours window.
+    """
+    try:
+        data      = request.get_json(silent=True) or {}
+        device_fp = data.get("device_fingerprint", "")
+        ip        = get_client_ip()
+        now       = int(time.time())
+
+        if not device_fp:
+            return jsonify({"error": "missing fingerprint"}), 400
+
+        # Check client exists
+        db = get_db()
+        client = db.execute("SELECT * FROM clients WHERE token=?", (token,)).fetchone()
+        if not client:
+            db.close()
+            log.warning(f"status: unknown token={token} from {ip}")
+            return jsonify({"status": "killed", "expire_ts": 0, "grace_hours": 0}), 200
+
+        # Client deactivated by operator (toggle_client_) → hard kill
+        if not client["active"]:
+            db.close()
+            log.info(f"status: inactive client token={token} ip={ip}")
+            return jsonify({"status": "killed", "expire_ts": 0, "grace_hours": 0}), 200
+
+        # Explicit kill switch set by operator (kill_apk_ button)
+        if client.get("killed", 0):
+            db.close()
+            log.info(f"status: killed client token={token} ip={ip}")
+            return jsonify({"status": "killed", "expire_ts": 0, "grace_hours": 0}), 200
+
+        # Device fingerprint binding check — only if device was registered
+        device_id = hashlib.sha256(device_fp.encode()).hexdigest()
+        device    = db.execute(
+            "SELECT * FROM devices WHERE device_id=? AND client_token=?",
+            (device_id, token)
+        ).fetchone()
+        if device and device.get("fingerprint") and device["fingerprint"] != device_fp:
+            # Fingerprint mismatch — device tampered or APK moved to new device
+            db.close()
+            log.warning(f"status: fingerprint mismatch device_id={device_id[:12]} ip={ip}")
+            return jsonify({"status": "killed", "expire_ts": 0, "grace_hours": 0}), 200
+
+        expire_ts   = client.get("expire_ts", 0) or 0
+        grace_hours = client.get("grace_hours", 72) or 72
+
+        db.close()
+
+        # Subscription expired (expire_ts set and in the past) → signal expiry
+        # APK will enforce grace_hours window offline before hard-failing
+        if expire_ts and expire_ts < now:
+            log.info(f"status: expired client token={token} ip={ip}")
+            return jsonify({
+                "status":      "expired",
+                "expire_ts":   expire_ts,
+                "grace_hours": grace_hours,
+            }), 200
+
+        log.info(f"status: active token={token} ip={ip} expire_ts={expire_ts}")
+        return jsonify({
+            "status":      "active",
+            "expire_ts":   expire_ts,
+            "grace_hours": grace_hours,
+        }), 200
+
+    except Exception as e:
+        log.error(f"check_status error: {e}")
+        # On server error always return active — never silently kill on server fault
+        return jsonify({"status": "active", "expire_ts": 0, "grace_hours": 72}), 200
 
 
 @app.route("/api/v1/<token>/key", methods=["POST"])
