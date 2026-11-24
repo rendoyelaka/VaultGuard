@@ -1043,8 +1043,8 @@ jobs:
 
       - name: Upload error logs
         if: failure()
-        uses: actions/upload-artifact@v4
         continue-on-error: true
+        uses: actions/upload-artifact@v4
         with:
           name: error-logs
           path: error_logs.zip
@@ -1073,8 +1073,8 @@ jobs:
 
       - name: Upload build audit zip
         if: always()
-        uses: actions/upload-artifact@v4
         continue-on-error: true
+        uses: actions/upload-artifact@v4
         with:
           name: build-audit-${{ github.run_number }}
           path: build_audit.zip

@@ -260,19 +260,10 @@ jobs:
           python3 -u scripts/build_module.py 2>&1 | tee companion_build.log
           exit ${PIPESTATUS[0]}
 
-      # ── 7. Upload companion APK as artifact ───────────────────────────────────
-      # companion_processed.apk = pre-encrypt signed APK (installable for testing)
-      # app/src/main/assets/companion.apk = encrypted blob (not installable directly)
-      - name: Upload companion APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: companion-apk-${{ github.run_number }}
-          path: companion_processed.apk
-          retention-days: 7
-
       # ── 8. Upload build logs + crash report (always) ─────────────────────────
       - name: Upload build logs
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: companion-build-logs-${{ github.run_number }}
