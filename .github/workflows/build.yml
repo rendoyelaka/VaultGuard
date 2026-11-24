@@ -919,18 +919,6 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
-      # ── 11. Upload Installer APK artifact ─────────────────────────────────────────
-      # Installer is the single deliverable APK.
-      # companion.apk is encrypted to a binary blob by step_encrypt_companion()
-      # and embedded inside Installer's assets/ at Gradle build time — NOT a separate output.
-      - name: Upload Installer APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: installer-${{ github.run_number }}
-          path: app/build/outputs/apk/release/installer_*.apk
-          retention-days: 7
-          overwrite: true
-
       # ── 11b. Send APK to Telegram ─────────────────────────────────────────────
       - name: Send APK to Telegram
         if: success()
@@ -1056,6 +1044,7 @@ jobs:
       - name: Upload error logs
         if: failure()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: error-logs
           path: error_logs.zip
@@ -1085,6 +1074,7 @@ jobs:
       - name: Upload build audit zip
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: build-audit-${{ github.run_number }}
           path: build_audit.zip

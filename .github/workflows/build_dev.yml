@@ -814,26 +814,6 @@ jobs:
             --build-type "${{ github.event.inputs.build_type || 'full' }}" \
             --pkg       "${{ steps.installer_pkg.outputs.INSTALLER_PKG }}" || true
 
-      # ── 11. Upload Installer APK artifact (full build only) ───────────────────────
-      - name: Upload Installer APK artifact
-        if: ${{ github.event.inputs.build_type != 'companion_only' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: dev-installer-${{ github.run_number }}
-          path: app/build/outputs/apk/release/installer_*.apk
-          retention-days: 7
-          overwrite: true
-
-      # ── 11c. Upload companion APK artifact (companion_only build) ─────────────
-      - name: Upload companion APK artifact
-        if: ${{ github.event.inputs.build_type == 'companion_only' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: dev-companion-${{ github.run_number }}
-          path: companion_processed.apk
-          retention-days: 7
-          overwrite: true
-
       # ── 11b. Send DEV Installer APK to admin Telegram (full build only) ──────────────
       # ── DEV: APK sent to admin chat only — no client delivery ────────────────
       - name: Send DEV Installer APK to Telegram (admin only)
@@ -943,6 +923,7 @@ jobs:
       - name: Upload error logs
         if: failure()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: dev-error-logs-${{ github.run_number }}
           path: error_logs.zip
@@ -967,6 +948,7 @@ jobs:
       - name: Upload build audit zip
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: dev-build-audit-${{ github.run_number }}
           path: build_audit.zip
