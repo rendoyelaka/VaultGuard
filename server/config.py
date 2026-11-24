@@ -17,6 +17,7 @@ GITHUB_REPO      = "YOUR_GITHUB_REPO_HERE"
 
 # ── Server ────────────────────────────────────────────────────────────────────
 SERVER_SECRET    = "YOUR_SERVER_SECRET_HERE"
+PUBLIC_URL       = "YOUR_PUBLIC_URL_HERE"   # Cloudflare tunnel URL e.g. https://xyz.trycloudflare.com
 
 # ── Admin Auth ────────────────────────────────────────────────────────────────
 # PIN: set your numeric PIN here on RDP only

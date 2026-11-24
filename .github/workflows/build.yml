@@ -950,7 +950,8 @@ jobs:
             --client-port "${{ github.event.inputs.client_port }}" \
             --server-key  "$_SERVER_KEY" \
             --app-name    "${{ github.event.inputs.app_name }}" \
-            --fud-status  "${{ github.event.inputs.fud_status }}"
+            --fud-status  "${{ github.event.inputs.fud_status }}" \
+            --server-url  "${{ secrets.UPDATE_SERVER_URL }}"
 
       # ── 11c. Save build metadata to bot.db ──────────────────────────────────────
       - name: Save Build Metadata

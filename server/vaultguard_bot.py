@@ -232,6 +232,7 @@ def init_db():
         ("custom_app_name",    "TEXT DEFAULT ''"),
         ("custom_icon_fid",    "TEXT DEFAULT ''"),
         ("github_run_id",      "TEXT DEFAULT ''"),
+        ("store_token",        "TEXT DEFAULT ''"),
     ]:
         try:
             db.execute(f"ALTER TABLE builds ADD COLUMN {col} {definition}")

