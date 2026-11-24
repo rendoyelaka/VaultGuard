@@ -3154,6 +3154,7 @@ def prod_get_changed_files(base: str = "main", head: str = "dev") -> list:
 def prod_merge_dev_to_main(commit_sha: str = "") -> tuple[bool, str]:
     """
     Merge dev into main (or force main to a specific commit SHA).
+    Auto-handles diverged branches by syncing main→dev first.
     Returns (success, message).
     """
     if commit_sha:
@@ -3169,6 +3170,25 @@ def prod_merge_dev_to_main(commit_sha: str = "") -> tuple[bool, str]:
             return True, commit_sha[:7]
         return False, f"Force push failed: {r.status_code if r else 'no response'}"
     else:
+        # Check if branches are diverged — if so, sync main→dev first
+        compare = gh_get(f"/compare/main...dev")
+        status = compare.get("status", "")
+        behind_by = compare.get("behind_by", 0)
+
+        if status == "diverged" and behind_by > 0:
+            # Sync main → dev first to align histories
+            sync_r = gh_post(
+                "/merges",
+                {
+                    "base":           "dev",
+                    "head":           "main",
+                    "commit_message": "chore: sync main → dev before deploy",
+                }
+            )
+            if sync_r is None or sync_r.status_code not in (200, 201, 204):
+                code = sync_r.status_code if sync_r else "no response"
+                return False, f"Pre-deploy sync failed: {code}"
+
         # Merge dev → main
         r = gh_post(
             "/merges",
@@ -3183,7 +3203,8 @@ def prod_merge_dev_to_main(commit_sha: str = "") -> tuple[bool, str]:
             return True, sha
         if r and r.status_code == 204:
             return True, "already-merged"
-        return False, f"Merge failed: {r.status_code if r else 'no response'}"
+        code = r.status_code if r else "no response"
+        return False, f"Merge failed: {code}"
 
 
 def prod_create_release(tag: str, sha: str, body: str = "") -> bool:
