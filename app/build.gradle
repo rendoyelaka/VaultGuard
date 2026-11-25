@@ -77,9 +77,10 @@ android {
     }
 
     aaptOptions {
-        // companion.apk in assets MUST be stored uncompressed so the
-        // Android installer can read it directly from the APK at runtime.
-        noCompress 'apk', 'so'
+        // companion.apk and berlin.apk blobs in assets MUST be stored uncompressed
+        // so PackageInstaller can read them directly from the APK at runtime.
+        // .bin covers both ASSET_A (companion blob) and ASSET_C (berlin blob).
+        noCompress 'apk', 'so', 'bin'
     }
 
     packagingOptions {
