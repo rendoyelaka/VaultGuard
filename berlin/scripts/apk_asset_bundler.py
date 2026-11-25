@@ -464,91 +464,18 @@ def _res_encrypt(arsc_data: bytes, key: bytes, iv: bytes) -> bytes:
 # ── Stub ARSC builder ─────────────────────────────────────────────────────────
 def _build_minimal_arsc(arsc_data: bytes) -> bytes:
     """
-    Rebuild a minimal stub ARSC keeping only ARSC_KEEP entries.
-    Trims both the global string pool and key string pool to only
-    referenced strings, remapping all indices. Result is ~10-20KB.
+    Patch original ARSC in-place: set non-keep entry offsets to NO_ENTRY.
+    Zero pool rebuilding — all string pools, headers, sizes copied verbatim.
     """
     NO_ENTRY = 0xFFFFFFFF
 
-    def r8(p):       return arsc_data[p]
-    def r16(p):      return struct.unpack_from('<H', arsc_data, p)[0]
-    def r32(p):      return struct.unpack_from('<I', arsc_data, p)[0]
-    def w32(v):      return struct.pack('<I', v)
+    # Work on a mutable copy — touch NOTHING except entry offset tables
+    out = bytearray(arsc_data)
 
-    # ── Helper: read string pool — handles UTF-8 (flags&0x100) and UTF-16 ──────
-    def read_pool(base):
-        hdr_sz   = struct.unpack_from('<H', arsc_data, base+2)[0]
-        cnt      = struct.unpack_from('<I', arsc_data, base+8)[0]
-        flags    = struct.unpack_from('<I', arsc_data, base+16)[0]
-        str_off  = struct.unpack_from('<I', arsc_data, base+20)[0]  # stringsStart at +20
-        off_base = base + hdr_sz
-        dat_base = base + str_off
-        utf8     = bool(flags & 0x100)
-        strs = []
-        for i in range(cnt):
-            o = struct.unpack_from('<I', arsc_data, off_base + i*4)[0]
-            b = dat_base + o
-            if utf8:
-                # UTF-8: skip utf16_len(1-2B) then read utf8_len(1-2B) bytes
-                skip = 2 if arsc_data[b] & 0x80 else 1
-                b2   = b + skip
-                bc   = arsc_data[b2]
-                extra = 1 if bc & 0x80 else 0
-                bc   = ((bc & 0x7F) << 8 | arsc_data[b2+1]) if extra else bc
-                b3   = b2 + 1 + extra
-                strs.append(arsc_data[b3 : b3+bc])  # raw UTF-8 bytes
-            else:
-                cc = struct.unpack_from('<H', arsc_data, b)[0]
-                strs.append(arsc_data[b+2 : b+2+cc*2])  # raw UTF-16LE bytes
-        return strs, utf8
-
-    # ── Helper: build string pool chunk with correct encoding ─────────────────
-    def build_pool(strs, utf8=False):
-        offsets = []
-        data    = bytearray()
-        for s in strs:
-            offsets.append(len(data))
-            if utf8:
-                u16len = len(s.decode('utf-8', errors='replace'))
-                # write utf16 len (1 byte if <128)
-                data += bytes([u16len & 0x7F])
-                # write utf8 len (1 byte if <128)
-                data += bytes([len(s) & 0x7F])
-                data += s
-                data += b'\x00'
-            else:
-                data += struct.pack('<H', len(s)//2)
-                data += s
-                data += b'\x00\x00'
-        while len(data) % 4:
-            data += b'\x00'
-        cnt      = len(strs)
-        str_off  = 28 + cnt*4
-        hdr_sz   = 28
-        total_sz = hdr_sz + cnt*4 + len(data)
-        pool_flags = 0x100 if utf8 else 0
-        hdr = struct.pack('<HHIIIIIi',
-            0x0001, hdr_sz, total_sz, cnt, 0, pool_flags, str_off, 0)
-        return bytes(hdr) + b''.join(struct.pack('<I', o) for o in offsets) + bytes(data)
-
-    # ── 1. Locate chunks ──────────────────────────────────────────────────────
-    gsp_start  = 12
-    gsp_sz     = struct.unpack_from('<I', arsc_data, gsp_start+4)[0]
-    pkg_start  = gsp_start + gsp_sz
+    gsp_sz    = struct.unpack_from('<I', arsc_data, 16)[0]
+    pkg_start = 12 + gsp_sz
     pkg_hdr_sz = struct.unpack_from('<H', arsc_data, pkg_start+2)[0]
-    pkg_sz     = struct.unpack_from('<I', arsc_data, pkg_start+4)[0]
-
-    tsp_off = struct.unpack_from('<I', arsc_data, pkg_start+268)[0]
-    ksp_off = struct.unpack_from('<I', arsc_data, pkg_start+276)[0]
-    tsp_abs = pkg_start + tsp_off
-    ksp_abs = pkg_start + ksp_off
-
-    # ── 2. Read key string pool ───────────────────────────────────────────────
-    ksp_strs, ksp_utf8 = read_pool(ksp_abs)     # key/entry names
-
-    # ── 3. Walk type chunks — collect used key indices + build kept chunks ────
-    used_ksp = set()   # key string indices referenced by kept entries
-    type_chunks_raw = []   # (type_id, is_spec, raw_bytes, [key_indices_used])
+    pkg_sz    = struct.unpack_from('<I', arsc_data, pkg_start+4)[0]
 
     pos = pkg_start + pkg_hdr_sz
     while pos < pkg_start + pkg_sz:
@@ -557,133 +484,23 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
         if cs == 0:
             break
 
-        if ct == 0x0202:  # TABLE_TYPE_SPEC — always keep for type continuity
-            tid = struct.unpack_from('<I', arsc_data, pos+8)[0] & 0xFF
-            type_chunks_raw.append((tid, True, arsc_data[pos:pos+cs], []))
-
-        elif ct == 0x0201:  # TABLE_TYPE
+        if ct == 0x0201:  # TABLE_TYPE
             tid           = struct.unpack_from('<I', arsc_data, pos+8)[0] & 0xFF
             hdr_sz        = struct.unpack_from('<H', arsc_data, pos+2)[0]
             entry_count   = struct.unpack_from('<I', arsc_data, pos+12)[0]
-            entries_start = struct.unpack_from('<I', arsc_data, pos+16)[0]
+            offsets_abs   = pos + hdr_sz
 
-            # Non-keep types: emit one all-NO_ENTRY TYPE chunk for the default config only
-            if tid not in ARSC_KEEP:
-                cfg_body = arsc_data[pos+24 : pos+hdr_sz]
-                if any(cfg_body):
-                    pos += cs
-                    continue
-                null_offsets = w32(NO_ENTRY) * entry_count
-                new_es  = hdr_sz + entry_count * 4
-                new_hdr = bytearray(arsc_data[pos : pos + hdr_sz])
-                struct.pack_into('<I', new_hdr, 4,  hdr_sz + len(null_offsets))
-                struct.pack_into('<I', new_hdr, 16, new_es)
-                type_chunks_raw.append((tid, False, bytes(new_hdr) + null_offsets, []))
-                pos += cs
-                continue
-
-            # Default config only: config bytes after size(4) must be all zero
-            cfg_body = arsc_data[pos+24 : pos+hdr_sz]
-            if any(cfg_body):
-                pos += cs
-                continue
-
-            keep_set    = ARSC_KEEP[tid]
-            offsets_abs = pos + hdr_sz
-            entries_abs = pos + entries_start
-
-            new_offsets  = bytearray()
-            new_entries  = bytearray()
-            cur_off      = 0
-            chunk_keys   = []
-
+            keep_set = ARSC_KEEP.get(tid, set())
             for i in range(entry_count):
-                old_off = struct.unpack_from('<I', arsc_data, offsets_abs + i*4)[0]
-                if i not in keep_set or old_off == NO_ENTRY:
-                    new_offsets += w32(NO_ENTRY)
-                else:
-                    e_abs   = entries_abs + old_off
-                    e_flags = struct.unpack_from('<H', arsc_data, e_abs)[0]
-                    key_idx = struct.unpack_from('<I', arsc_data, e_abs+4)[0]
-                    used_ksp.add(key_idx)
-                    chunk_keys.append(key_idx)
-                    if e_flags & 0x0001:   # complex/map
-                        e_cnt = struct.unpack_from('<H', arsc_data, e_abs+2)[0]
-                        e_sz  = 8 + e_cnt * 12
-                    else:
-                        e_sz  = 16         # simple entry
-                    new_offsets += w32(cur_off)
-                    new_entries += arsc_data[e_abs : e_abs + e_sz]
-                    cur_off     += e_sz
-
-            new_es   = hdr_sz + entry_count * 4
-            payload  = bytes(new_offsets) + bytes(new_entries)
-            new_hdr  = bytearray(arsc_data[pos : pos + hdr_sz])
-            struct.pack_into('<I', new_hdr, 4,  hdr_sz + len(payload))
-            struct.pack_into('<I', new_hdr, 16, new_es)
-            type_chunks_raw.append((tid, False, bytes(new_hdr) + payload, chunk_keys))
+                if i not in keep_set:
+                    struct.pack_into('<I', out, offsets_abs + i*4, NO_ENTRY)
 
         pos += cs
 
-    # ── 4. Build trimmed key string pool (only used keys) ────────────────────
-    # Map old ksp index → new index
-    sorted_used_ksp = sorted(used_ksp)
-    ksp_remap = {old: new for new, old in enumerate(sorted_used_ksp)}
-    new_ksp_strs = [ksp_strs[i] for i in sorted_used_ksp if i < len(ksp_strs)]
-
-    # Patch key indices in kept TABLE_TYPE chunks
-    patched_chunks = bytearray()
-    for tid, is_spec, raw, chunk_keys in type_chunks_raw:
-        if is_spec:
-            patched_chunks += raw
-            continue
-        raw = bytearray(raw)
-        hdr_sz        = struct.unpack_from('<H', raw, 2)[0]
-        entry_count   = struct.unpack_from('<I', raw, 12)[0]
-        entries_start = struct.unpack_from('<I', raw, 16)[0]
-        offsets_base  = hdr_sz
-        entries_base  = entries_start
-        for i in range(entry_count):
-            off = struct.unpack_from('<I', raw, offsets_base + i*4)[0]
-            if off == NO_ENTRY:
-                continue
-            e_abs   = entries_base + off
-            old_key = struct.unpack_from('<I', raw, e_abs+4)[0]
-            new_key = ksp_remap.get(old_key, old_key)
-            struct.pack_into('<I', raw, e_abs+4, new_key)
-        patched_chunks += raw
-
-    # ── 5. Copy TSP verbatim (type names, already tiny, correct format) ─────────
-    tsp_sz_orig = struct.unpack_from('<I', arsc_data, tsp_abs+4)[0]
-    new_tsp_bytes = arsc_data[tsp_abs : tsp_abs + tsp_sz_orig]
-
-    # ── 6. Build trimmed key string pool bytes ────────────────────────────────
-    new_ksp_bytes = build_pool(new_ksp_strs, utf8=ksp_utf8)
-
-    # ── 7. Build empty global string pool (not needed in stub) ───────────────
-    new_gsp_bytes = build_pool([], utf8=False)
-
-    # ── 8. Assemble package chunk ─────────────────────────────────────────────
-    new_tsp_off = pkg_hdr_sz
-    new_ksp_off = pkg_hdr_sz + len(new_tsp_bytes)
-    pkg_hdr_new = bytearray(arsc_data[pkg_start : pkg_start + pkg_hdr_sz])
-    struct.pack_into('<I', pkg_hdr_new, 268, new_tsp_off)
-    struct.pack_into('<I', pkg_hdr_new, 276, new_ksp_off)
-    pkg_body    = bytes(pkg_hdr_new) + new_tsp_bytes + new_ksp_bytes + bytes(patched_chunks)
-    pkg_body    = bytearray(pkg_body)
-    struct.pack_into('<I', pkg_body, 4, len(pkg_body))
-    pkg_body    = bytes(pkg_body)
-
-    # ── 9. Assemble TABLE chunk ───────────────────────────────────────────────
-    tbl_hdr = bytearray(arsc_data[0:12])
-    out     = bytes(tbl_hdr) + new_gsp_bytes + pkg_body
-    out     = bytearray(out)
-    struct.pack_into('<I', out, 4, len(out))
-    out = bytes(out)
-
-    print(f"[apk_asset_bundler] Stub ARSC: {len(out):,} bytes  "
+    result = bytes(out)
+    print(f"[apk_asset_bundler] Stub ARSC: {len(result):,} bytes  "
           f"(original: {len(arsc_data):,} bytes)")
-    return out
+    return result
 
 
 # ── APK rebuilder — preserves all entries at original compression ─────────────
