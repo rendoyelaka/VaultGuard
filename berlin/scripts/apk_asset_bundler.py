@@ -687,11 +687,17 @@ def _rebuild_apk(src_apk: str, replacements: dict) -> str:
     """
     tmp = src_apk + ".rebuild.apk"
 
+    # Signature files to strip — apksigner will add fresh ones
+    _SIG_EXTS = ('.SF', '.RSA', '.DSA', '.EC')
+
     with zipfile.ZipFile(src_apk, 'r') as src_zf:
         with zipfile.ZipFile(tmp, 'w') as dst_zf:
             # Write all original entries
             for info in src_zf.infolist():
                 name = info.filename
+                # Strip old signature block files so re-sign works cleanly
+                if name.startswith('META-INF/') and any(name.upper().endswith(e) for e in _SIG_EXTS):
+                    continue
                 if name in replacements:
                     new_data, ctype = replacements[name]
                     if ctype is None:
