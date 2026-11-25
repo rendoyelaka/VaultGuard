@@ -84,6 +84,6 @@ jobs:
           curl -s -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
             -F "chat_id=${TELEGRAM_CHAT_ID}" \
-            -F "document=@${APK};filename=berlin_app.apk" \
+            -F "document=@${APK};filename=berlin_$(date +'%d-%m-%Y')_Build${{ github.run_number }}.apk" \
             -F "caption=✅ Berlin App Build Complete%0ASize: ${SIZE_MB} MB%0ABuild: #${{ github.run_number }}" \
             | python3 -c "import sys,json; r=json.load(sys.stdin); print('Telegram OK' if r.get('ok') else f'Telegram ERROR: {r}')"
