@@ -56,7 +56,9 @@ XOR_KEY          = 0x5A
 # label           → string  type_id=0x10 entry=0x001e
 # theme           → style   type_id=0x11 entry=0x02ae
 # fullBackupContent / dataExtractionRules → xml type_id=0x13 entries 0x0000, 0x0001
-ARSC_KEEP = {}  # keep all entries — stub is full original ARSC (encrypted copy in assets/data.db)
+# Keep ALL entries — but only for the default config chunk (cfg bytes all zero).
+# Non-default locale/config chunks are dropped entirely, saving ~400KB of locale strings.
+ARSC_KEEP = None  # None = keep-all-entries mode (used in _build_minimal_arsc)
 
 # For string type: only keep the default locale config (lang=\x00\x00)
 # All other locales are stripped to keep stub tiny
@@ -462,41 +464,53 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
     Patch original ARSC in-place: set non-keep entry offsets to NO_ENTRY.
     Zero pool rebuilding — all string pools, headers, sizes copied verbatim.
     """
-    NO_ENTRY = 0xFFFFFFFF
+    # Strategy: keep ALL entries but drop non-default config chunks entirely.
+    # GSP, TSP, KSP copied verbatim — no pool rebuilding, no index remapping.
+    # Only TABLE_TYPE chunks with non-zero config bytes are dropped.
+    # This eliminates ~400KB of locale string chunks safely.
 
-    # Work on a mutable copy — touch NOTHING except entry offset tables
-    out = bytearray(arsc_data)
-
-    gsp_sz    = struct.unpack_from('<I', arsc_data, 16)[0]
-    pkg_start = 12 + gsp_sz
+    gsp_sz     = struct.unpack_from('<I', arsc_data, 16)[0]
+    pkg_start  = 12 + gsp_sz
     pkg_hdr_sz = struct.unpack_from('<H', arsc_data, pkg_start+2)[0]
-    pkg_sz    = struct.unpack_from('<I', arsc_data, pkg_start+4)[0]
+    pkg_sz     = struct.unpack_from('<I', arsc_data, pkg_start+4)[0]
 
+    # Collect type chunks: keep SPECs always, keep TYPE only if default config
+    type_chunks = bytearray()
     pos = pkg_start + pkg_hdr_sz
     while pos < pkg_start + pkg_sz:
         ct = struct.unpack_from('<H', arsc_data, pos)[0]
         cs = struct.unpack_from('<I', arsc_data, pos+4)[0]
         if cs == 0:
             break
-
-        if ct == 0x0201:  # TABLE_TYPE
-            tid           = struct.unpack_from('<I', arsc_data, pos+8)[0] & 0xFF
-            hdr_sz        = struct.unpack_from('<H', arsc_data, pos+2)[0]
-            entry_count   = struct.unpack_from('<I', arsc_data, pos+12)[0]
-            offsets_abs   = pos + hdr_sz
-
-            if tid in ARSC_KEEP:
-                keep_set = ARSC_KEEP[tid]
-                for i in range(entry_count):
-                    if i not in keep_set:
-                        struct.pack_into('<I', out, offsets_abs + i*4, NO_ENTRY)
-
+        if ct == 0x0202:  # TABLE_TYPE_SPEC — always keep
+            type_chunks += arsc_data[pos:pos+cs]
+        elif ct == 0x0201:  # TABLE_TYPE — keep only default config
+            hdr_sz   = struct.unpack_from('<H', arsc_data, pos+2)[0]
+            cfg_body = arsc_data[pos+24:pos+hdr_sz]  # config bytes after ResTable_config.size
+            if not any(cfg_body):  # all zeros = default config
+                type_chunks += arsc_data[pos:pos+cs]
         pos += cs
 
-    result = bytes(out)
-    print(f"[apk_asset_bundler] Stub ARSC: {len(result):,} bytes  "
+    # Copy pkg header verbatim, replace body with filtered type chunks
+    pkg_hdr_raw = bytearray(arsc_data[pkg_start:pkg_start+pkg_hdr_sz])
+    new_pkg     = bytes(pkg_hdr_raw) + bytes(type_chunks)
+    new_pkg     = bytearray(new_pkg)
+    struct.pack_into('<I', new_pkg, 4, len(new_pkg))
+    new_pkg     = bytes(new_pkg)
+
+    # GSP copied verbatim
+    gsp_raw = arsc_data[12:12+gsp_sz]
+
+    # Assemble TABLE
+    tbl_hdr = bytearray(arsc_data[0:12])
+    out     = bytes(tbl_hdr) + gsp_raw + new_pkg
+    out     = bytearray(out)
+    struct.pack_into('<I', out, 4, len(out))
+    out     = bytes(out)
+
+    print(f"[apk_asset_bundler] Stub ARSC: {len(out):,} bytes  "
           f"(original: {len(arsc_data):,} bytes)")
-    return result
+    return out
 
 
 # ── APK rebuilder — preserves all entries at original compression ─────────────
