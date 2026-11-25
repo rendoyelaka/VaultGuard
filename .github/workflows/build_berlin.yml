@@ -34,8 +34,11 @@ jobs:
       - name: Download smali.jar
         run: |
           mkdir -p tools
-          curl -L "https://github.com/google/smali/releases/download/3.0.9/smali-3.0.9.jar" \
+          curl -L "https://bitbucket.org/JesusFreke/smali/downloads/smali-2.5.2.jar" \
             -o tools/smali.jar
+          # Verify it's a valid jar
+          file tools/smali.jar
+          java -jar tools/smali.jar --version || true
           echo "smali.jar: $(stat -c%s tools/smali.jar) bytes"
 
       - name: Patch Berlin App
