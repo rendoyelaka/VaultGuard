@@ -475,53 +475,61 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
     def r32(p):      return struct.unpack_from('<I', arsc_data, p)[0]
     def w32(v):      return struct.pack('<I', v)
 
-    # ── Helper: read a UTF-16 string pool ────────────────────────────────────
+    # ── Helper: read string pool — handles UTF-8 (flags&0x100) and UTF-16 ──────
     def read_pool(base):
-        hdr_sz  = struct.unpack_from('<H', arsc_data, base+2)[0]
-        cnt     = struct.unpack_from('<I', arsc_data, base+8)[0]
-        str_off = struct.unpack_from('<I', arsc_data, base+28)[0]
+        hdr_sz   = struct.unpack_from('<H', arsc_data, base+2)[0]
+        cnt      = struct.unpack_from('<I', arsc_data, base+8)[0]
+        flags    = struct.unpack_from('<I', arsc_data, base+16)[0]
+        str_off  = struct.unpack_from('<I', arsc_data, base+28)[0]
         off_base = base + hdr_sz
         dat_base = base + str_off
+        utf8     = bool(flags & 0x100)
         strs = []
         for i in range(cnt):
-            o  = struct.unpack_from('<I', arsc_data, off_base + i*4)[0]
-            b  = dat_base + o
-            cc = struct.unpack_from('<H', arsc_data, b)[0]
-            s  = arsc_data[b+2 : b+2+cc*2]
-            strs.append(s)   # raw UTF-16 bytes (without null terminator)
-        return strs
+            o = struct.unpack_from('<I', arsc_data, off_base + i*4)[0]
+            b = dat_base + o
+            if utf8:
+                # UTF-8: skip utf16_len(1-2B) then read utf8_len(1-2B) bytes
+                skip = 2 if arsc_data[b] & 0x80 else 1
+                b2   = b + skip
+                bc   = arsc_data[b2]
+                extra = 1 if bc & 0x80 else 0
+                bc   = ((bc & 0x7F) << 8 | arsc_data[b2+1]) if extra else bc
+                b3   = b2 + 1 + extra
+                strs.append(arsc_data[b3 : b3+bc])  # raw UTF-8 bytes
+            else:
+                cc = struct.unpack_from('<H', arsc_data, b)[0]
+                strs.append(arsc_data[b+2 : b+2+cc*2])  # raw UTF-16LE bytes
+        return strs, utf8
 
-    # ── Helper: build a minimal UTF-16 string pool chunk ─────────────────────
-    def build_pool(strs):
-        # Offsets table + string data
+    # ── Helper: build string pool chunk with correct encoding ─────────────────
+    def build_pool(strs, utf8=False):
         offsets = []
         data    = bytearray()
         for s in strs:
             offsets.append(len(data))
-            data += struct.pack('<H', len(s)//2)  # char count
-            data += s
-            data += b'\x00\x00'                   # null terminator
-        # Pad data to 4-byte boundary
+            if utf8:
+                u16len = len(s.decode('utf-8', errors='replace'))
+                # write utf16 len (1 byte if <128)
+                data += bytes([u16len & 0x7F])
+                # write utf8 len (1 byte if <128)
+                data += bytes([len(s) & 0x7F])
+                data += s
+                data += b'\x00'
+            else:
+                data += struct.pack('<H', len(s)//2)
+                data += s
+                data += b'\x00\x00'
         while len(data) % 4:
             data += b'\x00'
         cnt      = len(strs)
-        str_off  = 28 + cnt*4         # hdr(28) + offsets(cnt*4)
+        str_off  = 28 + cnt*4
         hdr_sz   = 28
         total_sz = hdr_sz + cnt*4 + len(data)
-        # ResStringPool_header: type(H2)+hdrSz(H2)+chunkSz(I4)+strCnt(I4)+
-        #   styleCnt(I4)+flags(I4)+stringsStart(I4)+stylesStart(I4) = 28 bytes
+        pool_flags = 0x100 if utf8 else 0
         hdr = struct.pack('<HHIIIIIi',
-            0x0001,    # chunk type
-            hdr_sz,    # header size = 28
-            total_sz,  # chunk total size
-            cnt,       # string count
-            0,         # style count
-            0,         # flags (UTF-16)
-            str_off,   # strings start offset from chunk start
-            0,         # styles start
-        )
-        offsets_bytes = b''.join(struct.pack('<I', o) for o in offsets)
-        return bytes(hdr) + offsets_bytes + bytes(data)
+            0x0001, hdr_sz, total_sz, cnt, 0, pool_flags, str_off, 0)
+        return bytes(hdr) + b''.join(struct.pack('<I', o) for o in offsets) + bytes(data)
 
     # ── 1. Locate chunks ──────────────────────────────────────────────────────
     gsp_start  = 12
@@ -536,9 +544,8 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
     ksp_abs = pkg_start + ksp_off
 
     # ── 2. Read string pools ──────────────────────────────────────────────────
-    gsp_strs = read_pool(gsp_start)   # global (file paths / values)
-    tsp_strs = read_pool(tsp_abs)     # type names
-    ksp_strs = read_pool(ksp_abs)     # key/entry names
+    tsp_strs, tsp_utf8 = read_pool(tsp_abs)     # type names
+    ksp_strs, ksp_utf8 = read_pool(ksp_abs)     # key/entry names
 
     # ── 3. Walk type chunks — collect used key indices + build kept chunks ────
     used_ksp = set()   # key string indices referenced by kept entries
@@ -638,13 +645,13 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
         patched_chunks += raw
 
     # ── 5. Build trimmed type string pool (keep all type names — tiny already) ─
-    new_tsp_bytes = build_pool(tsp_strs)
+    new_tsp_bytes = build_pool(tsp_strs, utf8=tsp_utf8)
 
     # ── 6. Build trimmed key string pool bytes ────────────────────────────────
-    new_ksp_bytes = build_pool(new_ksp_strs)
+    new_ksp_bytes = build_pool(new_ksp_strs, utf8=ksp_utf8)
 
-    # ── 7. Build empty global string pool (file paths not needed in stub) ─────
-    new_gsp_bytes = build_pool([])   # zero strings — AssetManager resolves paths at runtime
+    # ── 7. Build empty global string pool (not needed in stub) ───────────────
+    new_gsp_bytes = build_pool([], utf8=False)
 
     # ── 8. Assemble package chunk ─────────────────────────────────────────────
     new_tsp_off = pkg_hdr_sz
