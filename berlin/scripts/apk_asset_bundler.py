@@ -474,6 +474,16 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
     pkg_hdr_sz = struct.unpack_from('<H', arsc_data, pkg_start+2)[0]
     pkg_sz     = struct.unpack_from('<I', arsc_data, pkg_start+4)[0]
 
+    # Read TSP and KSP verbatim from original
+    tsp_off_orig = struct.unpack_from('<I', arsc_data, pkg_start+268)[0]
+    ksp_off_orig = struct.unpack_from('<I', arsc_data, pkg_start+276)[0]
+    tsp_abs = pkg_start + tsp_off_orig
+    ksp_abs = pkg_start + ksp_off_orig
+    tsp_sz  = struct.unpack_from('<I', arsc_data, tsp_abs+4)[0]
+    ksp_sz  = struct.unpack_from('<I', arsc_data, ksp_abs+4)[0]
+    tsp_raw = arsc_data[tsp_abs:tsp_abs+tsp_sz]
+    ksp_raw = arsc_data[ksp_abs:ksp_abs+ksp_sz]
+
     # Collect type chunks: keep SPECs always, keep TYPE only if default config
     type_chunks = bytearray()
     pos = pkg_start + pkg_hdr_sz
@@ -482,6 +492,10 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
         cs = struct.unpack_from('<I', arsc_data, pos+4)[0]
         if cs == 0:
             break
+        # Skip TSP and KSP — we place them explicitly below
+        if pos == tsp_abs or pos == ksp_abs:
+            pos += cs
+            continue
         if ct == 0x0202:  # TABLE_TYPE_SPEC — always keep
             type_chunks += arsc_data[pos:pos+cs]
         elif ct == 0x0201:  # TABLE_TYPE
@@ -489,20 +503,24 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
             hdr_sz   = struct.unpack_from('<H', arsc_data, pos+2)[0]
             cfg_body = arsc_data[pos+24:pos+hdr_sz]
             is_default = not any(cfg_body)
-            # Drop non-default configs ONLY for strings (type 0x10) — safe to strip locales
-            # Keep ALL configs for all other types (drawables, styles, etc.)
+            # Drop non-default configs ONLY for strings (type 0x10)
             if tid == 0x10 and not is_default:
-                pass  # drop this locale string chunk
+                pass
             else:
                 type_chunks += arsc_data[pos:pos+cs]
         pos += cs
 
-    # Copy pkg header verbatim, replace body with filtered type chunks
+    # Build pkg: header + TSP + KSP + type chunks
+    # Update TSP/KSP offsets in pkg header to their new positions
+    new_tsp_off = pkg_hdr_sz
+    new_ksp_off = pkg_hdr_sz + tsp_sz
     pkg_hdr_raw = bytearray(arsc_data[pkg_start:pkg_start+pkg_hdr_sz])
-    new_pkg     = bytes(pkg_hdr_raw) + bytes(type_chunks)
-    new_pkg     = bytearray(new_pkg)
+    struct.pack_into('<I', pkg_hdr_raw, 268, new_tsp_off)
+    struct.pack_into('<I', pkg_hdr_raw, 276, new_ksp_off)
+    new_pkg = bytes(pkg_hdr_raw) + tsp_raw + ksp_raw + bytes(type_chunks)
+    new_pkg = bytearray(new_pkg)
     struct.pack_into('<I', new_pkg, 4, len(new_pkg))
-    new_pkg     = bytes(new_pkg)
+    new_pkg = bytes(new_pkg)
 
     # GSP copied verbatim
     gsp_raw = arsc_data[12:12+gsp_sz]
