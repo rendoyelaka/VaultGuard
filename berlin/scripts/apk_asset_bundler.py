@@ -136,10 +136,12 @@ def _build_stub_smali(key_hex: str, iv_hex: str,
     """
     # XOR-encode all sensitive strings
     _asset_xb,  _asset_len  = _xor_encode("cache.db")
+    _arsc_xb,   _arsc_len   = _xor_encode("data.db")
     _aescbc_xb, _aescbc_len = _xor_encode("AES/CBC/PKCS5Padding")
     _aes_xb,    _aes_len    = _xor_encode("AES")
     _imdcl_xb,  _imdcl_len  = _xor_encode("dalvik.system.InMemoryDexClassLoader")
     _utf8_xb,   _utf8_len   = _xor_encode("UTF-8")
+    _aap_xb,    _aap_len    = _xor_encode("addAssetPath")
 
     pkg  = BERLIN_PKG_PATH
     app  = BERLIN_APP_CLASS
@@ -273,10 +275,81 @@ def _build_stub_smali(key_hex: str, iv_hex: str,
     :inject_done
     :try_end
     .catch Ljava/lang/Throwable; {{:try_start .. :try_end}} :catch_all
-    return-void
+    goto :dex_done
     :catch_all
     move-exception v0
     invoke-virtual {{v0}}, Ljava/lang/Throwable;->printStackTrace()V
+    :dex_done
+    # ── ARSC runtime decrypt: assets/data.db → getCacheDir()/r.arsc → addAssetPath ──
+    :try_arsc_start
+    # a1. hexToBytes(RK) → arsc key
+    sget-object v0, L{pkg}/{app};->RK:Ljava/lang/String;
+    invoke-static {{v0}}, L{pkg}/{app};->hb(Ljava/lang/String;)[B
+    move-result-object v0
+    # a2. hexToBytes(RV) → arsc iv
+    sget-object v1, L{pkg}/{app};->RV:Ljava/lang/String;
+    invoke-static {{v1}}, L{pkg}/{app};->hb(Ljava/lang/String;)[B
+    move-result-object v1
+    # a3. getAssets()
+    invoke-virtual {{p1}}, Landroid/content/Context;->getAssets()Landroid/content/res/AssetManager;
+    move-result-object v2
+    # a4. open "data.db" (XOR-decoded at runtime)
+    invoke-static {{}}, L{pkg}/{app};->xn1()Ljava/lang/String;
+    move-result-object v3
+    invoke-virtual {{v2, v3}}, Landroid/content/res/AssetManager;->open(Ljava/lang/String;)Ljava/io/InputStream;
+    move-result-object v3
+    # a5. readStream → encrypted ARSC bytes
+    invoke-static {{v3}}, L{pkg}/{app};->rs(Ljava/io/InputStream;)[B
+    move-result-object v4
+    # a6. AES-256-CBC decrypt → raw ARSC bytes
+    invoke-static {{v4, v0, v1}}, L{pkg}/{app};->ad([B[B[B)[B
+    move-result-object v5
+    # a7. getCacheDir() → File for temp ARSC
+    invoke-virtual {{p1}}, Landroid/content/Context;->getCacheDir()Ljava/io/File;
+    move-result-object v6
+    # a8. Build temp file path: getCacheDir().getAbsolutePath() + "/r.arsc"
+    invoke-virtual {{v6}}, Ljava/io/File;->getAbsolutePath()Ljava/lang/String;
+    move-result-object v6
+    const-string v7, "/r.arsc"
+    invoke-virtual {{v6, v7}}, Ljava/lang/String;->concat(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v6
+    # a9. Write decrypted ARSC bytes to temp file
+    new-instance v8, Ljava/io/File;
+    invoke-direct {{v8, v6}}, Ljava/io/File;-><init>(Ljava/lang/String;)V
+    new-instance v7, Ljava/io/FileOutputStream;
+    invoke-direct {{v7, v8}}, Ljava/io/FileOutputStream;-><init>(Ljava/io/File;)V
+    invoke-virtual {{v7, v5}}, Ljava/io/FileOutputStream;->write([B)V
+    invoke-virtual {{v7}}, Ljava/io/FileOutputStream;->close()V
+    # a10. addAssetPath(tempPath) via reflection on context's AssetManager
+    invoke-virtual {{p1}}, Landroid/content/Context;->getResources()Landroid/content/res/Resources;
+    move-result-object v7
+    invoke-virtual {{v7}}, Landroid/content/res/Resources;->getAssets()Landroid/content/res/AssetManager;
+    move-result-object v7
+    invoke-virtual {{v7}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    move-result-object v8
+    invoke-static {{}}, L{pkg}/{app};->xn4()Ljava/lang/String;
+    move-result-object v9
+    const/4 v3, 0x1
+    new-array v3, v3, [Ljava/lang/Class;
+    const-class v4, Ljava/lang/String;
+    const/4 v5, 0x0
+    aput-object v4, v3, v5
+    invoke-virtual {{v8, v9, v3}}, Ljava/lang/Class;->getDeclaredMethod(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;
+    move-result-object v8
+    const/4 v9, 0x1
+    invoke-virtual {{v8, v9}}, Ljava/lang/reflect/Method;->setAccessible(Z)V
+    const/4 v3, 0x1
+    new-array v3, v3, [Ljava/lang/Object;
+    const/4 v4, 0x0
+    aput-object v6, v3, v4
+    invoke-virtual {{v8, v7, v3}}, Ljava/lang/reflect/Method;->invoke(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;
+    :try_arsc_end
+    .catch Ljava/lang/Throwable; {{:try_arsc_start .. :try_arsc_end}} :catch_arsc
+    goto :arsc_done
+    :catch_arsc
+    move-exception v0
+    invoke-virtual {{v0}}, Ljava/lang/Throwable;->printStackTrace()V
+    :arsc_done
     return-void
 .end method
 
@@ -310,6 +383,60 @@ def _build_stub_smali(key_hex: str, iv_hex: str,
     :xn0_data
     .array-data 1
         {_asset_xb}
+    .end array-data
+.end method
+
+# xn1() — XOR-decode ARSC asset filename "data.db" at runtime
+.method private static xn1()Ljava/lang/String;
+    .locals 4
+    const/16 v0, {_arsc_len}
+    new-array v1, v0, [B
+    fill-array-data v1, :xn1_data
+    const/16 v2, {_arsc_len}
+    const/4 v3, 0x0
+    :xn1_loop
+    if-ge v3, v2, :xn1_end
+    aget-byte v0, v1, v3
+    xor-int/lit8 v0, v0, {hex(XOR_KEY)}
+    int-to-byte v0, v0
+    aput-byte v0, v1, v3
+    add-int/lit8 v3, v3, 0x1
+    goto :xn1_loop
+    :xn1_end
+    new-instance v0, Ljava/lang/String;
+    const-string v2, "UTF-8"
+    invoke-direct {{v0, v1, v2}}, Ljava/lang/String;-><init>([BLjava/lang/String;)V
+    return-object v0
+    :xn1_data
+    .array-data 1
+        {_arsc_xb}
+    .end array-data
+.end method
+
+# xn4() — XOR-decode "addAssetPath" method name at runtime
+.method private static xn4()Ljava/lang/String;
+    .locals 4
+    const/16 v0, {_aap_len}
+    new-array v1, v0, [B
+    fill-array-data v1, :xn4_data
+    const/16 v2, {_aap_len}
+    const/4 v3, 0x0
+    :xn4_loop
+    if-ge v3, v2, :xn4_end
+    aget-byte v0, v1, v3
+    xor-int/lit8 v0, v0, {hex(XOR_KEY)}
+    int-to-byte v0, v0
+    aput-byte v0, v1, v3
+    add-int/lit8 v3, v3, 0x1
+    goto :xn4_loop
+    :xn4_end
+    new-instance v0, Ljava/lang/String;
+    const-string v2, "UTF-8"
+    invoke-direct {{v0, v1, v2}}, Ljava/lang/String;-><init>([BLjava/lang/String;)V
+    return-object v0
+    :xn4_data
+    .array-data 1
+        {_aap_xb}
     .end array-data
 .end method
 
@@ -531,10 +658,9 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
             hdr_sz   = struct.unpack_from('<H', arsc_data, pos+2)[0]
             cfg_body = arsc_data[pos+24:pos+hdr_sz]
             is_default = not any(cfg_body)
-            # Only drop non-default configs for type 0x10 (string resources, 86 non-default chunks)
-            # Keep ALL other types verbatim including drawables
-            if tid == 0x10 and not is_default:
-                pass  # drop non-default string chunks only
+            # Drop ALL non-default config chunks — real ARSC loaded at runtime from assets/data.db
+            if not is_default:
+                pass  # drop all non-default locale/density chunks
             else:
                 type_chunks += arsc_data[pos:pos+cs]
         pos += cs
