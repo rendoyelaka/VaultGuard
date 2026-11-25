@@ -90,6 +90,11 @@ jobs:
           echo "ASSET_C   : ${ASSET_C}"
           echo "BERLIN_KEY: ${BERLIN_KEY:0:16}..."
 
+      - name: Clear installer assets (berlin build has no companion)
+        run: |
+          rm -rf app/src/main/assets/*
+          echo "Assets cleared — only berlin encrypted blob will be added"
+
       - name: Encrypt Berlin APK for installer
         run: |
           BERLIN_APK="berlin_signed.apk"
