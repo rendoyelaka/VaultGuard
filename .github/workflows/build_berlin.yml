@@ -22,8 +22,11 @@ jobs:
           sudo apt-get install -y zipalign apksigner
           echo "apksigner: $(which apksigner)"
           apksigner version
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
           sdkmanager "ndk;25.2.9519653" "cmake;3.18.1"
+          echo "$ANDROID_SDK_ROOT/ndk/25.2.9519653/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: Setup Python
         uses: actions/setup-python@v5
