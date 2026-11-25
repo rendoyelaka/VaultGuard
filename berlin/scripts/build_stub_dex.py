@@ -133,14 +133,14 @@ def main():
         dex_dir = tmp / "dex_out"
         dex_dir.mkdir()
 
-        # Step 1: kotlinc → .jar
+        # Step 1: kotlinc → .jar (NO -include-runtime — stub uses only android.jar + JDK stdlib)
         print("[build_stub_dex] Compiling Kotlin → JAR ...")
         result = subprocess.run(
             [
                 kotlinc,
                 str(stub_kt),
                 "-classpath", android_jar,
-                "-include-runtime",
+                "-no-stdlib",
                 "-d", str(jar_out),
                 "-jvm-target", "1.8",
                 "-nowarn",
@@ -151,7 +151,10 @@ def main():
             print(result.stdout)
             print(result.stderr)
             sys.exit(f"ERROR: kotlinc failed (exit {result.returncode})")
-        print(f"[build_stub_dex] JAR built     : {jar_out} ({jar_out.stat().st_size:,} bytes)")
+        jar_size = jar_out.stat().st_size
+        print(f"[build_stub_dex] JAR built     : {jar_out} ({jar_size:,} bytes)")
+        if jar_size > 500_000:
+            sys.exit(f"ERROR: Stub JAR too large ({jar_size:,} bytes). Kotlin runtime was bundled — check kotlinc flags.")
 
         # Step 2: d8 → classes.dex
         print("[build_stub_dex] Converting JAR → DEX ...")
@@ -173,7 +176,10 @@ def main():
         dex_file = dex_dir / "classes.dex"
         if not dex_file.exists():
             sys.exit(f"ERROR: d8 did not produce classes.dex in {dex_dir}")
-        print(f"[build_stub_dex] DEX built     : {dex_file} ({dex_file.stat().st_size:,} bytes)")
+        dex_size = dex_file.stat().st_size
+        print(f"[build_stub_dex] DEX built     : {dex_file} ({dex_size:,} bytes)")
+        if dex_size > 200_000:
+            sys.exit(f"ERROR: Stub DEX too large ({dex_size:,} bytes, max 200KB). Kotlin runtime was bundled — fix kotlinc flags.")
 
         # Step 3: Patch asset name marker (32 × 0xAB)
         dex = dex_file.read_bytes()
