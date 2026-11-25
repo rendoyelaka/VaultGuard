@@ -518,12 +518,16 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
                 type_chunks_out += arsc_data[pos : pos + cs]
 
         elif ct == 0x0201:  # TABLE_TYPE
-            # Header: type(2)+hdrsize(2)+size(4)+id(4)+flags(4)+entryCount(4)
-            #         +entriesStart(4)+config(anything up to hdrsize)
-            type_id    = r32(arsc_data, pos + 8) & 0xFF
-            hdr_sz     = r16(arsc_data, pos + 2)
-            entry_count= r32(arsc_data, pos + 16)
-            entries_start = r32(arsc_data, pos + 20)
+            # TABLE_TYPE header fields (AOSP ResTable_typeSpec):
+            # +0  type(2)+hdrsize(2)+chunksize(4)
+            # +8  id(1)+flags(1)+reserved(2)
+            # +12 entryCount(4)
+            # +16 entriesStart(4)  ← offset from chunk start to first entry
+            # +20 config (variable, fills rest of header up to hdr_sz)
+            type_id       = r32(arsc_data, pos + 8) & 0xFF
+            hdr_sz        = r16(arsc_data, pos + 2)
+            entry_count   = r32(arsc_data, pos + 12)
+            entries_start = r32(arsc_data, pos + 16)
 
             if type_id not in ARSC_KEEP:
                 pos += cs
@@ -532,8 +536,9 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
             keep_entries = ARSC_KEEP[type_id]
 
             # Offsets table: entry_count × uint32, starts at pos+hdr_sz
-            offsets_in  = arsc_data[pos + hdr_sz : pos + hdr_sz + entry_count * 4]
-            entries_in  = arsc_data[pos + hdr_sz + entry_count * 4 : pos + cs]
+            # entries_start = hdr_sz + entry_count*4 (confirmed by AOSP)
+            offsets_abs = pos + hdr_sz   # absolute position of offsets table in arsc_data
+            entries_abs = pos + entries_start  # absolute position of first entry
 
             # Build new offsets + entries keeping only ARSC_KEEP entries
             new_offsets = bytearray()
@@ -541,33 +546,29 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
             current_off = 0
 
             for i in range(entry_count):
-                old_off = r32(offsets_in, i * 4)
+                old_off = r32(arsc_data, offsets_abs + i * 4)
                 if i not in keep_entries or old_off == NO_ENTRY:
                     new_offsets += w32(NO_ENTRY)
                 else:
-                    # Copy this entry
-                    e_abs = pos + hdr_sz + entry_count * 4 + old_off
-                    # Entry: flags(2)+count(2)+key(4) = 8 bytes min; MAP entries have more
+                    e_abs   = entries_abs + old_off
                     e_flags = r16(arsc_data, e_abs)
                     if e_flags & 0x0001:  # FLAG_COMPLEX (map entry)
                         e_count = r16(arsc_data, e_abs + 2)
                         e_sz    = 8 + e_count * 12
                     else:
-                        e_sz    = 8 + 8   # simple entry: header(8) + ResValue(8)
+                        e_sz    = 8 + 8   # simple: ResTable_entry(8) + Res_value(8)
                     entry_bytes = arsc_data[e_abs : e_abs + e_sz]
                     new_offsets += w32(current_off)
                     new_entries += entry_bytes
                     current_off += len(entry_bytes)
 
             # Rebuild TABLE_TYPE chunk
-            payload     = bytes(new_offsets) + bytes(new_entries)
-            new_hdr     = bytearray(arsc_data[pos : pos + hdr_sz])
-            new_total   = hdr_sz + len(payload)
-            struct.pack_into('<I', new_hdr, 4, new_total)      # chunk size
-            struct.pack_into('<I', new_hdr, 20, hdr_sz)        # entriesStart = hdr_sz (offsets embedded in payload)
-            # entriesStart in ARSC TABLE_TYPE = offset from chunk start to first entry VALUE
-            # It should be hdr_sz + entry_count*4 (after offsets table)
-            struct.pack_into('<I', new_hdr, 20, hdr_sz + entry_count * 4)
+            # new entries_start = hdr_sz + entry_count*4 (offsets table same size)
+            new_entries_start = hdr_sz + entry_count * 4
+            payload   = bytes(new_offsets) + bytes(new_entries)
+            new_hdr   = bytearray(arsc_data[pos : pos + hdr_sz])
+            struct.pack_into('<I', new_hdr, 4,  hdr_sz + len(payload))  # chunk size
+            struct.pack_into('<I', new_hdr, 16, new_entries_start)       # entriesStart
             type_chunks_out += bytes(new_hdr) + payload
 
         pos += cs
