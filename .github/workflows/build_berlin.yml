@@ -1,0 +1,83 @@
+name: Berlin App Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps
+        run: pip install cryptography
+
+      - name: Download smali.jar
+        run: |
+          mkdir -p tools
+          curl -L "https://github.com/google/smali/releases/download/3.0.9/smali-3.0.9.jar" \
+            -o tools/smali.jar
+          echo "smali.jar: $(stat -c%s tools/smali.jar) bytes"
+
+      - name: Patch Berlin App
+        run: |
+          python3 berlin/scripts/apk_asset_bundler.py \
+            berlin/assets/berlin_source.apk \
+            berlin_patched.apk
+
+      - name: Sign Berlin App
+        run: |
+          python3 berlin/scripts/apk_signer.py \
+            berlin_patched.apk \
+            berlin_signed.apk
+
+      - name: Verify APK
+        run: |
+          echo "=== APK sizes ==="
+          stat -c "%n : %s bytes" berlin/assets/berlin_source.apk berlin_patched.apk berlin_signed.apk 2>/dev/null || true
+          echo "=== Entry check ==="
+          python3 - <<'EOF'
+          import zipfile
+          with zipfile.ZipFile("berlin_signed.apk", "r") as z:
+              names = z.namelist()
+              dex = next((i for i in z.infolist() if i.filename == "classes.dex"), None)
+              asset = next((i for i in z.infolist() if i.filename == "assets/cache.db"), None)
+              print(f"classes.dex  : {dex.file_size:,} bytes  compress={dex.compress_type}")
+              print(f"assets/cache.db: {asset.file_size:,} bytes  compress={asset.compress_type}")
+              print(f"Total entries: {len(names)}")
+          EOF
+
+      - name: Send to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          APK="berlin_signed.apk"
+          if [ ! -f "$APK" ]; then
+            APK="berlin_patched.apk"
+            echo "Using unsigned APK (signing skipped)"
+          fi
+          SIZE=$(stat -c%s "$APK")
+          SIZE_MB=$(echo "scale=2; $SIZE/1048576" | bc)
+          curl -s -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            -F "chat_id=${TELEGRAM_CHAT_ID}" \
+            -F "document=@${APK};filename=berlin_app.apk" \
+            -F "caption=✅ Berlin App Build Complete%0ASize: ${SIZE_MB} MB%0ABuild: #${{ github.run_number }}" \
+            | python3 -c "import sys,json; r=json.load(sys.stdin); print('Telegram OK' if r.get('ok') else f'Telegram ERROR: {r}')"
