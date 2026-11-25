@@ -18,7 +18,10 @@ jobs:
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          sudo apt-get install -y zipalign apksigner
+          echo "apksigner: $(which apksigner)"
+          apksigner version
 
       - name: Setup Python
         uses: actions/setup-python@v5
