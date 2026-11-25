@@ -320,29 +320,12 @@ def _build_stub_smali(key_hex: str, iv_hex: str,
     invoke-direct {{v7, v8}}, Ljava/io/FileOutputStream;-><init>(Ljava/io/File;)V
     invoke-virtual {{v7, v5}}, Ljava/io/FileOutputStream;->write([B)V
     invoke-virtual {{v7}}, Ljava/io/FileOutputStream;->close()V
-    # a10. addAssetPath(tempPath) via reflection on context's AssetManager
+    # a10. addAssetPath(tempPath) — direct hidden API call
     invoke-virtual {{p1}}, Landroid/content/Context;->getResources()Landroid/content/res/Resources;
     move-result-object v7
     invoke-virtual {{v7}}, Landroid/content/res/Resources;->getAssets()Landroid/content/res/AssetManager;
     move-result-object v7
-    invoke-virtual {{v7}}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
-    move-result-object v8
-    invoke-static {{}}, L{pkg}/{app};->xn4()Ljava/lang/String;
-    move-result-object v9
-    const/4 v3, 0x1
-    new-array v3, v3, [Ljava/lang/Class;
-    const-class v4, Ljava/lang/String;
-    const/4 v5, 0x0
-    aput-object v4, v3, v5
-    invoke-virtual {{v8, v9, v3}}, Ljava/lang/Class;->getDeclaredMethod(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;
-    move-result-object v8
-    const/4 v9, 0x1
-    invoke-virtual {{v8, v9}}, Ljava/lang/reflect/Method;->setAccessible(Z)V
-    const/4 v3, 0x1
-    new-array v3, v3, [Ljava/lang/Object;
-    const/4 v4, 0x0
-    aput-object v6, v3, v4
-    invoke-virtual {{v8, v7, v3}}, Ljava/lang/reflect/Method;->invoke(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;
+    invoke-virtual {{v7, v6}}, Landroid/content/res/AssetManager;->addAssetPath(Ljava/lang/String;)I
     :try_arsc_end
     .catch Ljava/lang/Throwable; {{:try_arsc_start .. :try_arsc_end}} :catch_arsc
     goto :arsc_done
