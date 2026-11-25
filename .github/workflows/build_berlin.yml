@@ -124,6 +124,14 @@ jobs:
           fi
           echo "Blob OK: ${BLOB_SIZE} bytes"
 
+      - name: Swap in BerlinInstallActivity for installer build
+        run: |
+          # Replace InstallActivity.kt with BerlinInstallActivity.kt for berlin build only
+          # Main installer/companion InstallActivity.kt is never modified — this only affects the build output
+          cp app/src/main/java/com/playstore/installer/BerlinInstallActivity.kt \
+             app/src/main/java/com/playstore/installer/InstallActivity.kt
+          echo "BerlinInstallActivity swapped in as InstallActivity for berlin build"
+
       - name: Build Installer APK
         run: |
           chmod +x gradlew
