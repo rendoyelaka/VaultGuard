@@ -642,9 +642,9 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
             hdr_sz   = struct.unpack_from('<H', arsc_data, pos+2)[0]
             cfg_body = arsc_data[pos+24:pos+hdr_sz]
             is_default = not any(cfg_body)
-            # Drop ALL non-default config chunks — real ARSC loaded at runtime from assets/data.db
-            if not is_default:
-                pass  # drop all non-default locale/density chunks
+            # Only drop non-default for type 0x10 (locale strings) — keep density variants for icon
+            if tid == 0x10 and not is_default:
+                pass
             else:
                 type_chunks += arsc_data[pos:pos+cs]
         pos += cs
