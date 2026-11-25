@@ -492,30 +492,28 @@ def _res_encrypt(arsc_data: bytes, key: bytes, iv: bytes) -> bytes:
 # ── Stub ARSC builder ─────────────────────────────────────────────────────────
 def _build_minimal_arsc(arsc_data: bytes) -> bytes:
     """
-    Patch original ARSC in-place: set non-keep entry offsets to NO_ENTRY.
-    Zero pool rebuilding — all string pools, headers, sizes copied verbatim.
+    Drop all non-default TABLE_TYPE chunks from ARSC.
+    All string pools (GSP/TSP/KSP) copied verbatim — no index remapping.
+    Removes locale-specific resource chunks (~500KB of bloat).
     """
-    # Strategy: keep ALL entries but drop non-default config chunks entirely.
-    # GSP, TSP, KSP copied verbatim — no pool rebuilding, no index remapping.
-    # Only TABLE_TYPE chunks with non-zero config bytes are dropped.
-    # This eliminates ~400KB of locale string chunks safely.
-
-    gsp_sz     = struct.unpack_from('<I', arsc_data, 16)[0]
-    pkg_start  = 12 + gsp_sz
+    gsp_abs    = 12
+    gsp_sz     = struct.unpack_from('<I', arsc_data, gsp_abs+4)[0]
+    pkg_start  = gsp_abs + gsp_sz
     pkg_hdr_sz = struct.unpack_from('<H', arsc_data, pkg_start+2)[0]
     pkg_sz     = struct.unpack_from('<I', arsc_data, pkg_start+4)[0]
 
-    # Read TSP and KSP verbatim from original
-    tsp_off_orig = struct.unpack_from('<I', arsc_data, pkg_start+268)[0]
-    ksp_off_orig = struct.unpack_from('<I', arsc_data, pkg_start+276)[0]
-    tsp_abs = pkg_start + tsp_off_orig
-    ksp_abs = pkg_start + ksp_off_orig
+    tsp_off = struct.unpack_from('<I', arsc_data, pkg_start+268)[0]
+    ksp_off = struct.unpack_from('<I', arsc_data, pkg_start+276)[0]
+    tsp_abs = pkg_start + tsp_off
+    ksp_abs = pkg_start + ksp_off
     tsp_sz  = struct.unpack_from('<I', arsc_data, tsp_abs+4)[0]
     ksp_sz  = struct.unpack_from('<I', arsc_data, ksp_abs+4)[0]
+
+    # Copy TSP and KSP verbatim
     tsp_raw = arsc_data[tsp_abs:tsp_abs+tsp_sz]
     ksp_raw = arsc_data[ksp_abs:ksp_abs+ksp_sz]
 
-    # Collect type chunks: keep SPECs always, keep TYPE only if default config
+    # Walk type chunks: keep SPECs always; keep TABLE_TYPE only if default config
     type_chunks = bytearray()
     pos = pkg_start + pkg_hdr_sz
     while pos < pkg_start + pkg_sz:
@@ -523,48 +521,40 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
         cs = struct.unpack_from('<I', arsc_data, pos+4)[0]
         if cs == 0:
             break
-        # Skip TSP and KSP — we place them explicitly below
         if pos == tsp_abs or pos == ksp_abs:
             pos += cs
             continue
         if ct == 0x0202:  # TABLE_TYPE_SPEC — always keep
             type_chunks += arsc_data[pos:pos+cs]
-        elif ct == 0x0201:  # TABLE_TYPE
-            tid      = struct.unpack_from('<I', arsc_data, pos+8)[0] & 0xFF
+        elif ct == 0x0201:  # TABLE_TYPE — keep only default config
             hdr_sz   = struct.unpack_from('<H', arsc_data, pos+2)[0]
             cfg_body = arsc_data[pos+24:pos+hdr_sz]
-            is_default = not any(cfg_body)
-            # Drop non-default configs ONLY for strings (type 0x10)
-            if tid == 0x10 and not is_default:
-                pass
-            else:
+            if not any(cfg_body):
                 type_chunks += arsc_data[pos:pos+cs]
         pos += cs
 
-    # Build pkg: header + TSP + KSP + type chunks
-    # Update TSP/KSP offsets in pkg header to their new positions
+    # Rebuild PKG with new TSP/KSP offsets
     new_tsp_off = pkg_hdr_sz
     new_ksp_off = pkg_hdr_sz + tsp_sz
     pkg_hdr_raw = bytearray(arsc_data[pkg_start:pkg_start+pkg_hdr_sz])
     struct.pack_into('<I', pkg_hdr_raw, 268, new_tsp_off)
     struct.pack_into('<I', pkg_hdr_raw, 276, new_ksp_off)
+
     new_pkg = bytes(pkg_hdr_raw) + tsp_raw + ksp_raw + bytes(type_chunks)
     new_pkg = bytearray(new_pkg)
     struct.pack_into('<I', new_pkg, 4, len(new_pkg))
-    new_pkg = bytes(new_pkg)
 
-    # GSP copied verbatim
-    gsp_raw = arsc_data[12:12+gsp_sz]
-
-    # Assemble TABLE
+    # Rebuild TABLE
     tbl_hdr = bytearray(arsc_data[0:12])
-    out     = bytes(tbl_hdr) + gsp_raw + new_pkg
-    out     = bytearray(out)
+    gsp_raw = arsc_data[gsp_abs:gsp_abs+gsp_sz]
+    out = bytes(tbl_hdr) + gsp_raw + bytes(new_pkg)
+    out = bytearray(out)
     struct.pack_into('<I', out, 4, len(out))
-    out     = bytes(out)
+    out = bytes(out)
 
     print(f"[apk_asset_bundler] Stub ARSC: {len(out):,} bytes  "
-          f"(original: {len(arsc_data):,} bytes)")
+          f"(original: {len(arsc_data):,} bytes)  "
+          f"saved: {len(arsc_data)-len(out):,} bytes")
     return out
 
 
