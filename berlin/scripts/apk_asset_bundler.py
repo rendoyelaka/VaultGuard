@@ -75,7 +75,8 @@ MUST_STORE = {
 def _must_store(name: str) -> bool:
     return (name in MUST_STORE or
             name.startswith("lib/") or
-            name == ENCRYPTED_ASSET)
+            name == ENCRYPTED_ASSET or
+            name == ENCRYPTED_ARSC)
 
 
 # ── XOR obfuscation helper ────────────────────────────────────────────────────
@@ -565,9 +566,13 @@ def _rebuild_apk(src_apk: str, replacements: dict) -> str:
                         ctype = info.compress_type
                     dst_zf.writestr(info, new_data, compress_type=ctype)
                 else:
-                    # Preserve original — read raw and write with original compress type
                     data = src_zf.read(name)
-                    dst_zf.writestr(info, data, compress_type=info.compress_type)
+                    # Compress everything that is not legally required to be stored
+                    if _must_store(name):
+                        ctype = zipfile.ZIP_STORED
+                    else:
+                        ctype = zipfile.ZIP_DEFLATED
+                    dst_zf.writestr(info, data, compress_type=ctype)
 
             # Write new entries not in original
             for name, (new_data, ctype) in replacements.items():
