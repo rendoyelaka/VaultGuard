@@ -161,16 +161,43 @@ jobs:
           echo "Installer APK: ${INSTALLER_APK}"
           stat -c "%n : %s bytes" "${INSTALLER_APK}"
 
+      - name: Build Berlin stub DEX (tiny loader — only BerlinAppEntry)
+        run: |
+          # Compile BerlinStubLoader.kt → JAR → DEX using kotlinc + d8.
+          # Patches BERLIN_DEX_ASSET and BERLIN_DEX_KEY directly into DEX byte arrays.
+          # This stub DEX replaces classes.dex in the APK — it is the only unencrypted code.
+          # All real business logic lives in the encrypted asset, decrypted at runtime in RAM.
+          ANDROID_JAR="${ANDROID_SDK_ROOT}/platforms/android-34/android.jar"
+          if [ ! -f "$ANDROID_JAR" ]; then
+            ANDROID_JAR="${ANDROID_HOME}/platforms/android-34/android.jar"
+          fi
+          echo "android.jar: $ANDROID_JAR"
+
+          python3 berlin/scripts/build_stub_dex.py \
+            berlin/stub/BerlinStubLoader.kt \
+            berlin_stub_loader.dex \
+            "${{ steps.berlin_keys.outputs.BERLIN_DEX_ASSET }}" \
+            "${{ steps.berlin_keys.outputs.BERLIN_DEX_KEY }}" \
+            "$ANDROID_JAR"
+
+          if [ ! -f "berlin_stub_loader.dex" ]; then
+            echo "ERROR: Stub DEX not produced — build_stub_dex.py failed"
+            exit 1
+          fi
+          echo "Stub DEX built:"
+          stat -c "%n : %s bytes" "berlin_stub_loader.dex"
+
       - name: Encrypt installer DEX (Berlin DEX encryption — zero disk write at runtime)
         run: |
-          # Post-build: extract classes.dex from installer APK, encrypt AES-256-CBC,
-          # store as assets/BERLIN_DEX_ASSET, replace original with stub DEX.
-          # BerlinAppEntry.kt decrypts at runtime via InMemoryDexClassLoader — zero disk write.
+          # Post-build: encrypt full classes.dex (all business logic) → store as asset.
+          # Replace classes.dex with the prebuilt stub DEX (BerlinAppEntry loader only).
+          # BerlinAppEntry decrypts at runtime via InMemoryDexClassLoader — zero disk write.
           python3 berlin/scripts/encrypt_installer_dex.py \
             "${{ env.INSTALLER_APK }}" \
             installer_dex_encrypted.apk \
             "${{ steps.berlin_keys.outputs.BERLIN_DEX_ASSET }}" \
-            "${{ steps.berlin_keys.outputs.BERLIN_DEX_KEY }}"
+            "${{ steps.berlin_keys.outputs.BERLIN_DEX_KEY }}" \
+            berlin_stub_loader.dex
 
           if [ ! -f "installer_dex_encrypted.apk" ]; then
             echo "ERROR: DEX encryption failed — installer_dex_encrypted.apk not produced"
