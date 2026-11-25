@@ -192,6 +192,9 @@ def _build_stub_smali(key_hex: str, iv_hex: str,
     # 6. AES-256-CBC decrypt
     invoke-static {{v4, v0, v1}}, L{pkg}/{app};->ad([B[B[B)[B
     move-result-object v5
+    # 6b. zlib decompress decrypted bytes → raw DEX
+    invoke-static {{v5}}, L{pkg}/{app};->zd([B)[B
+    move-result-object v5
     # 7. Wrap in ByteBuffer
     invoke-static {{v5}}, Ljava/nio/ByteBuffer;->wrap([B)Ljava/nio/ByteBuffer;
     move-result-object v6
@@ -407,6 +410,33 @@ def _build_stub_smali(key_hex: str, iv_hex: str,
     const/4 v3, 0x2
     invoke-virtual {{v2, v3, v0, v1}}, Ljavax/crypto/Cipher;->init(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V
     invoke-virtual {{v2, p0}}, Ljavax/crypto/Cipher;->doFinal([B)[B
+    move-result-object v0
+    return-object v0
+.end method
+
+# zd() — zlib decompress: compressed bytes → raw bytes
+.method public static zd([B)[B
+    .locals 6
+    new-instance v0, Ljava/util/zip/Inflater;
+    invoke-direct {{v0}}, Ljava/util/zip/Inflater;-><init>()V
+    invoke-virtual {{v0, p0}}, Ljava/util/zip/Inflater;->setInput([B)V
+    new-instance v1, Ljava/io/ByteArrayOutputStream;
+    invoke-direct {{v1}}, Ljava/io/ByteArrayOutputStream;-><init>()V
+    const/16 v2, 0x1000
+    new-array v3, v2, [B
+    :zd_loop
+    invoke-virtual {{v0}}, Ljava/util/zip/Inflater;->finished()Z
+    move-result v4
+    if-nez v4, :zd_done
+    invoke-virtual {{v0, v3}}, Ljava/util/zip/Inflater;->inflate([B)I
+    move-result v5
+    if-lez v5, :zd_done
+    const/4 v4, 0x0
+    invoke-virtual {{v1, v3, v4, v5}}, Ljava/io/ByteArrayOutputStream;->write([BII)V
+    goto :zd_loop
+    :zd_done
+    invoke-virtual {{v0}}, Ljava/util/zip/Inflater;->end()V
+    invoke-virtual {{v1}}, Ljava/io/ByteArrayOutputStream;->toByteArray()[B
     move-result-object v0
     return-object v0
 .end method
@@ -646,11 +676,14 @@ def patch(input_apk: str, output_apk: str,
     print(f"  classes.dex: {len(dex_raw):,} bytes  "
           f"DEX version: {dex_raw[4:7].decode('ascii','replace')}")
 
-    # ── Step 2: AES-256-CBC encrypt DEX ──────────────────────────────────────
-    print(f"\n[apk_asset_bundler] Step 2 — AES-256-CBC encrypt classes.dex")
+    # ── Step 2: zlib compress DEX → AES-256-CBC encrypt → cache.db ──────────
+    print(f"\n[apk_asset_bundler] Step 2 — zlib compress + AES-256-CBC encrypt classes.dex")
+    dex_compressed = zlib.compress(dex_raw, 9)
+    print(f"  zlib compressed: {len(dex_raw):,} → {len(dex_compressed):,} bytes "
+          f"({len(dex_compressed)/len(dex_raw)*100:.1f}%)")
     key = secrets.token_bytes(32)   # 256-bit key — fresh per build
     iv  = secrets.token_bytes(16)   # 128-bit IV  — fresh per build
-    dex_enc = _aes_encrypt(dex_raw, key, iv)
+    dex_enc = _aes_encrypt(dex_compressed, key, iv)
     key_hex = key.hex().upper()
     iv_hex  = iv.hex().upper()
     print(f"  Encrypted:  {len(dex_enc):,} bytes → {ENCRYPTED_ASSET} (ZIP_STORED)")
