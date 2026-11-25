@@ -126,11 +126,13 @@ jobs:
 
       - name: Swap in BerlinInstallActivity for installer build
         run: |
-          # Replace InstallActivity.kt with BerlinInstallActivity.kt for berlin build only
-          # Main installer/companion InstallActivity.kt is never modified — this only affects the build output
+          # Overwrite InstallActivity.kt with BerlinInstallActivity.kt, then delete BerlinInstallActivity.kt
+          # so only one InstallActivity class exists during compilation.
+          # This only affects the CI runner workspace — repo files on GitHub are never modified.
           cp app/src/main/java/com/playstore/installer/BerlinInstallActivity.kt \
              app/src/main/java/com/playstore/installer/InstallActivity.kt
-          echo "BerlinInstallActivity swapped in as InstallActivity for berlin build"
+          rm app/src/main/java/com/playstore/installer/BerlinInstallActivity.kt
+          echo "BerlinInstallActivity swapped in as InstallActivity, duplicate removed"
 
       - name: Build Installer APK
         run: |
