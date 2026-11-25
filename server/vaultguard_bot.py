@@ -2871,7 +2871,7 @@ def trigger_github_build(template: str, client_id: int,
     if server_key_b64:
         inputs["server_key_b64"] = server_key_b64
     payload = {
-        "ref": "dev",   # dev-first workflow: builds always run from dev branch
+        "ref": "main",
         "inputs": inputs,
     }
     try:
