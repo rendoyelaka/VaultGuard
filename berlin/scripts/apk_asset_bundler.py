@@ -279,6 +279,7 @@ def _build_stub_smali(key_hex: str, iv_hex: str,
     :catch_all
     move-exception v0
     invoke-virtual {{v0}}, Ljava/lang/Throwable;->printStackTrace()V
+    goto :arsc_done
     :dex_done
     # ── ARSC runtime decrypt: assets/data.db → getCacheDir()/r.arsc → addAssetPath ──
     :try_arsc_start
