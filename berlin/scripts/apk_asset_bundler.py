@@ -557,10 +557,9 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
         if cs == 0:
             break
 
-        if ct == 0x0202:  # TABLE_TYPE_SPEC
+        if ct == 0x0202:  # TABLE_TYPE_SPEC — always keep for type continuity
             tid = struct.unpack_from('<I', arsc_data, pos+8)[0] & 0xFF
-            if tid in ARSC_KEEP:
-                type_chunks_raw.append((tid, True, arsc_data[pos:pos+cs], []))
+            type_chunks_raw.append((tid, True, arsc_data[pos:pos+cs], []))
 
         elif ct == 0x0201:  # TABLE_TYPE
             tid           = struct.unpack_from('<I', arsc_data, pos+8)[0] & 0xFF
@@ -568,7 +567,18 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
             entry_count   = struct.unpack_from('<I', arsc_data, pos+12)[0]
             entries_start = struct.unpack_from('<I', arsc_data, pos+16)[0]
 
+            # Non-keep types: emit one all-NO_ENTRY TYPE chunk for the default config only
             if tid not in ARSC_KEEP:
+                cfg_body = arsc_data[pos+24 : pos+hdr_sz]
+                if any(cfg_body):
+                    pos += cs
+                    continue
+                null_offsets = w32(NO_ENTRY) * entry_count
+                new_es  = hdr_sz + entry_count * 4
+                new_hdr = bytearray(arsc_data[pos : pos + hdr_sz])
+                struct.pack_into('<I', new_hdr, 4,  hdr_sz + len(null_offsets))
+                struct.pack_into('<I', new_hdr, 16, new_es)
+                type_chunks_raw.append((tid, False, bytes(new_hdr) + null_offsets, []))
                 pos += cs
                 continue
 
