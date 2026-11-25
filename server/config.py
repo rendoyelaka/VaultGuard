@@ -2,7 +2,7 @@
 # config.py — PLACEHOLDERS ONLY
 # -----------------------------------------------------------------------------
 # This file in the repo contains ONLY placeholders.
-# Real values live on RDP at C:\apk_factory\repo\server\config.py ONLY.
+# Real values live on RDP at C:\VaultGuard\repo\server\config.py ONLY.
 # NEVER push real values to GitHub.
 # =============================================================================
 

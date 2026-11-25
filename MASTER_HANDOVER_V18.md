@@ -79,9 +79,9 @@ Remote URL: https://[TOKEN]@github.com/rendoyelaka/vaultguard.git
 
 ### Windows 10 RDP Server
 ```
-Path:         C:\apk_factory\
-Repo:         C:\apk_factory\repo\
-Flask server: C:\apk_factory\repo\server\update_server.py
+Path:         C:\VaultGuard\
+Repo:         C:\VaultGuard\repo\
+Flask server: C:\VaultGuard\repo\server\update_server.py
 Port:         2053
 CLIENT_TOKEN: manual
 ```

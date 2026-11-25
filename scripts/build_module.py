@@ -29,7 +29,7 @@ from folder_nester import inject_unicode_nest
 def _find_apktool_cmd():
     import platform, shutil as _sh
     if platform.system() == "Windows":
-        _factory = r"C:\apk_factory\tools"
+        _factory = r"C:\VaultGuard\tools"
         _java    = os.path.join(_factory, "java17", "bin", "java.exe")
         _jar     = os.path.join(_factory, "apktool.jar")
         _java_home = os.environ.get("JAVA_HOME", "")
