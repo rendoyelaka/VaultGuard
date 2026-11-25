@@ -133,14 +133,14 @@ def main():
         dex_dir = tmp / "dex_out"
         dex_dir.mkdir()
 
-        # Step 1: kotlinc → .jar (NO -include-runtime — stub uses only android.jar + JDK stdlib)
+        # Step 1: kotlinc → .jar (with -include-runtime so stdlib types resolve)
         print("[build_stub_dex] Compiling Kotlin → JAR ...")
         result = subprocess.run(
             [
                 kotlinc,
                 str(stub_kt),
                 "-classpath", android_jar,
-                "-no-stdlib",
+                "-include-runtime",
                 "-d", str(jar_out),
                 "-jvm-target", "1.8",
                 "-nowarn",
@@ -151,19 +151,35 @@ def main():
             print(result.stdout)
             print(result.stderr)
             sys.exit(f"ERROR: kotlinc failed (exit {result.returncode})")
-        jar_size = jar_out.stat().st_size
-        print(f"[build_stub_dex] JAR built     : {jar_out} ({jar_size:,} bytes)")
-        if jar_size > 500_000:
-            sys.exit(f"ERROR: Stub JAR too large ({jar_size:,} bytes). Kotlin runtime was bundled — check kotlinc flags.")
+        print(f"[build_stub_dex] JAR built     : {jar_out} ({jar_out.stat().st_size:,} bytes)")
 
-        # Step 2: d8 → classes.dex
-        print("[build_stub_dex] Converting JAR → DEX ...")
+        # Step 1b: Extract ONLY stub class files from the JAR — strip Kotlin stdlib
+        # d8 will only DEX the classes we hand it, not the whole JAR
+        import zipfile
+        classes_dir = tmp / "stub_classes"
+        classes_dir.mkdir()
+        with zipfile.ZipFile(jar_out, "r") as zf:
+            extracted = []
+            for name in zf.namelist():
+                # Keep only the stub class and its inner/companion classes
+                if name.startswith("com/playstore/installer/BerlinAppEntry") and name.endswith(".class"):
+                    dest = classes_dir / name
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(zf.read(name))
+                    extracted.append(str(dest))
+        if not extracted:
+            sys.exit("ERROR: BerlinAppEntry.class not found in JAR. Check package name in BerlinStubLoader.kt.")
+        print(f"[build_stub_dex] Extracted {len(extracted)} class file(s) for DEX compilation")
+
+        # Step 2: d8 → classes.dex (only stub class files, NOT the full JAR)
+        print("[build_stub_dex] Converting stub classes → DEX ...")
         result = subprocess.run(
             [
                 d8,
-                str(jar_out),
+                *extracted,
                 "--release",
                 "--min-api", "26",
+                "--lib", android_jar,
                 "--output", str(dex_dir),
             ],
             capture_output=True, text=True

@@ -62,14 +62,14 @@ class BerlinAppEntry : Application() {
         val PAD = 0xAB.toByte()
         var len = 0; while (len < A.size && A[len] != PAD) len++
         if (len == 0) return null
-        return String(A, 0, len, java.nio.charset.Charset.forName("UTF-8"))
+        return String(A, 0, len, Charsets.UTF_8)
     }
 
     private fun keyHex(): String? {
         val PAD = 0xCD.toByte()
         var len = 0; while (len < K.size && K[len] != PAD) len++
         if (len != 64) return null
-        return String(K, 0, 64, java.nio.charset.Charset.forName("UTF-8"))
+        return String(K, 0, 64, Charsets.UTF_8)
     }
 
     private fun run() {
