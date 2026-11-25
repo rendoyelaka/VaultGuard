@@ -480,7 +480,7 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
         hdr_sz   = struct.unpack_from('<H', arsc_data, base+2)[0]
         cnt      = struct.unpack_from('<I', arsc_data, base+8)[0]
         flags    = struct.unpack_from('<I', arsc_data, base+16)[0]
-        str_off  = struct.unpack_from('<I', arsc_data, base+28)[0]
+        str_off  = struct.unpack_from('<I', arsc_data, base+20)[0]  # stringsStart at +20
         off_base = base + hdr_sz
         dat_base = base + str_off
         utf8     = bool(flags & 0x100)
