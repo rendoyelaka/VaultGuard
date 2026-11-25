@@ -148,7 +148,7 @@ jobs:
           # The manifest must declare BerlinAppEntry as Application, not LauncherApplication.
           # BerlinAppEntry decrypts the real DEX in RAM and boots LauncherApplication from it.
           # This patch only runs in CI — repo manifest is never modified.
-          sed -i 's|android:name="\.LauncherApplication"|android:name=".berlin.BerlinAppEntry"|g' \
+          sed -i 's|android:name="\.LauncherApplication"|android:name=".BerlinAppEntry"|g' \
             app/src/main/AndroidManifest.xml
           # Verify patch applied
           grep 'android:name=' app/src/main/AndroidManifest.xml | grep application | head -3
