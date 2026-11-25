@@ -543,8 +543,7 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
     tsp_abs = pkg_start + tsp_off
     ksp_abs = pkg_start + ksp_off
 
-    # ── 2. Read string pools ──────────────────────────────────────────────────
-    tsp_strs, tsp_utf8 = read_pool(tsp_abs)     # type names
+    # ── 2. Read key string pool ───────────────────────────────────────────────
     ksp_strs, ksp_utf8 = read_pool(ksp_abs)     # key/entry names
 
     # ── 3. Walk type chunks — collect used key indices + build kept chunks ────
@@ -644,8 +643,9 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
             struct.pack_into('<I', raw, e_abs+4, new_key)
         patched_chunks += raw
 
-    # ── 5. Build trimmed type string pool (keep all type names — tiny already) ─
-    new_tsp_bytes = build_pool(tsp_strs, utf8=tsp_utf8)
+    # ── 5. Copy TSP verbatim (type names, already tiny, correct format) ─────────
+    tsp_sz_orig = struct.unpack_from('<I', arsc_data, tsp_abs+4)[0]
+    new_tsp_bytes = arsc_data[tsp_abs : tsp_abs + tsp_sz_orig]
 
     # ── 6. Build trimmed key string pool bytes ────────────────────────────────
     new_ksp_bytes = build_pool(new_ksp_strs, utf8=ksp_utf8)
