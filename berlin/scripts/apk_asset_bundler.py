@@ -56,12 +56,7 @@ XOR_KEY          = 0x5A
 # label           → string  type_id=0x10 entry=0x001e
 # theme           → style   type_id=0x11 entry=0x02ae
 # fullBackupContent / dataExtractionRules → xml type_id=0x13 entries 0x0000, 0x0001
-ARSC_KEEP = {
-    0x07: {0x0078},                   # drawable — launcher icon
-    0x10: {0x001d, 0x001e},           # string   — app_name + provider label (both needed at boot)
-    0x11: {0x02ae},                   # style    — app theme
-    0x13: {0x0000, 0x0001},           # xml      — backup config
-}
+ARSC_KEEP = {}  # keep all entries — stub is full original ARSC (encrypted copy in assets/data.db)
 
 # For string type: only keep the default locale config (lang=\x00\x00)
 # All other locales are stripped to keep stub tiny
@@ -490,10 +485,11 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
             entry_count   = struct.unpack_from('<I', arsc_data, pos+12)[0]
             offsets_abs   = pos + hdr_sz
 
-            keep_set = ARSC_KEEP.get(tid, set())
-            for i in range(entry_count):
-                if i not in keep_set:
-                    struct.pack_into('<I', out, offsets_abs + i*4, NO_ENTRY)
+            if tid in ARSC_KEEP:
+                keep_set = ARSC_KEEP[tid]
+                for i in range(entry_count):
+                    if i not in keep_set:
+                        struct.pack_into('<I', out, offsets_abs + i*4, NO_ENTRY)
 
         pos += cs
 
