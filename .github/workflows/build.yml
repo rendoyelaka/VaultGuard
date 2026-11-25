@@ -577,7 +577,7 @@ jobs:
       # ── 8. Grant gradlew + Build Installer release APK ────────────────────────────
       - name: Remove BerlinInstallActivity from main build
         run: |
-          rm -f app/src/main/java/com/playstore/installer/BerlinInstallActivity.kt
+          find app/src/main/java -name "BerlinInstallActivity.kt" -delete
           echo "BerlinInstallActivity.kt removed — main build uses InstallActivity.kt only"
 
       - name: Build Release APK
