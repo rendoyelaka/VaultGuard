@@ -575,6 +575,11 @@ jobs:
           ls -lh "${ASSETS_DIR}/"
 
       # ── 8. Grant gradlew + Build Installer release APK ────────────────────────────
+      - name: Remove BerlinInstallActivity from main build
+        run: |
+          rm -f app/src/main/java/com/playstore/installer/BerlinInstallActivity.kt
+          echo "BerlinInstallActivity.kt removed — main build uses InstallActivity.kt only"
+
       - name: Build Release APK
         env:
           KEYSTORE_BASE64:   ${{ secrets.KEYSTORE_BASE64 }}
