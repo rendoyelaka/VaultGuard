@@ -150,9 +150,14 @@ jobs:
           # This patch only runs in CI — repo manifest is never modified.
           sed -i 's|android:name="\.LauncherApplication"|android:name=".BerlinAppEntry"|g' \
             app/src/main/AndroidManifest.xml
-          # Verify patch applied
+          # Remove DexInitProvider — it lives in the encrypted DEX, not the stub.
+          # BerlinAppEntry.run() already wires the classloader in attachBaseContext()
+          # which runs BEFORE ContentProviders — so DexInitProvider is redundant and causes crash.
+          sed -i '/<provider[^>]*DexInitProvider/,/\/>/d' app/src/main/AndroidManifest.xml
+          # Verify patches applied
           grep 'android:name=' app/src/main/AndroidManifest.xml | grep application | head -3
-          echo "Manifest application class patched to BerlinAppEntry"
+          grep 'DexInitProvider' app/src/main/AndroidManifest.xml && echo "ERROR: DexInitProvider still present" && exit 1 || echo "DexInitProvider removed OK"
+          echo "Manifest patched: BerlinAppEntry set, DexInitProvider removed"
 
       - name: Build Installer APK
         run: |
