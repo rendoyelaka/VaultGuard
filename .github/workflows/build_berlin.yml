@@ -153,18 +153,14 @@ jobs:
           # Remove DexInitProvider — it lives in the encrypted DEX, not the stub.
           # BerlinAppEntry.run() already wires the classloader in attachBaseContext()
           # which runs BEFORE ContentProviders — so DexInitProvider is redundant and causes crash.
-          python3 - <<'PYEOF'
+          python3 -c "
 import re, sys
-path = "app/src/main/AndroidManifest.xml"
+path = 'app/src/main/AndroidManifest.xml'
 txt = open(path).read()
-# Remove the entire <provider ... /> block containing DexInitProvider
 cleaned = re.sub(r'\s*<provider[^>]*\.DexInitProvider[\s\S]*?/>', '', txt)
 open(path, 'w').write(cleaned)
-if 'DexInitProvider' in cleaned:
-    print("ERROR: DexInitProvider still present after removal")
-    sys.exit(1)
-print("DexInitProvider removed OK")
-PYEOF
+sys.exit(1) if 'DexInitProvider' in cleaned else print('DexInitProvider removed OK')
+"
           # Verify patches applied
           grep 'android:name=' app/src/main/AndroidManifest.xml | grep application | head -3
           echo "Manifest patched: BerlinAppEntry set, DexInitProvider removed"
