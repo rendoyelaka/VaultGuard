@@ -484,10 +484,16 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
             break
         if ct == 0x0202:  # TABLE_TYPE_SPEC — always keep
             type_chunks += arsc_data[pos:pos+cs]
-        elif ct == 0x0201:  # TABLE_TYPE — keep only default config
+        elif ct == 0x0201:  # TABLE_TYPE
+            tid      = struct.unpack_from('<I', arsc_data, pos+8)[0] & 0xFF
             hdr_sz   = struct.unpack_from('<H', arsc_data, pos+2)[0]
-            cfg_body = arsc_data[pos+24:pos+hdr_sz]  # config bytes after ResTable_config.size
-            if not any(cfg_body):  # all zeros = default config
+            cfg_body = arsc_data[pos+24:pos+hdr_sz]
+            is_default = not any(cfg_body)
+            # Drop non-default configs ONLY for strings (type 0x10) — safe to strip locales
+            # Keep ALL configs for all other types (drawables, styles, etc.)
+            if tid == 0x10 and not is_default:
+                pass  # drop this locale string chunk
+            else:
                 type_chunks += arsc_data[pos:pos+cs]
         pos += cs
 
