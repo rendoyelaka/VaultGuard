@@ -1,19 +1,43 @@
-import re, sys
+import sys
+import xml.etree.ElementTree as ET
+
+ET.register_namespace('android', 'http://schemas.android.com/apk/res/android')
+ET.register_namespace('tools', 'http://schemas.android.com/tools')
+ET.register_namespace('', '')
 
 path = "app/src/main/AndroidManifest.xml"
-txt = open(path).read()
 
-# Remove the <provider> block containing DexInitProvider
-cleaned = re.sub(r'\s*<provider[^>]*\.DexInitProvider[\s\S]*?/>', '', txt)
+# Parse preserving namespaces
+tree = ET.parse(path)
+root = tree.getroot()
 
-# Also remove the comment block about DexInitProvider
-cleaned = re.sub(r'\s*<!--[\s\S]*?DexInitProvider[\s\S]*?-->', '', cleaned)
+ns = {'android': 'http://schemas.android.com/apk/res/android'}
 
-open(path, 'w').write(cleaned)
-
-# Check only for XML tag — not comments
-if re.search(r'<provider[^>]*DexInitProvider', cleaned):
-    print("ERROR: DexInitProvider provider tag still present")
+app_elem = root.find('application')
+if app_elem is None:
+    print("ERROR: <application> element not found")
     sys.exit(1)
 
-print("DexInitProvider removed OK")
+# Find and remove the DexInitProvider <provider> element
+to_remove = None
+for child in list(app_elem):
+    name_attr = child.get('{http://schemas.android.com/apk/res/android}name', '')
+    if 'DexInitProvider' in name_attr:
+        to_remove = child
+        break
+
+if to_remove is not None:
+    app_elem.remove(to_remove)
+    print("DexInitProvider provider element removed OK")
+else:
+    print("DexInitProvider not found — already absent or never present")
+
+tree.write(path, xml_declaration=True, encoding='utf-8')
+
+# Verify XML is valid after write
+try:
+    ET.parse(path)
+    print("XML valid after patch")
+except ET.ParseError as e:
+    print(f"ERROR: XML invalid after patch: {e}")
+    sys.exit(1)
