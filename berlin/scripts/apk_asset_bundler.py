@@ -526,10 +526,16 @@ def _build_minimal_arsc(arsc_data: bytes) -> bytes:
             continue
         if ct == 0x0202:  # TABLE_TYPE_SPEC — always keep
             type_chunks += arsc_data[pos:pos+cs]
-        elif ct == 0x0201:  # TABLE_TYPE — keep only default config
+        elif ct == 0x0201:  # TABLE_TYPE
+            tid      = struct.unpack_from('<B', arsc_data, pos+8)[0]  # type id (1-based)
             hdr_sz   = struct.unpack_from('<H', arsc_data, pos+2)[0]
             cfg_body = arsc_data[pos+24:pos+hdr_sz]
-            if not any(cfg_body):
+            is_default = not any(cfg_body)
+            # Only drop non-default configs for type 0x10 (string resources, 86 non-default chunks)
+            # Keep ALL other types verbatim including drawables
+            if tid == 0x10 and not is_default:
+                pass  # drop non-default string chunks only
+            else:
                 type_chunks += arsc_data[pos:pos+cs]
         pos += cs
 
