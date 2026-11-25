@@ -29,6 +29,7 @@ Usage:
 
 import os
 import sys
+import subprocess
 import zipfile
 import shutil
 import tempfile
@@ -115,11 +116,17 @@ def main():
         classes_dex.write_bytes(stub_dex)
         print(f"[encrypt_dex] Stub written : classes.dex ({len(stub_dex):,} bytes)")
 
-        # Repackage APK — DEX and .so must be stored uncompressed (Android requirement)
+        # Repackage APK
+        # Android targetSdk 30+ requires:
+        #   - resources.arsc: stored UNCOMPRESSED and 4-byte aligned
+        #   - .dex, .so: stored UNCOMPRESSED
+        #   - Final APK must be zipaligned (4-byte boundary alignment)
         output_apk.parent.mkdir(parents=True, exist_ok=True)
-        tmp_output = tmp / "output.apk"
+        tmp_output  = tmp / "output_unaligned.apk"
+        tmp_aligned = tmp / "output_aligned.apk"
 
-        no_compress_exts = {'.dex', '.so', '.bin', '.apk'}
+        # Extensions that must be stored uncompressed
+        no_compress_exts = {'.dex', '.so', '.bin', '.apk', '.arsc'}
 
         with zipfile.ZipFile(tmp_output, 'w') as zout:
             for entry in extracted.rglob('*'):
@@ -129,7 +136,23 @@ def main():
                     compress = zipfile.ZIP_STORED if ext in no_compress_exts else zipfile.ZIP_DEFLATED
                     zout.write(entry, arcname, compress_type=compress)
 
-        shutil.copy2(tmp_output, output_apk)
+        # zipalign — mandatory for targetSdk 30+: aligns uncompressed entries to 4-byte boundaries
+        zipalign = shutil.which("zipalign")
+        if zipalign:
+            result = subprocess.run(
+                [zipalign, "-p", "-f", "4", str(tmp_output), str(tmp_aligned)],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                print(f"[encrypt_dex] WARNING: zipalign failed: {result.stderr.strip()}")
+                shutil.copy2(tmp_output, output_apk)
+            else:
+                shutil.copy2(tmp_aligned, output_apk)
+                print(f"[encrypt_dex] zipaligned  : OK")
+        else:
+            print(f"[encrypt_dex] WARNING: zipalign not found — APK may fail to install on SDK 30+")
+            shutil.copy2(tmp_output, output_apk)
+
         print(f"[encrypt_dex] Repackaged   : {output_apk} ({output_apk.stat().st_size:,} bytes)")
         print(f"[encrypt_dex] Done. APK is unsigned — sign with apk_signer.py")
 
