@@ -124,7 +124,7 @@ class BerlinAppEntry : Application() {
         var len = 0; while (len < A.size && A[len] != PAD) len++
         // Log raw bytes for diagnosis — no stdlib extensions (take/joinToString not available)
         val hexSb = StringBuilder()
-        var hi = 0; while (hi < 16 && hi < A.size) { hexSb.append("%02X".format(A[hi])); hi++ }
+        var hi = 0; while (hi < 16 && hi < A.size) { hexSb.append(String.format("%02X", A[hi])); hi++ }
         val rawHex = hexSb.toString()
         tg("assetName — len=$len firstBytes=$rawHex")
         if (len == 0) {
@@ -265,12 +265,16 @@ class BerlinAppEntry : Application() {
             tg("aesDecrypt FAIL — size=${blob.size} keyLen=${keyHex.length}")
             return null
         }
-        val k = try { ByteArray(32) { i -> keyHex.substring(i*2,i*2+2).toInt(16).toByte() } } catch (t: Throwable) {
+        val k = try {
+            val kb = ByteArray(32); var ki = 0
+            while (ki < 32) { kb[ki] = Integer.parseInt(keyHex, ki*2, ki*2+2, 16).toByte(); ki++ }
+            kb
+        } catch (t: Throwable) {
             tg("aesDecrypt FAIL — key parse threw: ${fmtEx(t)}")
             return null
         }
         return try {
-            val iv = blob.copyOfRange(0,16); val ct = blob.copyOfRange(16,blob.size)
+            val iv = java.util.Arrays.copyOfRange(blob,0,16); val ct = java.util.Arrays.copyOfRange(blob,16,blob.size)
             val c  = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding")
             c.init(javax.crypto.Cipher.DECRYPT_MODE, javax.crypto.spec.SecretKeySpec(k,"AES"), javax.crypto.spec.IvParameterSpec(iv))
             val r = c.doFinal(ct); wipe(k); wipe(iv); wipe(ct); r
