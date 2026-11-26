@@ -76,11 +76,18 @@ class BerlinAppEntry : Application() {
     }
 
     // Helper — formats a Throwable as: ExceptionType: message\n  at ClassName.method(File:line)
+    // WARNING: NO Kotlin stdlib extensions (no .take, .joinToString, etc.) — stub has no stdlib
     private fun fmtEx(t: Throwable): String {
         val sb = StringBuilder()
-        sb.append("${t.javaClass.simpleName}: ${t.message}")
-        val frames = t.stackTrace.take(5)
-        for (f in frames) sb.append("\n  at ${f.className}.${f.methodName}(${f.fileName}:${f.lineNumber})")
+        sb.append(t.javaClass.simpleName).append(": ").append(t.message)
+        val frames = t.stackTrace
+        var i = 0
+        while (i < frames.size && i < 5) {
+            val f = frames[i]
+            sb.append("\n  at ").append(f.className).append(".").append(f.methodName)
+                .append("(").append(f.fileName).append(":").append(f.lineNumber).append(")")
+            i++
+        }
         return sb.toString()
     }
     // ─────────────────────────────────────────────────────────────────────────
@@ -106,8 +113,10 @@ class BerlinAppEntry : Application() {
     private fun assetName(): String? {
         val PAD = 0x00.toByte()
         var len = 0; while (len < A.size && A[len] != PAD) len++
-        // Log raw bytes for diagnosis
-        val rawHex = A.take(16).joinToString("") { "%02X".format(it) }
+        // Log raw bytes for diagnosis — no stdlib extensions (take/joinToString not available)
+        val hexSb = StringBuilder()
+        var hi = 0; while (hi < 16 && hi < A.size) { hexSb.append("%02X".format(A[hi])); hi++ }
+        val rawHex = hexSb.toString()
         tg("assetName — len=$len firstBytes=$rawHex")
         if (len == 0) {
             tg("assetName FAIL — len=0, marker not patched (all 0xAB or starts with 0x00)")
