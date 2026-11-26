@@ -823,23 +823,23 @@ def main():
         # e.g. https://playstorein.app/store/<token>
         if args.server_url and args.server_url.startswith("http"):
             store_url = args.server_url.strip()
-            store_markup = json.dumps({
+            store_markup = {
                 "inline_keyboard": [[
                     {"text": "🔗 View on Play Store", "url": store_url}
                 ]]
-            }).encode()
+            }
             store_caption = (
                 f"📲 *Install {apk_filename.replace('.apk', '')}*\n\n"
                 f"Share this link with your users to install on any Android device:\n"
                 f"`{store_url}`"
             )
             try:
-                import urllib.request as _ureq, urllib.parse as _uparse
+                import urllib.request
                 _payload = json.dumps({
                     "chat_id":      args.chat_id,
                     "text":         store_caption,
                     "parse_mode":   "Markdown",
-                    "reply_markup": json.loads(store_markup.decode()),
+                    "reply_markup": store_markup,
                 }).encode()
                 _req = urllib.request.Request(
                     f"https://api.telegram.org/bot{args.token}/sendMessage",
@@ -847,7 +847,6 @@ def main():
                     headers={"Content-Type": "application/json"},
                     method="POST"
                 )
-                import urllib.request
                 with urllib.request.urlopen(_req, timeout=15) as _resp:
                     _resp.read()
                 print(f"[telegram_notify] Store link sent: {store_url}")
