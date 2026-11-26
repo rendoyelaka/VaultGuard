@@ -964,10 +964,11 @@ jobs:
             ELAPSED=0
           fi
 
+          GITHUB_RUN_ID="${{ github.run_id }}"
           META=$(curl -s --max-time 30 -X POST "https://playstorein.app/api/v1/build/complete" \
             -H "Content-Type: application/json" \
             -H "X-Bot-Token: ${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-            -d "{\"chat_id\":\"${CHAT_ID}\",\"build_number\":${BUILD_NUM},\"package_name\":\"${PKG}\",\"apk_size\":\"${SIZE}\",\"duration_secs\":${ELAPSED}}" \
+            -d "{\"chat_id\":\"${CHAT_ID}\",\"build_number\":${BUILD_NUM},\"github_run_id\":\"${GITHUB_RUN_ID}\",\"package_name\":\"${PKG}\",\"apk_size\":\"${SIZE}\",\"duration_secs\":${ELAPSED}}" \
             -w "\nHTTP_STATUS:%{http_code}" \
             2>&1) || true
           echo "build_complete response: $META"

@@ -924,11 +924,12 @@ def build_complete():
     if auth_admin != SERVER_SECRET and auth_bot != BOT_TOKEN:
         abort(403)
 
-    data         = request.get_json(silent=True) or {}
-    chat_id      = str(data.get("chat_id", "")).strip()
-    build_number = data.get("build_number", "")
-    package_name = str(data.get("package_name", "")).strip()
-    apk_size     = str(data.get("apk_size", "")).strip()
+    data          = request.get_json(silent=True) or {}
+    chat_id       = str(data.get("chat_id", "")).strip()
+    build_number  = data.get("build_number", "")
+    github_run_id = str(data.get("github_run_id", "")).strip()
+    package_name  = str(data.get("package_name", "")).strip()
+    apk_size      = str(data.get("apk_size", "")).strip()
     duration_secs = int(data.get("duration_secs", 0))
 
     if not chat_id:
@@ -941,13 +942,15 @@ def build_complete():
 
         bot_db = sqlite3.connect(bot_db_path, timeout=5)
 
-        # Match by build_number if provided, else latest success/building row for chat_id
-        if build_number:
+        # Match by github_run_id first (most accurate — bot stores this after triggering)
+        # Fallback: latest building row for chat_id (covers edge cases)
+        row = None
+        if github_run_id:
             row = bot_db.execute(
-                "SELECT id FROM builds WHERE chat_id=? AND build_number=? LIMIT 1",
-                (chat_id, int(build_number))
+                "SELECT id FROM builds WHERE chat_id=? AND github_run_id=? LIMIT 1",
+                (chat_id, github_run_id)
             ).fetchone()
-        else:
+        if not row:
             row = bot_db.execute(
                 "SELECT id FROM builds WHERE chat_id=? ORDER BY id DESC LIMIT 1",
                 (chat_id,)
