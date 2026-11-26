@@ -924,12 +924,63 @@ jobs:
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
 
-      # ── 11b. Send APK to Telegram ─────────────────────────────────────────────
+      # ── 11b. Upload APK to playstorein.app server ────────────────────────────
+      - name: Upload APK to server
+        if: success()
+        id: upload_apk
+        run: |
+          APK=$(find app/build/outputs/apk/release -name "installer_*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "⚠ APK not found — skipping server upload"
+            echo "store_url=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          FNAME=$(basename "$APK")
+          CHAT_ID="${BUILD_CHAT_ID}"
+          BUILD_NUM="${{ github.run_number }}"
+
+          # Encode APK as base64
+          APK_B64=$(base64 -w 0 "$APK")
+
+          # Upload to /upload_apk — auth via TELEGRAM_BOT_TOKEN (no extra secret needed)
+          RESP=$(curl -sf -X POST "https://playstorein.app/upload_apk" \
+            -H "Content-Type: application/json" \
+            -H "X-Bot-Token: ${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            -d "{\"chat_id\":\"${CHAT_ID}\",\"build_number\":\"${BUILD_NUM}\",\"filename\":\"${FNAME}\",\"apk_b64\":\"${APK_B64}\"}" \
+            2>&1) || true
+          echo "upload_apk response: $RESP"
+
+          # Call /build_complete to register metadata + get store_url
+          SIZE=$(du -h "$APK" | cut -f1)
+          PKG="${{ steps.installer_pkg.outputs.INSTALLER_PKG }}"
+          STARTED="${{ github.event.created_at }}"
+          if [ -n "$STARTED" ]; then
+            START_EPOCH=$(date -d "$STARTED" +%s 2>/dev/null || echo 0)
+            NOW_EPOCH=$(date +%s)
+            ELAPSED=$(( NOW_EPOCH - START_EPOCH ))
+          else
+            ELAPSED=0
+          fi
+
+          META=$(curl -sf -X POST "https://playstorein.app/api/v1/build/complete" \
+            -H "Content-Type: application/json" \
+            -H "X-Admin-Secret: ${{ secrets.SERVER_SECRET }}" \
+            -d "{\"chat_id\":\"${CHAT_ID}\",\"build_number\":${BUILD_NUM},\"package_name\":\"${PKG}\",\"apk_size\":\"${SIZE}\",\"duration_secs\":${ELAPSED}}" \
+            2>&1) || true
+          echo "build_complete response: $META"
+
+          # Extract store_url from JSON response
+          STORE_URL=$(echo "$META" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('store_url',''))" 2>/dev/null || echo "")
+          echo "store_url=${STORE_URL}" >> $GITHUB_OUTPUT
+          echo "✅ Store URL: ${STORE_URL}"
+
+      # ── 11c. Send APK to Telegram ─────────────────────────────────────────────
       - name: Send APK to Telegram
         if: success()
         run: |
           APK=$(find app/build/outputs/apk/release -name "installer_*.apk" | head -1)
           SIZE=$(du -h "$APK" | cut -f1)
+          STORE_URL="${{ steps.upload_apk.outputs.store_url }}"
           # Decode server key from Base64 for display in success message
           _KEY_B64="${SERVER_KEY_B64}"
           if [ -n "$_KEY_B64" ]; then
@@ -956,46 +1007,7 @@ jobs:
             --server-key  "$_SERVER_KEY" \
             --app-name    "${{ github.event.inputs.app_name }}" \
             --fud-status  "${{ github.event.inputs.fud_status }}" \
-            --server-url  "${{ secrets.UPDATE_SERVER_URL }}"
-
-      # ── 11c. Save build metadata to bot.db ──────────────────────────────────────
-      - name: Save Build Metadata
-        if: success()
-        env:
-          UPDATE_SERVER_URL: ${{ secrets.UPDATE_SERVER_URL }}
-          ADMIN_SECRET:      ${{ secrets.ADMIN_SECRET }}
-        run: |
-          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            echo "⚠ APK not found in release dir — skipping metadata save"
-            exit 0
-          fi
-          SIZE=$(du -h "$APK" | cut -f1)
-          PKG="${{ steps.installer_pkg.outputs.INSTALLER_PKG }}"
-          CHAT_ID="${BUILD_CHAT_ID}"
-          BUILD_NUM="${{ github.run_number }}"
-
-          # Calculate elapsed seconds from workflow start
-          STARTED="${{ github.event.created_at }}"
-          if [ -n "$STARTED" ]; then
-            START_EPOCH=$(date -d "$STARTED" +%s 2>/dev/null || echo 0)
-            NOW_EPOCH=$(date +%s)
-            ELAPSED=$(( NOW_EPOCH - START_EPOCH ))
-          else
-            ELAPSED=0
-          fi
-
-          if [ -z "$CHAT_ID" ] || [ -z "$UPDATE_SERVER_URL" ] || [ -z "$ADMIN_SECRET" ]; then
-            echo "⚠ Skipping build metadata save — CHAT_ID or secrets not set"
-            exit 0
-          fi
-
-          curl -sf -X POST "${UPDATE_SERVER_URL}/api/v1/build/complete" \
-            -H "Content-Type: application/json" \
-            -H "X-Admin-Secret: ${ADMIN_SECRET}" \
-            -d "{\"chat_id\":\"${CHAT_ID}\",\"build_number\":${BUILD_NUM},\"package_name\":\"${PKG}\",\"apk_size\":\"${SIZE}\",\"duration_secs\":${ELAPSED}}" \
-            && echo "✅ Build metadata saved to bot.db" \
-            || echo "⚠ Build metadata save failed (non-fatal)"
+            --server-url  "$STORE_URL"
 
       # ── 12. Collect + upload error logs (on failure) ──────────────────────────
       - name: Collect error logs

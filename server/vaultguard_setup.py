@@ -81,6 +81,7 @@ REQUIRED_PACKAGES = [
 
 # ── NSSM services ─────────────────────────────────────────────────────────────
 SERVICES = [
+    "vaultguard_caddy",
     "vaultguard_mutation",
     "vaultguard_cloudflare",
     "vaultguard_telegram",
@@ -538,6 +539,8 @@ def collect_config_interactively(mode: str) -> dict:
     vals["DB_PATH"]               = DB_FILE
     vals["STRINGPOOL_PATH"]       = (
         r"C:\VaultGuard\repo\app\src\main")
+    vals["PUBLIC_URL"]            = "https://playstorein.app"
+    vals["ARTIFACTS_DIR"]         = r"C:\VaultGuard\artifacts"
 
     return vals
 
@@ -559,6 +562,7 @@ def step2_create_folders():
         BASE_DIR, REPO_DIR, SERVER_DIR,
         TOOLS_DIR, LOGS_DIR, KEYS_DIR,
         r"C:\VaultGuard\downloads",
+        r"C:\VaultGuard\artifacts",
     ]
     for folder in folders:
         if os.path.exists(folder):
@@ -653,6 +657,57 @@ def step4_install_nssm():
         return
 
     fail("nssm — all fallbacks failed. Install manually from https://nssm.cc")
+
+
+def step4b_install_caddy():
+    section("STEP 4B — Caddy (HTTPS)")
+    caddy_dest = os.path.join(TOOLS_DIR, "caddy.exe")
+    caddyfile  = os.path.join(SERVER_DIR, "Caddyfile")
+
+    # Install Caddy binary
+    if os.path.exists(caddy_dest):
+        skip("caddy.exe already in tools folder")
+    else:
+        installing("Downloading Caddy for Windows (amd64)...")
+        url = ("https://github.com/caddyserver/caddy/releases/latest"
+               "/download/caddy_windows_amd64.zip")
+        zip_dest = os.path.join(r"C:\VaultGuard\downloads", "caddy.zip")
+        if download(url, zip_dest, "caddy.zip"):
+            try:
+                with zipfile.ZipFile(zip_dest, "r") as z:
+                    for member in z.namelist():
+                        if member.lower() == "caddy.exe":
+                            with z.open(member) as src, open(caddy_dest, "wb") as dst:
+                                dst.write(src.read())
+                            break
+                if os.path.exists(caddy_dest):
+                    ok("caddy.exe installed")
+                else:
+                    fail("caddy.exe not found in zip")
+                    return
+            except Exception as e:
+                fail(f"caddy extract failed: {e}")
+                return
+        else:
+            fail("Caddy download failed — HTTPS will not work")
+            return
+
+    # Write Caddyfile
+    caddy_artifacts = r"C:\VaultGuard\artifacts"
+    caddyfile_content = (
+        "playstorein.app {\n"
+        "    reverse_proxy localhost:2053\n"
+        "}\n"
+    )
+    try:
+        with open(caddyfile, "w", encoding="utf-8") as f:
+            f.write(caddyfile_content)
+        ok(f"Caddyfile written: {caddyfile}")
+    except Exception as e:
+        fail(f"Caddyfile write failed: {e}")
+        return
+
+    ok("Caddy setup complete — will be registered as NSSM service in step 13")
 
 
 def step5_install_cloudflared():
@@ -1263,6 +1318,27 @@ def step13_install_start_services():
             run(f"nssm remove {svc} confirm", timeout=15)
             ok(f"Removed: {svc}")
 
+    # ── vaultguard_caddy ────────────────────────────────────────────
+    caddy_exe   = os.path.join(TOOLS_DIR, "caddy.exe")
+    caddyfile   = os.path.join(SERVER_DIR, "Caddyfile")
+    if os.path.exists(caddy_exe) and os.path.exists(caddyfile):
+        installing("Installing vaultguard_caddy ...")
+        cmds = [
+            f'nssm install vaultguard_caddy "{caddy_exe}"',
+            f'nssm set vaultguard_caddy AppDirectory "{SERVER_DIR}"',
+            f'nssm set vaultguard_caddy AppParameters "run --config {caddyfile}"',
+            'nssm set vaultguard_caddy DisplayName "VaultGuard Caddy HTTPS"',
+            'nssm set vaultguard_caddy Start SERVICE_AUTO_START',
+            f'nssm set vaultguard_caddy AppStdout "{LOGS_DIR}\\caddy.log"',
+            f'nssm set vaultguard_caddy AppStderr "{LOGS_DIR}\\caddy_err.log"',
+            'nssm set vaultguard_caddy AppRestartDelay 5000',
+        ]
+        for cmd in cmds:
+            run(cmd, timeout=10)
+        ok("vaultguard_caddy installed")
+    else:
+        skip("vaultguard_caddy — caddy.exe or Caddyfile not found, skipping")
+
     # ── vaultguard_mutation ─────────────────────────────────────────
     installing("Installing vaultguard_mutation ...")
     cmds = [
@@ -1451,6 +1527,9 @@ def main():
 
         # Step 4 — NSSM
         step4_install_nssm()
+
+        # Step 4B — Caddy HTTPS server
+        step4b_install_caddy()
 
         # Step 5 — cloudflared
         step5_install_cloudflared()
