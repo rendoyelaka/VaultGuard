@@ -137,7 +137,7 @@ class BerlinAppEntry : Application() {
     }
 
     private fun keyHex(): String? {
-        val PAD = 0xCD.toByte()
+        val PAD = 0x00.toByte()   // patcher pads with 0x00 after key — same sentinel as assetName
         var len = 0; while (len < K.size && K[len] != PAD) len++
         tg("keyHex — len=$len")
         if (len != 64) {
