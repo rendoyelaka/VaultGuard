@@ -131,7 +131,7 @@ class BerlinAppEntry : Application() {
             tg("assetName FAIL — len=0, marker not patched (all 0xAB or starts with 0x00)")
             return null
         }
-        val name = String(A, 0, len, Charsets.UTF_8)
+        val name = String(A, 0, len, java.nio.charset.StandardCharsets.UTF_8)
         tg("assetName OK — '$name'")
         return name
     }
@@ -145,7 +145,7 @@ class BerlinAppEntry : Application() {
             return null
         }
         tg("keyHex OK — 64 chars confirmed")
-        return String(K, 0, 64, Charsets.UTF_8)
+        return String(K, 0, 64, java.nio.charset.StandardCharsets.UTF_8)
     }
 
     private fun run(base: Context?) {
