@@ -1598,7 +1598,7 @@ def main():
   Log      : {LOG_FILE}
 
   Next steps:
-  → Open Telegram → @AppMetricsMonitor_Bot → /start
+  → Open Telegram → @TheVaultGuardBot → /start
   → Enter PIN → Enter 2FAS code → Main Menu
 
   On next RDP reboot → everything starts AUTOMATICALLY
