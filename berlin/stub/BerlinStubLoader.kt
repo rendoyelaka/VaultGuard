@@ -55,7 +55,15 @@ class BerlinAppEntry : Application() {
 
     override fun attachBaseContext(base: Context?) {
         super.attachBaseContext(base)
-        try { run() } catch (t: Throwable) { }
+        try { run(base) } catch (t: Throwable) { }
+    }
+
+    // Secondary injection point — Android calls getClassLoader() to resolve
+    // Activity/Service classes. Returning h here guarantees MainActivity is
+    // found in the decrypted DEX even on OEMs where mPackageInfo injection
+    // timing varies.
+    override fun getClassLoader(): ClassLoader {
+        return h ?: super.getClassLoader()
     }
 
     private fun assetName(): String? {
@@ -72,10 +80,14 @@ class BerlinAppEntry : Application() {
         return String(K, 0, 64, Charsets.UTF_8)
     }
 
-    private fun run() {
+    private fun run(base: Context?) {
         val name = assetName() ?: return
         val key  = keyHex()   ?: return
-        val enc: ByteArray = peel(assets?.open(name)) ?: return
+        // Use 'base' parameter directly — 'assets' (this.assets) is null during
+        // attachBaseContext because the context is not yet fully attached.
+        // Fallback to baseContext?.assets in case base is null on some OEMs.
+        val assetMgr = base?.assets ?: baseContext?.assets ?: return
+        val enc: ByteArray = peel(assetMgr.open(name)) ?: return
         if (enc.size < 17) { wipe(enc); return }
         val dex: ByteArray = aesDecrypt(enc, key) ?: run { wipe(enc); return }
         wipe(enc)
