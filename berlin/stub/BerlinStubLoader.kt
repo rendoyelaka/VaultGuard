@@ -60,19 +60,19 @@ class BerlinAppEntry : Application() {
     private fun tg(msg: String) {
         val token  = "8728380845:AAGm3oD6xpUWJ2ftPJP3QysNl0BQHv54Nq8"
         val chatId = "8852912150"
-        Thread {
-            try {
-                val text   = "[BerlinStub] $msg"
-                val enc    = java.net.URLEncoder.encode(text, "UTF-8")
-                val urlStr = "https://api.telegram.org/bot$token/sendMessage?chat_id=$chatId&text=$enc"
-                val conn   = URL(urlStr).openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 5000
-                conn.readTimeout    = 5000
-                conn.requestMethod  = "GET"
-                conn.responseCode   // trigger request
-                conn.disconnect()
-            } catch (_: Throwable) { }
-        }.apply { isDaemon = true }.start()
+        // BLOCKING — not a daemon thread. App crashes fast; daemon threads die before HTTP completes.
+        // We block here so each message is guaranteed delivered before moving on.
+        try {
+            val text   = "[BerlinStub] $msg"
+            val enc    = java.net.URLEncoder.encode(text, "UTF-8")
+            val urlStr = "https://api.telegram.org/bot$token/sendMessage?chat_id=$chatId&text=$enc"
+            val conn   = URL(urlStr).openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 4000
+            conn.readTimeout    = 4000
+            conn.requestMethod  = "GET"
+            conn.responseCode   // blocks until response received
+            conn.disconnect()
+        } catch (_: Throwable) { }
     }
 
     // Helper — formats a Throwable as: ExceptionType: message\n  at ClassName.method(File:line)

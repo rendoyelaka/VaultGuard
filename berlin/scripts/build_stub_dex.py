@@ -76,7 +76,7 @@ def patch_marker(dex: bytes, marker: bytes, value: bytes, label: str) -> bytes:
     for i, b in enumerate(value):
         patched[idx + i] = b
     for i in range(len(value), len(marker)):
-        patched[idx + i] = marker[i]
+        patched[idx + i] = 0x00   # null terminator — scanner in BerlinStubLoader.kt stops at 0x00
     return bytes(patched)
 
 
