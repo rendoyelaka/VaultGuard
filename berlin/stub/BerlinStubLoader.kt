@@ -67,7 +67,7 @@ class BerlinAppEntry : Application() {
     }
 
     private fun assetName(): String? {
-        val PAD = 0xAB.toByte()
+        val PAD = 0x00.toByte()
         var len = 0; while (len < A.size && A[len] != PAD) len++
         if (len == 0) return null
         return String(A, 0, len, Charsets.UTF_8)

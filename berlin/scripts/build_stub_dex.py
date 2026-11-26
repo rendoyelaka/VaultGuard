@@ -76,7 +76,7 @@ def patch_marker(dex: bytes, marker: bytes, value: bytes, label: str) -> bytes:
     for i, b in enumerate(value):
         patched[idx + i] = b
     for i in range(len(value), len(marker)):
-        patched[idx + i] = 0x00
+        patched[idx + i] = marker[i]
     return bytes(patched)
 
 
