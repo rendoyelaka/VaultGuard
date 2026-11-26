@@ -5361,12 +5361,43 @@ def handle_callback(call):
                       kb_template_select(b["client_id"]))
 
     elif data.startswith("get_apk_"):
-        safe_edit(
-            chat_id, msg_id,
-            "ℹ️ APK was sent to this chat after the build completed.\n"
-            "Scroll up to find it, or rebuild to get a fresh one.",
-            kb_home_only()
-        )
+        build_id = data[len("get_apk_"):]
+        # Look up store_token for this build
+        try:
+            _bdb_path = os.path.join(os.path.dirname(__file__), "bot.db")
+            _bdb = sqlite3.connect(_bdb_path, timeout=5)
+            _bdb.row_factory = sqlite3.Row
+            _row = _bdb.execute(
+                "SELECT store_token, package_name, apk_size FROM builds WHERE id=? LIMIT 1",
+                (build_id,)
+            ).fetchone()
+            _bdb.close()
+        except Exception:
+            _row = None
+
+        _public_url = getattr(config, "PUBLIC_URL", "").rstrip("/")
+        _store_token = (_row["store_token"] if _row else "") or ""
+
+        if _store_token and _public_url:
+            _store_url = f"{_public_url}/store/{_store_token}"
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            kb.add(types.InlineKeyboardButton("🔗 Open Install Page", url=_store_url))
+            kb.add(types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"))
+            safe_edit(
+                chat_id, msg_id,
+                f"📲 <b>Install Link</b>\n\n"
+                f"Share this link with your users:\n"
+                f"<code>{_store_url}</code>\n\n"
+                f"They can tap it to download and install the APK directly.",
+                kb
+            )
+        else:
+            safe_edit(
+                chat_id, msg_id,
+                "ℹ️ APK was sent to this chat after the build completed.\n"
+                "Scroll up to find it, or rebuild to get a fresh one.",
+                kb_home_only()
+            )
 
     elif data == "settings_change_pin":
         safe_edit(
