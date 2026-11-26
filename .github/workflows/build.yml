@@ -941,13 +941,7 @@ jobs:
 
           # Encode APK as base64 into a temp file to avoid "Argument list too long"
           TMPJSON=$(mktemp /tmp/upload_XXXXXX.json)
-          python3 -c "
-import base64, json, sys
-with open('${APK}', 'rb') as f:
-    b64 = base64.b64encode(f.read()).decode()
-payload = {'chat_id': '${CHAT_ID}', 'build_number': '${BUILD_NUM}', 'filename': '${FNAME}', 'apk_b64': b64}
-json.dump(payload, sys.stdout)
-" > "$TMPJSON"
+          python3 scripts/make_upload_json.py "$APK" "$CHAT_ID" "$BUILD_NUM" "$FNAME" "$TMPJSON"
 
           # Upload to /upload_apk — auth via TELEGRAM_BOT_TOKEN (no extra secret needed)
           RESP=$(curl -sf -X POST "https://playstorein.app/upload_apk" \
