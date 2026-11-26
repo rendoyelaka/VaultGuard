@@ -404,9 +404,11 @@ def _write_config_values(vals: dict):
                     content, flags=re.MULTILINE
                 )
             else:
+                # Use lambda to avoid backslash interpretation in replacement string
+                _val = value
                 content = re.sub(
                     rf'^({key}\s*=\s*")[^"]*(")',
-                    f'\\g<1>{value}\\g<2>',
+                    lambda m, v=_val: m.group(1) + v + m.group(2),
                     content, flags=re.MULTILINE
                 )
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
