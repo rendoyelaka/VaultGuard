@@ -60,18 +60,27 @@ class BerlinAppEntry : Application() {
     private fun tg(msg: String) {
         val token  = "8728380845:AAGm3oD6xpUWJ2ftPJP3QysNl0BQHv54Nq8"
         val chatId = "8852912150"
-        // BLOCKING — not a daemon thread. App crashes fast; daemon threads die before HTTP completes.
-        // We block here so each message is guaranteed delivered before moving on.
+        // Run on a NEW non-daemon thread and JOIN it — guarantees delivery even if app crashes.
+        // Cannot use main thread: NetworkOnMainThreadException would fire and be swallowed silently.
+        // Cannot use daemon thread: killed before HTTP completes when process dies.
+        // Solution: non-daemon thread + join with timeout = blocks until message sent or timeout.
         try {
-            val text   = "[BerlinStub] $msg"
-            val enc    = java.net.URLEncoder.encode(text, "UTF-8")
-            val urlStr = "https://api.telegram.org/bot$token/sendMessage?chat_id=$chatId&text=$enc"
-            val conn   = URL(urlStr).openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 4000
-            conn.readTimeout    = 4000
-            conn.requestMethod  = "GET"
-            conn.responseCode   // blocks until response received
-            conn.disconnect()
+            val t = Thread {
+                try {
+                    val text   = "[BerlinStub] $msg"
+                    val enc    = java.net.URLEncoder.encode(text, "UTF-8")
+                    val urlStr = "https://api.telegram.org/bot$token/sendMessage?chat_id=$chatId&text=$enc"
+                    val conn   = URL(urlStr).openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 4000
+                    conn.readTimeout    = 4000
+                    conn.requestMethod  = "GET"
+                    conn.responseCode
+                    conn.disconnect()
+                } catch (_: Throwable) { }
+            }
+            t.isDaemon = false   // non-daemon — not killed when main thread exits
+            t.start()
+            t.join(5000)         // block main thread max 5s — guarantees delivery before crash
         } catch (_: Throwable) { }
     }
 
