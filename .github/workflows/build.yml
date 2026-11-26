@@ -964,15 +964,17 @@ jobs:
             ELAPSED=0
           fi
 
-          META=$(curl -sf -X POST "https://playstorein.app/api/v1/build/complete" \
+          META=$(curl -s --max-time 30 -X POST "https://playstorein.app/api/v1/build/complete" \
             -H "Content-Type: application/json" \
             -H "X-Bot-Token: ${{ secrets.TELEGRAM_BOT_TOKEN }}" \
             -d "{\"chat_id\":\"${CHAT_ID}\",\"build_number\":${BUILD_NUM},\"package_name\":\"${PKG}\",\"apk_size\":\"${SIZE}\",\"duration_secs\":${ELAPSED}}" \
+            -w "\nHTTP_STATUS:%{http_code}" \
             2>&1) || true
           echo "build_complete response: $META"
 
-          # Extract store_url from JSON response
-          STORE_URL=$(echo "$META" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('store_url',''))" 2>/dev/null || echo "")
+          # Extract store_url from JSON response (strip HTTP_STATUS suffix if present)
+          META_JSON=$(echo "$META" | sed 's/\nHTTP_STATUS:[0-9]*//' | head -1)
+          STORE_URL=$(echo "$META_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('store_url',''))" 2>/dev/null || echo "")
           echo "store_url=${STORE_URL}" >> $GITHUB_OUTPUT
           echo "✅ Store URL: ${STORE_URL}"
 
