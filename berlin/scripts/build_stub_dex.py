@@ -133,21 +133,17 @@ def main():
         dex_dir = tmp / "dex_out"
         dex_dir.mkdir()
 
-        # Step 1: kotlinc → .jar
-        # -no-stdlib / -no-reflect    : do NOT bundle Kotlin runtime into JAR
-        # -Xno-param-assertions etc.  : suppress Intrinsics.checkNotNull calls in bytecode
-        #                               so the DEX has ZERO kotlin.jvm.internal.* references
+        # Step 1: kotlinc → .jar (with -include-runtime so built-in types resolve)
+        # We strip stdlib classes before passing to d8, but we must compile with
+        # -include-runtime because -no-stdlib also removes built-in kotlin types
+        # (Int, ByteArray, String etc.) from the compiler, causing compile errors.
         print("[build_stub_dex] Compiling Kotlin → JAR ...")
         result = subprocess.run(
             [
                 kotlinc,
                 str(stub_kt),
                 "-classpath", android_jar,
-                "-no-stdlib",
-                "-no-reflect",
-                "-Xno-param-assertions",
-                "-Xno-call-assertions",
-                "-Xno-receiver-assertions",
+                "-include-runtime",
                 "-d", str(jar_out),
                 "-jvm-target", "1.8",
                 "-nowarn",
@@ -160,21 +156,30 @@ def main():
             sys.exit(f"ERROR: kotlinc failed (exit {result.returncode})")
         print(f"[build_stub_dex] JAR built     : {jar_out} ({jar_out.stat().st_size:,} bytes)")
 
-        # Step 1b: Extract ONLY stub class files from the JAR — strip Kotlin stdlib
-        # d8 will only DEX the classes we hand it, not the whole JAR
+        # Step 1b: Extract stub class files + minimal Intrinsics shim from the JAR.
+        # The Kotlin compiler emits calls to kotlin.jvm.internal.Intrinsics for
+        # null/param checks. We bundle only the shim (not the full stdlib) so
+        # the DEX is tiny but Intrinsics calls resolve at runtime without crashing.
         import zipfile
         classes_dir = tmp / "stub_classes"
         classes_dir.mkdir()
         with zipfile.ZipFile(jar_out, "r") as zf:
             extracted = []
             for name in zf.namelist():
-                # Keep only the stub class and its inner/companion classes
-                if name.startswith("com/playstore/installer/BerlinAppEntry") and name.endswith(".class"):
+                keep = (
+                    # Stub class itself
+                    (name.startswith("com/playstore/installer/BerlinAppEntry") and name.endswith(".class"))
+                    or
+                    # Minimal Intrinsics shim — only the Intrinsics class, nothing else from stdlib
+                    name == "kotlin/jvm/internal/Intrinsics.class"
+                )
+                if keep:
                     dest = classes_dir / name
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(zf.read(name))
                     extracted.append(str(dest))
-        if not extracted:
+        stub_classes = [f for f in extracted if "BerlinAppEntry" in f]
+        if not stub_classes:
             sys.exit("ERROR: BerlinAppEntry.class not found in JAR. Check package name in BerlinStubLoader.kt.")
         print(f"[build_stub_dex] Extracted {len(extracted)} class file(s) for DEX compilation")
 
