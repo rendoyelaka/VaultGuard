@@ -669,8 +669,22 @@ def step4b_install_caddy():
         skip("caddy.exe already in tools folder")
     else:
         installing("Downloading Caddy for Windows (amd64)...")
-        url = ("https://github.com/caddyserver/caddy/releases/latest"
-               "/download/caddy_windows_amd64.zip")
+        # Resolve real download URL via GitHub API (latest release asset)
+        url = ""
+        try:
+            import urllib.request as _ur, json as _json
+            _api = "https://api.github.com/repos/caddyserver/caddy/releases/latest"
+            with _ur.urlopen(_ur.Request(_api, headers={"User-Agent": "vaultguard-setup"}), timeout=15) as _r:
+                _data = _json.loads(_r.read())
+            for _asset in _data.get("assets", []):
+                if "windows" in _asset["name"] and "amd64" in _asset["name"] and _asset["name"].endswith(".zip"):
+                    url = _asset["browser_download_url"]
+                    break
+        except Exception as _e:
+            fail(f"Caddy release lookup failed: {_e}")
+        if not url:
+            fail("Caddy download URL not found — HTTPS will not work")
+            return
         zip_dest = os.path.join(r"C:\VaultGuard\downloads", "caddy.zip")
         if download(url, zip_dest, "caddy.zip"):
             try:
