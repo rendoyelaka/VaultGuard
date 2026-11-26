@@ -133,14 +133,21 @@ def main():
         dex_dir = tmp / "dex_out"
         dex_dir.mkdir()
 
-        # Step 1: kotlinc → .jar (with -include-runtime so stdlib types resolve)
+        # Step 1: kotlinc → .jar
+        # -no-stdlib / -no-reflect    : do NOT bundle Kotlin runtime into JAR
+        # -Xno-param-assertions etc.  : suppress Intrinsics.checkNotNull calls in bytecode
+        #                               so the DEX has ZERO kotlin.jvm.internal.* references
         print("[build_stub_dex] Compiling Kotlin → JAR ...")
         result = subprocess.run(
             [
                 kotlinc,
                 str(stub_kt),
                 "-classpath", android_jar,
-                "-include-runtime",
+                "-no-stdlib",
+                "-no-reflect",
+                "-Xno-param-assertions",
+                "-Xno-call-assertions",
+                "-Xno-receiver-assertions",
                 "-d", str(jar_out),
                 "-jvm-target", "1.8",
                 "-nowarn",
