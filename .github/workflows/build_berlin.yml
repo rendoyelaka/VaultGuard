@@ -189,7 +189,7 @@ jobs:
           echo "android.jar: $ANDROID_JAR"
 
           python3 berlin/scripts/build_stub_dex.py \
-            berlin/stub/BerlinStubLoader.java \
+            berlin/stub/BerlinAppEntry.java \
             berlin_stub_loader.dex \
             "${{ steps.berlin_keys.outputs.BERLIN_DEX_ASSET }}" \
             "${{ steps.berlin_keys.outputs.BERLIN_DEX_KEY }}" \

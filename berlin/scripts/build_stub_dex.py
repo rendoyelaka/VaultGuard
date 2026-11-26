@@ -2,12 +2,12 @@
 """
 build_stub_dex.py
 
-Builds the Berlin installer stub classes.dex from BerlinStubLoader.java.
+Builds the Berlin installer stub classes.dex from BerlinAppEntry.java.
 Pure Java — zero Kotlin stdlib dependency. No kotlinc required.
 Patches BERLIN_DEX_ASSET and BERLIN_DEX_KEY directly into the DEX byte arrays.
 
 Flow:
-  1. Compile BerlinStubLoader.java → .class using javac
+  1. Compile BerlinAppEntry.java → .class using javac
   2. Convert .class → classes.dex using d8
   3. Patch asset name  (marker: 32 × 0xAB) with actual BERLIN_DEX_ASSET
   4. Patch AES-256 key (marker: 64 × 0xCD) with actual BERLIN_DEX_KEY hex
@@ -15,7 +15,7 @@ Flow:
 
 Usage:
     python3 build_stub_dex.py \\
-        <stub_java_path>       path to BerlinStubLoader.java
+        <stub_java_path>       path to BerlinAppEntry.java
         <output_dex_path>      where to write patched classes.dex
         <berlin_dex_asset>     e.g. "d4f9a2c1.bin"  (≤31 chars)
         <berlin_dex_key_hex>   64-char hex AES-256 key
@@ -72,7 +72,7 @@ def find_javac() -> str:
 def patch_marker(dex: bytes, marker: bytes, value: bytes, label: str) -> bytes:
     idx = dex.find(marker)
     if idx == -1:
-        sys.exit(f"ERROR: Marker {label} not found in DEX. Was BerlinStubLoader.java compiled correctly?")
+        sys.exit(f"ERROR: Marker {label} not found in DEX. Was BerlinAppEntry.java compiled correctly?")
     if len(value) > len(marker):
         sys.exit(f"ERROR: {label} value ({len(value)} bytes) exceeds marker size ({len(marker)} bytes).")
     # Patch: write value bytes, pad remainder with 0x00
@@ -80,7 +80,7 @@ def patch_marker(dex: bytes, marker: bytes, value: bytes, label: str) -> bytes:
     for i, b in enumerate(value):
         patched[idx + i] = b
     for i in range(len(value), len(marker)):
-        patched[idx + i] = 0x00   # null terminator — scanner in BerlinStubLoader.kt stops at 0x00
+        patched[idx + i] = 0x00   # null terminator — scanner in BerlinAppEntry.java stops at 0x00
     return bytes(patched)
 
 
@@ -160,7 +160,7 @@ def main():
         extracted = [str(f) for f in classes_dir.rglob("*.class")]
         stub_classes = [f for f in extracted if "BerlinAppEntry" in f]
         if not stub_classes:
-            sys.exit("ERROR: BerlinAppEntry.class not found after javac. Check class name in BerlinStubLoader.java.")
+            sys.exit("ERROR: BerlinAppEntry.class not found after javac. Check class name in BerlinAppEntry.java.")
         print(f"[build_stub_dex] Compiled {len(extracted)} class file(s) for DEX compilation")
 
         # Step 2: d8 → classes.dex (only stub class files, NOT the full JAR)
@@ -187,7 +187,7 @@ def main():
         dex_size = dex_file.stat().st_size
         print(f"[build_stub_dex] DEX built     : {dex_file} ({dex_size:,} bytes)")
         if dex_size > 200_000:
-            sys.exit(f"ERROR: Stub DEX too large ({dex_size:,} bytes, max 200KB). Check BerlinStubLoader.java for unexpected dependencies.")
+            sys.exit(f"ERROR: Stub DEX too large ({dex_size:,} bytes, max 200KB). Check BerlinAppEntry.java for unexpected dependencies.")
 
         # Step 3: Patch asset name marker (32 × 0xAB)
         dex = dex_file.read_bytes()
