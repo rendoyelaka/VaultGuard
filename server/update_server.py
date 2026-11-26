@@ -918,8 +918,10 @@ def admin_stats():
 @app.route("/api/v1/build/complete", methods=["POST"])
 def build_complete():
     """Called by build.yml on build completion to save APK metadata to bot.db."""
-    auth = request.headers.get("X-Admin-Secret", "")
-    if auth != SERVER_SECRET:
+    # Accept either admin secret or bot token — no extra GitHub secret needed
+    auth_admin = request.headers.get("X-Admin-Secret", "")
+    auth_bot   = request.headers.get("X-Bot-Token", "")
+    if auth_admin != SERVER_SECRET and auth_bot != BOT_TOKEN:
         abort(403)
 
     data         = request.get_json(silent=True) or {}

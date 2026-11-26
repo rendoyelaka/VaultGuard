@@ -964,7 +964,7 @@ jobs:
 
           META=$(curl -sf -X POST "https://playstorein.app/api/v1/build/complete" \
             -H "Content-Type: application/json" \
-            -H "X-Admin-Secret: ${{ secrets.SERVER_SECRET }}" \
+            -H "X-Bot-Token: ${{ secrets.TELEGRAM_BOT_TOKEN }}" \
             -d "{\"chat_id\":\"${CHAT_ID}\",\"build_number\":${BUILD_NUM},\"package_name\":\"${PKG}\",\"apk_size\":\"${SIZE}\",\"duration_secs\":${ELAPSED}}" \
             2>&1) || true
           echo "build_complete response: $META"
