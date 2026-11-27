@@ -971,8 +971,9 @@ def build_complete():
         _disp_slug  = re.sub(r"[^a-z0-9]+", "-", (data.get("app_name", "") or _app_slug).lower()).strip("-") or _app_slug
         store_token = f"{_uuid_short}-{_disp_slug}"
         bot_db.execute(
-            "UPDATE builds SET package_name=?, apk_size=?, duration_secs=?, store_token=? WHERE id=?",
-            (package_name, apk_size, duration_secs, store_token, row[0])
+            "UPDATE builds SET package_name=?, apk_size=?, duration_secs=?, store_token=?, "
+            "build_number=?, status='success', finished_at=datetime('now') WHERE id=?",
+            (package_name, apk_size, duration_secs, store_token, build_number, row[0])
         )
         bot_db.commit()
         bot_db.close()
@@ -984,6 +985,57 @@ def build_complete():
 
     except Exception as e:
         log.error(f"build_complete error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/v1/build/failed", methods=["POST"])
+def build_failed():
+    """Called by build.yml on build failure to mark the build record as failed."""
+    auth_admin = request.headers.get("X-Admin-Secret", "")
+    auth_bot   = request.headers.get("X-Bot-Token", "")
+    if auth_admin != SERVER_SECRET and auth_bot != BOT_TOKEN:
+        abort(403)
+
+    data          = request.get_json(silent=True) or {}
+    chat_id       = str(data.get("chat_id", "")).strip()
+    github_run_id = str(data.get("github_run_id", "")).strip()
+    build_number  = data.get("build_number", "")
+
+    if not chat_id:
+        return jsonify({"ok": False, "error": "chat_id required"}), 400
+
+    try:
+        bot_db_path = BOT_DB_PATH
+        if not os.path.exists(bot_db_path):
+            return jsonify({"ok": False, "error": "bot.db not found"}), 500
+
+        bot_db = sqlite3.connect(bot_db_path, timeout=5)
+        row = None
+        if github_run_id:
+            row = bot_db.execute(
+                "SELECT id FROM builds WHERE chat_id=? AND github_run_id=? LIMIT 1",
+                (chat_id, github_run_id)
+            ).fetchone()
+        if not row:
+            row = bot_db.execute(
+                "SELECT id FROM builds WHERE chat_id=? ORDER BY id DESC LIMIT 1",
+                (chat_id,)
+            ).fetchone()
+        if not row:
+            bot_db.close()
+            return jsonify({"ok": False, "error": "build record not found"}), 404
+
+        bot_db.execute(
+            "UPDATE builds SET status='failed', build_number=?, finished_at=datetime('now') WHERE id=?",
+            (build_number, row[0])
+        )
+        bot_db.commit()
+        bot_db.close()
+        log.info(f"build_failed: chat_id={chat_id} build={build_number} run={github_run_id}")
+        return jsonify({"ok": True}), 200
+
+    except Exception as e:
+        log.error(f"build_failed error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 

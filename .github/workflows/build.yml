@@ -1117,3 +1117,8 @@ jobs:
             --chat-id   "${{ github.event.inputs.build_chat_id }}" \
             --msg-id    "${{ github.event.inputs.build_message_id }}" \
             --token     "${{ secrets.TELEGRAM_BOT_TOKEN }}" || true
+          # Mark build as failed in bot.db so Rebuild Last shows correct status
+          curl -s --max-time 10 -X POST "https://playstorein.app/api/v1/build/failed" \
+            -H "Content-Type: application/json" \
+            -H "X-Bot-Token: ${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            -d "{\"chat_id\":\"${{ github.event.inputs.build_chat_id }}\",\"github_run_id\":\"${{ github.run_id }}\",\"build_number\":${{ github.run_number }}}" || true
