@@ -780,78 +780,37 @@ def main():
                 caption += f"\nCommit   : <code>{commit_short}</code>"
             caption += f"\nBuilt    : {built_at}"
 
-        # ── Inline keyboard: Rebuild + Cancel directly on the APK message ───────
-        # Buttons appear attached to the APK file in chat — no navigation needed.
-        # quick_rebuild_<client_id>_<template>  → bot shows rebuild confirm screen
-        # quick_cancel_build_<client_id>        → bot cancels current in-progress build
+        # ── Append store URL to caption if available ─────────────────────────
+        store_url = ""
+        if args.server_url and args.server_url.startswith("http"):
+            store_url = args.server_url.strip()
+            caption += f"\n━━━━━━━━━━━━━━━━━━━━\n🔗 Store : <code>{store_url}</code>"
+
+        # ── Inline keyboard: all actions on the APK message in one box ───────
         # Dev builds (client == "0") get no Rebuild button — no client profile to rebuild for.
         rebuild_markup = None
         if not is_dev:
-            client_id_str = args.client  # numeric client_id string
+            client_id_str = args.client
             template_str  = args.template
-            rebuild_markup = {
-                "inline_keyboard": [
-                    [
-                        {
-                            "text":          "🔁 Rebuild",
-                            "callback_data": f"quick_rebuild_{client_id_str}_{template_str}"
-                        },
-                        {
-                            "text":          "👤 Client",
-                            "callback_data": f"client_{client_id_str}"
-                        }
-                    ],
-                    [
-                        {
-                            "text":          "🏠 Home",
-                            "callback_data": "nav_home"
-                        }
-                    ]
+            keyboard = [
+                [
+                    {"text": "🔁 Rebuild", "callback_data": f"quick_rebuild_{client_id_str}_{template_str}"},
+                    {"text": "👤 Client",  "callback_data": f"client_{client_id_str}"}
                 ]
-            }
+            ]
+            if store_url:
+                keyboard.append([{"text": "🔗 View on Play Store", "url": store_url}])
+            keyboard.append([{"text": "🏠 Home", "callback_data": "nav_home"}])
+            rebuild_markup = {"inline_keyboard": keyboard}
 
         ok = send_document(args.token, args.chat_id, args.apk, caption,
                            filename=apk_filename, reply_markup=rebuild_markup)
         if ok:
-            print(f"[telegram_notify] APK sent as '{apk_filename}'")
+            print(f"[telegram_notify] APK sent as '{apk_filename}'" +
+                  (f" with store link" if store_url else ""))
         else:
             print(f"[telegram_notify] APK send failed", file=sys.stderr)
             sys.exit(1)
-
-        # ── Send store page link if server_url provided ───────────────────────
-        # server_url is the complete store URL returned by /build_complete
-        # e.g. https://playstorein.app/store/<token>
-        if args.server_url and args.server_url.startswith("http"):
-            store_url = args.server_url.strip()
-            store_markup = {
-                "inline_keyboard": [[
-                    {"text": "🔗 View on Play Store", "url": store_url}
-                ]]
-            }
-            store_caption = (
-                f"📲 *Install {apk_filename.replace('.apk', '')}*\n\n"
-                f"Share this link with your users to install on any Android device:\n"
-                f"`{store_url}`"
-            )
-            try:
-                import urllib.request
-                _payload = json.dumps({
-                    "chat_id":      args.chat_id,
-                    "text":         store_caption,
-                    "parse_mode":   "Markdown",
-                    "reply_markup": store_markup,
-                }).encode()
-                _req = urllib.request.Request(
-                    f"https://api.telegram.org/bot{args.token}/sendMessage",
-                    data=_payload,
-                    headers={"Content-Type": "application/json"},
-                    method="POST"
-                )
-                with urllib.request.urlopen(_req, timeout=15) as _resp:
-                    _resp.read()
-                print(f"[telegram_notify] Store link sent: {store_url}")
-            except Exception as _e:
-                print(f"[telegram_notify] Store link send warning: {_e}", file=sys.stderr)
 
     print(f"[telegram_notify] Done — step={args.step} status={args.status} "
           f"build_type={build_type}")
