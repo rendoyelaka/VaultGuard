@@ -1003,7 +1003,7 @@ def _get_build_by_token(token):
             # New slug format: first 8 chars are the UUID prefix
             prefix = token.split("-")[0] if "-" in token else token[:8]
             row = db.execute(
-                "SELECT * FROM builds WHERE store_token LIKE ? LIMIT 1", (f"{prefix}%",)
+                "SELECT * FROM builds WHERE store_token LIKE ? ORDER BY id DESC LIMIT 1", (f"{prefix}%",)
             ).fetchone()
         db.close()
         return dict(row) if row else None
