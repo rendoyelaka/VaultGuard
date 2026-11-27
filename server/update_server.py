@@ -28,6 +28,10 @@ DB_PATH          = os.path.join(os.path.dirname(__file__), "devices.db")
 SERVER_SECRET    = config.SERVER_SECRET
 PUBLIC_URL       = getattr(config, "PUBLIC_URL", "") or "https://playstorein.app"
 ARTIFACTS_DIR    = getattr(config, "ARTIFACTS_DIR", os.path.join(os.path.dirname(__file__), "..", "artifacts"))
+# bot.db lives next to vaultguard_bot.py — resolve from __file__ of this server,
+# go up one level (repo → VaultGuard root) then into server/bot.db
+BOT_DB_PATH      = getattr(config, "BOT_DB_PATH",
+                       os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "server", "bot.db")))
 
 # ── Store page: template metadata (emoji, display name, dev name, description, tags) ──
 STORE_TEMPLATES = {
@@ -190,7 +194,7 @@ def sync_clients_from_bot_db():
     so device counts show correctly under each build.
     """
     try:
-        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        bot_db_path = BOT_DB_PATH
         if not os.path.exists(bot_db_path):
             return  # bot.db not present yet — skip silently
 
@@ -481,7 +485,7 @@ def _sync_device_to_bot_db(device_id: str, ip: str, token: str, is_new: bool,
     Never affects the main registration flow in devices.db.
     """
     try:
-        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        bot_db_path = BOT_DB_PATH
         if not os.path.exists(bot_db_path):
             return  # bot.db not present — skip silently
 
@@ -936,7 +940,7 @@ def build_complete():
         return jsonify({"ok": False, "error": "chat_id required"}), 400
 
     try:
-        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        bot_db_path = BOT_DB_PATH
         if not os.path.exists(bot_db_path):
             return jsonify({"ok": False, "error": "bot.db not found"}), 500
 
@@ -990,7 +994,7 @@ def _get_build_by_token(token):
     Matches by exact store_token first, then by 8-char prefix for slug format.
     """
     try:
-        bot_db_path = os.path.join(os.path.dirname(__file__), "bot.db")
+        bot_db_path = BOT_DB_PATH
         if not os.path.exists(bot_db_path):
             return None
         db = sqlite3.connect(bot_db_path, timeout=5)
