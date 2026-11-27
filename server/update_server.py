@@ -26,7 +26,7 @@ from flask import Flask, request, jsonify, abort, send_file, Response
 PORT             = 2053
 DB_PATH          = os.path.join(os.path.dirname(__file__), "devices.db")
 SERVER_SECRET    = config.SERVER_SECRET
-PUBLIC_URL       = getattr(config, "PUBLIC_URL", "")
+PUBLIC_URL       = getattr(config, "PUBLIC_URL", "") or "https://playstorein.app"
 ARTIFACTS_DIR    = getattr(config, "ARTIFACTS_DIR", os.path.join(os.path.dirname(__file__), "..", "artifacts"))
 
 # ── Store page: template metadata (emoji, display name, dev name, description, tags) ──
