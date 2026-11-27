@@ -4841,7 +4841,7 @@ def handle_callback(call):
             )
             _db2.commit()
             _db2.close()
-            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
+            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=45)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
                 # Also persist run_id to DB so monitor can match after bot restart
@@ -4853,8 +4853,27 @@ def handle_callback(call):
                     )
                     _db3.commit()
                     _db3.close()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log.error(f"[rebuild] Failed to persist github_run_id to bot.db: {_e}")
+            else:
+                # GitHub queued slowly — retry in background and update DB when found
+                def _retry_run_id_rb(_cid=str(chat_id)):
+                    _late = prod_get_latest_run_id("build.yml", "main", max_wait=120)
+                    if _late:
+                        try:
+                            _dbl = get_db()
+                            _dbl.execute(
+                                "UPDATE builds SET github_run_id=? WHERE chat_id=? AND status='building'",
+                                (str(_late), _cid)
+                            )
+                            _dbl.commit()
+                            _dbl.close()
+                            prod_active_run[_cid] = _late
+                            log.info(f"[rebuild] Late run_id {_late} saved for chat_id={_cid}")
+                        except Exception as _e:
+                            log.error(f"[rebuild] Background retry failed to save run_id: {_e}")
+                threading.Thread(target=_retry_run_id_rb, daemon=True).start()
+            if run_id or True:  # always show build UI; run_id stored async if late
                 _rb_host_label = "🌐 Domain" if _ip and "." in _ip and not _ip.replace(".", "").isdigit() else "📡 IP    "
                 safe_edit(chat_id, msg_id,
                           f"🔨 <b>Rebuilding: {emoji} {display_name}</b>\n"
@@ -4977,7 +4996,7 @@ def handle_callback(call):
             )
             _db2.commit()
             _db2.close()
-            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=12)
+            run_id = prod_get_latest_run_id("build.yml", "main", max_wait=45)
             if run_id:
                 prod_active_run[str(chat_id)] = run_id
                 try:
@@ -4988,8 +5007,27 @@ def handle_callback(call):
                     )
                     _db3b.commit()
                     _db3b.close()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    log.error(f"[custom_rebuild] Failed to persist github_run_id to bot.db: {_e}")
+            else:
+                # GitHub queued slowly — retry in background and update DB when found
+                def _retry_run_id_crb(_cid=str(chat_id)):
+                    _late = prod_get_latest_run_id("build.yml", "main", max_wait=120)
+                    if _late:
+                        try:
+                            _dbl = get_db()
+                            _dbl.execute(
+                                "UPDATE builds SET github_run_id=? WHERE chat_id=? AND status='building'",
+                                (str(_late), _cid)
+                            )
+                            _dbl.commit()
+                            _dbl.close()
+                            prod_active_run[_cid] = _late
+                            log.info(f"[custom_rebuild] Late run_id {_late} saved for chat_id={_cid}")
+                        except Exception as _e:
+                            log.error(f"[custom_rebuild] Background retry failed to save run_id: {_e}")
+                threading.Thread(target=_retry_run_id_crb, daemon=True).start()
+            if run_id or True:  # always show build UI; run_id stored async if late
                 _crb_host_label = "🌐 Domain" if _ip and "." in _ip and not _ip.replace(".", "").isdigit() else "📡 IP    "
                 safe_edit(chat_id, msg_id,
                           f"🔨 <b>Rebuilding: ⚙️ {_app_name}</b>\n"

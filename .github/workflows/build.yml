@@ -973,8 +973,8 @@ jobs:
             2>&1) || true
           echo "build_complete response: $META"
 
-          # Extract store_url from JSON response (strip HTTP_STATUS suffix if present)
-          META_JSON=$(echo "$META" | sed 's/\nHTTP_STATUS:[0-9]*//' | head -1)
+          # Extract store_url from JSON response (HTTP_STATUS appended on a new line by -w, head -1 isolates JSON)
+          META_JSON=$(echo "$META" | head -1)
           STORE_URL=$(echo "$META_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('store_url',''))" 2>/dev/null || echo "")
           echo "store_url=${STORE_URL}" >> $GITHUB_OUTPUT
           echo "✅ Store URL: ${STORE_URL}"
