@@ -31,7 +31,7 @@ ARTIFACTS_DIR    = getattr(config, "ARTIFACTS_DIR", os.path.join(os.path.dirname
 # bot.db lives next to vaultguard_bot.py — resolve from __file__ of this server,
 # go up one level (repo → VaultGuard root) then into server/bot.db
 BOT_DB_PATH      = getattr(config, "BOT_DB_PATH",
-                       os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "server", "bot.db")))
+                       os.path.join(os.path.dirname(__file__), "bot.db"))
 
 # ── Store page: template metadata (emoji, display name, dev name, description, tags) ──
 STORE_TEMPLATES = {
