@@ -5173,7 +5173,36 @@ def handle_callback(call):
         custom_icon_fid    = cbuf["icon_file_id"] if cbuf else ""
         # Retrieve server config
         sbuf = server_config_buf.pop(str(chat_id), None)
+
+        # ── Fallback: if buffers lost (bot restart between config & confirm)
+        # recover values from the most recent build record in the DB ──────────
         import base64
+        _db_fb = get_db()
+        if template == "custom" and not custom_app_name:
+            _last_custom = _db_fb.execute(
+                "SELECT custom_app_name, custom_icon_fid FROM builds "
+                "WHERE client_id=? AND template='custom' "
+                "ORDER BY id DESC LIMIT 1",
+                (client_id,)
+            ).fetchone()
+            if _last_custom:
+                custom_app_name = custom_app_name or (_last_custom["custom_app_name"] or "")
+                custom_icon_fid = custom_icon_fid or (_last_custom["custom_icon_fid"] or "")
+        if not sbuf or not sbuf.get("ip"):
+            _last_build = _db_fb.execute(
+                "SELECT server_ip, server_port, server_key FROM builds "
+                "WHERE client_id=? AND server_ip IS NOT NULL AND server_ip != '' "
+                "ORDER BY id DESC LIMIT 1",
+                (client_id,)
+            ).fetchone()
+            if _last_build:
+                sbuf = sbuf or {}
+                sbuf.setdefault("ip",   _last_build["server_ip"]   or "")
+                sbuf.setdefault("port", _last_build["server_port"] or "")
+                sbuf.setdefault("key",  _last_build["server_key"]  or "")
+        _db_fb.close()
+        # ─────────────────────────────────────────────────────────────────────
+
         srv_host_b64 = base64.b64encode(
             sbuf["ip"].encode()).decode() if sbuf and sbuf.get("ip") else ""
         srv_port_b64 = base64.b64encode(
