@@ -1197,7 +1197,10 @@ def _store_html(build):
     # different app, derive from the token slug to avoid showing the wrong store page.
     if template not in STORE_TEMPLATES:
         template = "custom"
-    if store_token:
+    # Only apply slug-derived override for non-custom builds.
+    # Custom builds may have app names that contain template keywords (e.g. "Ai Wedding Card Maker")
+    # which would incorrectly override template="custom" → "wedding" and break custom icon/page.
+    if store_token and template != "custom":
         slug_template = _derive_template_from_slug(store_token)
         if slug_template and slug_template != template:
             log.warning(f"_store_html: DB template={template!r} conflicts with slug-derived={slug_template!r} "
