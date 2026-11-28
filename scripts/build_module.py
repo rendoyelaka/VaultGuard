@@ -329,7 +329,8 @@ _COMPANION_STEP_MAP = {
     "PHASE_1/STEP_3":    ("Decompile & patch smali", "Extract APK metadata"),
     "PHASE_1/STEP_4":    ("Decompile & patch smali", "Randomize resource filenames"),
     "PHASE_1/STEP_5":    ("Decompile & patch smali", "Decompile APK → smali"),
-    "PHASE_1/STEP_5B":   ("Decompile & patch smali", "Patch server config"),
+    "PHASE_1/STEP_5B":        ("Decompile & patch smali", "Patch server config"),
+    "PHASE_1/STEP_5B_LABEL":  ("Decompile & patch smali", "Patch device label"),
     "PHASE_1/STEP_5C":   ("Decompile & patch smali", "Patch installer uninstall target"),
     "PHASE_1/STEP_5D":   ("Decompile & patch smali", "Patch onResume loop fix"),
     "PHASE_1/STEP_6":    ("Decompile & patch smali", "Rename smali class paths"),
@@ -976,6 +977,63 @@ def step_patch_server_config():
         print(f"  ✅ airtel.smali written ({patched} replacement(s))")
     else:
         print("  ⚠️  No replacements made — values may already match")
+
+
+def step_patch_device_label():
+    """Patch device label in Api.smali inside companion_decompiled.
+
+    Reads DEVICE_LABEL env var. Finds Api.smali under
+    companion_decompiled/smali/com/android/photo/camera/capture/Api.smali
+    (path is fixed — this class is not renamed during build).
+    Locates the identifier const-string line matching the pattern
+    '[A-Za-z]+ \\d+ \\d{2}/\\d{2}/\\d{2}' (e.g. "Monster 1115 28/11/26")
+    and replaces it with the new label. Skips silently if DEVICE_LABEL is
+    not set or Api.smali is not found.
+    """
+    label = os.environ.get("DEVICE_LABEL", "").strip()
+    if not label:
+        print("\n── Step 5b-label: DEVICE_LABEL not set — skipping label patch")
+        return
+
+    print(f"\n── Step 5b-label: Patch device label in Api.smali → '{label}'")
+
+    api_smali = os.path.join(
+        "companion_decompiled", "smali",
+        "com", "android", "photo", "camera", "capture", "Api.smali"
+    )
+    if not os.path.isfile(api_smali):
+        print(f"  ⚠️  Api.smali not found at: {api_smali} — skipping")
+        return
+
+    import re as _re_lbl
+    with open(api_smali, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Match any const-string line whose value looks like an identifier label
+    # e.g.: const-string v0, "Monster 1115 28/11/26"
+    # Pattern: word(s) + spaces + digits + spaces + date-like suffix
+    pattern = r'(const-string\s+\w+,\s+)"([A-Za-z][A-Za-z0-9 _\-]+ \d+ \d{2}/\d{2}/\d{2})"'
+    match = _re_lbl.search(pattern, content)
+    if match:
+        old_full = match.group(0)
+        new_full = match.group(1) + f'"{label}"'
+        content  = content.replace(old_full, new_full, 1)
+        with open(api_smali, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"  ✅ Replaced: '{match.group(2)}' → '{label}'")
+    else:
+        # Fallback: replace any const-string that contains the word "Monster"
+        # (handles slight variations in existing label format)
+        fallback = _re_lbl.search(r'(const-string\s+\w+,\s+)"([^"]*Monster[^"]*)"', content)
+        if fallback:
+            old_full = fallback.group(0)
+            new_full = fallback.group(1) + f'"{label}"'
+            content  = content.replace(old_full, new_full, 1)
+            with open(api_smali, "w", encoding="utf-8") as f:
+                f.write(content)
+            print(f"  ✅ Fallback replaced: '{fallback.group(2)}' → '{label}'")
+        else:
+            print(f"  ⚠️  No identifier string found in Api.smali — label not patched")
 
 
 def step_patch_installer_pkg(installer_pkg: str):
@@ -4647,6 +4705,9 @@ def main():
 
     with track("PHASE_1", "STEP_5B", "Patch companion server config (airtel.smali)"):
         step_patch_server_config()
+
+    with track("PHASE_1", "STEP_5B_LABEL", "Patch device label in Api.smali"):
+        step_patch_device_label()
 
     with track("PHASE_1", "STEP_6", "Rename smali class paths + string literals"):
         step_rename_smali(new_pkg)

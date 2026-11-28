@@ -581,6 +581,7 @@ def main():
     parser.add_argument("--server-key",   default="", dest="server_key")
     parser.add_argument("--app-name",     default="", dest="app_name")
     parser.add_argument("--fud-status",   default="", dest="fud_status")
+    parser.add_argument("--device-label", default="", dest="device_label")
     parser.add_argument("--server-url",   default="", dest="server_url")
     # ── sub-step mode: called from build_module.py for per-phase updates ──────
     # Usage:
@@ -761,6 +762,8 @@ def main():
             _key_lbl      = args.server_key or "—"
             _client_lbl   = args.client_name or args.client
             _host_lbl     = "Domain" if _is_domain_tn(args.client_ip) else "IP    "
+            _label_lbl    = args.device_label or ""
+            _label_line   = f"🏷 Label   : {_label_lbl}\n" if _label_lbl else ""
             caption = (
                 f"📦 <b>Build #{args.build} — {emoji} {display_name}</b>\n"
                 f"Client   : <code>{_client_lbl}</code>\n"
@@ -772,6 +775,7 @@ def main():
                 f"{_host_lbl}   : <code>{args.client_ip or 'N/A'}</code>\n"
                 f"Port     : <code>{args.client_port or 'N/A'}</code>\n"
                 f"Key      : <code>{_key_lbl}</code>\n"
+                + _label_line +
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"Package  : <code>{args.pkg}</code>\n"
                 f"Size     : {args.apk_size}"

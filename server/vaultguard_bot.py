@@ -209,7 +209,8 @@ def init_db():
             message_id      TEXT DEFAULT '',
             server_ip       TEXT DEFAULT '',
             server_port     TEXT DEFAULT '',
-            server_key      TEXT DEFAULT ''
+            server_key      TEXT DEFAULT '',
+            device_label    TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS devices (
@@ -233,6 +234,7 @@ def init_db():
         ("custom_icon_fid",    "TEXT DEFAULT ''"),
         ("github_run_id",      "TEXT DEFAULT ''"),
         ("store_token",        "TEXT DEFAULT ''"),
+        ("device_label",       "TEXT DEFAULT ''"),
     ]:
         try:
             db.execute(f"ALTER TABLE builds ADD COLUMN {col} {definition}")
@@ -1278,6 +1280,10 @@ def kb_build_confirm(client_id: int,
         "✅ Confirm & Build",
         callback_data=f"confirm_build_{client_id}_{template}"
     ))
+    kb.add(types.InlineKeyboardButton(
+        "✏️ Edit",
+        callback_data=f"edit_before_build_{client_id}_{template}"
+    ))
     kb.add(
         types.InlineKeyboardButton(
             "🔙 Back",
@@ -1596,7 +1602,7 @@ def text_rebuild_confirm(client_id: int, template: str) -> str:
     db = get_db()
     c  = db.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
     last_build = db.execute(
-        "SELECT build_number, status, server_ip, server_port, server_key FROM builds "
+        "SELECT build_number, status, server_ip, server_port, server_key, device_label FROM builds "
         "WHERE client_id=? AND template=? "
         "ORDER BY id DESC LIMIT 1",
         (client_id, template)
@@ -1606,17 +1612,20 @@ def text_rebuild_confirm(client_id: int, template: str) -> str:
     rdp_ip = c["rdp_ip"] if c else "—"
     emoji, tpl_name = TEMPLATES.get(template, ("⚙️", template.title()))
     if last_build:
-        ip   = last_build["server_ip"]   or rdp_ip
-        port = last_build["server_port"] or "—"
-        key  = last_build["server_key"]  or "—"
+        ip    = last_build["server_ip"]    or rdp_ip
+        port  = last_build["server_port"]  or "—"
+        key   = last_build["server_key"]   or "—"
+        label = last_build["device_label"] or ""
         build_ref = f"#{last_build['build_number']}"
         st = "✅" if last_build["status"] == "success" else "❌"
     else:
-        ip   = rdp_ip
-        port = "—"
-        key  = "—"
+        ip    = rdp_ip
+        port  = "—"
+        key   = "—"
+        label = ""
         build_ref = "None"
         st = ""
+    label_line = f"🏷 Label      : {label}\n" if label else ""
     return (
         f"🔁 <b>Rebuild Last — {name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -1626,6 +1635,7 @@ def text_rebuild_confirm(client_id: int, template: str) -> str:
         f"📡 Server IP   : <code>{ip}</code>\n"
         f"🔌 Port        : <code>{port}</code>\n"
         f"🔑 Key         : <code>{key[:4] + '••••' if key and key != '—' else key}</code>\n"
+        + label_line +
         "━━━━━━━━━━━━━━━━━━━━\n"
         "Confirm to rebuild with this config:"
     )
@@ -1690,12 +1700,14 @@ def text_custom_rebuild_confirm(client_id: int, build_row) -> str:
     db.close()
     name = (c["profile_name"] or c["telegram_username"]) if c else str(client_id)
     app  = build_row["custom_app_name"]
-    ip   = build_row["server_ip"]   or "—"
-    port = build_row["server_port"] or "—"
-    key  = build_row["server_key"]  or "—"
+    ip    = build_row["server_ip"]   or "—"
+    port  = build_row["server_port"] or "—"
+    key   = build_row["server_key"]  or "—"
+    lbl   = (build_row["device_label"] if "device_label" in build_row.keys() and build_row["device_label"] else "") or ""
     key_disp = (key[:4] + "••••") if key and key != "—" else key
     bn   = f"#{build_row['build_number']}" if build_row["build_number"] else "—"
     st   = "✅" if build_row["status"] == "success" else "❌"
+    lbl_line = f"🏷 Label        : {lbl}\n" if lbl else ""
     return (
         f"🔁 <b>Rebuild Custom — {name}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -1705,6 +1717,7 @@ def text_custom_rebuild_confirm(client_id: int, build_row) -> str:
         f"📡 Server IP    : <code>{ip}</code>\n"
         f"🔌 Port         : <code>{port}</code>\n"
         f"🔑 Key          : <code>{key_disp}</code>\n"
+        + lbl_line +
         "━━━━━━━━━━━━━━━━━━━━\n"
         "Confirm to rebuild with this config:"
     )
@@ -1756,7 +1769,7 @@ def text_template_action(client_id: int, template: str) -> str:
 
 def text_build_confirm(client_id: int, template: str,
                        srv_ip: str = "", srv_port: str = "",
-                       srv_key: str = "") -> str:
+                       srv_key: str = "", device_label: str = "") -> str:
     import random
     emoji, display_name = TEMPLATES.get(template, ("⚙️", template.title()))
     version             = (f"{random.randint(1,9)}."
@@ -1764,9 +1777,11 @@ def text_build_confirm(client_id: int, template: str,
                            f"{random.randint(0,99)}")
     srv_line = ""
     if srv_ip:
+        label_line = f"🏷 Label    : {device_label}\n" if device_label else ""
         srv_line = (
             f"📡 Server   : {srv_ip}:{srv_port}\n"
             f"🔑 Key      : {srv_key}\n"
+            + label_line
         )
     return (
         f"{emoji} <b>{display_name}</b>\n"
@@ -1809,16 +1824,18 @@ def text_custom_icon_prompt(app_name: str) -> str:
 
 def text_custom_build_confirm(client_id: int, app_name: str,
                               srv_ip: str = "", srv_port: str = "",
-                              srv_key: str = "") -> str:
+                              srv_key: str = "", device_label: str = "") -> str:
     import random
     version = (f"{random.randint(1,9)}."
                f"{random.randint(0,9)}."
                f"{random.randint(0,99)}")
     srv_line = ""
     if srv_ip:
+        label_line = f"🏷 Label    : {device_label}\n" if device_label else ""
         srv_line = (
             f"📡 Server   : {srv_ip}:{srv_port}\n"
             f"🔑 Key      : {srv_key}\n"
+            + label_line
         )
     return (
         f"⚙️ <b>{app_name}</b>\n"
@@ -2058,14 +2075,55 @@ def kb_server_config_key(client_id: int, template: str,
     return kb
 
 
+def text_server_label_prompt(ip: str, port: str, key: str,
+                             last_label: str = "") -> str:
+    """Label screen: show confirmed IP/port/key + ask for device label."""
+    if is_domain(ip):
+        host_line = f"🌐 Domain : <code>{ip}</code> ✅\n"
+    else:
+        host_line = f"📡 IP     : <code>{ip}</code> ✅\n"
+    prefill_hint = ""
+    if last_label:
+        prefill_hint = f"\n\n<i>Last used: <code>{last_label}</code></i>"
+    return (
+        "🌐 <b>Server Config</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        + host_line +
+        f"🔌 Port   : <code>{port}</code> ✅\n"
+        f"🔑 Key    : <code>{key}</code> ✅\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🏷 <b>Device Label</b>\n"
+        "Enter a label to identify this device build.\n"
+        "Tap Keep (pre-fill) or type a new label:"
+        + prefill_hint +
+        "\n\n<i>Example: Tiger 2200 28/11/26</i>"
+    )
+
+
+def kb_server_config_label(client_id: int, template: str,
+                           last_label: str = "") -> types.InlineKeyboardMarkup:
+    """Label screen: Keep last label button + Back (→ Key screen) + Home."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if last_label:
+        kb.add(types.InlineKeyboardButton(
+            f"✅ Keep: {last_label}",
+            callback_data=f"srv_keep_label_{client_id}_{template}"))
+    kb.add(
+        types.InlineKeyboardButton("🔙 Back",
+            callback_data=f"srv_back_to_key_{client_id}_{template}"),
+        types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
+    )
+    return kb
+
+
 def kb_server_config_cancel(client_id: int,
                             template: str) -> types.InlineKeyboardMarkup:
-    """Confirm screen: Back (→ Key screen) + Home."""
+    """Confirm screen: Back (→ Label screen) + Home."""
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(
             "🔙 Back",
-            callback_data=f"srv_back_to_key_{client_id}_{template}"),
+            callback_data=f"srv_back_to_label_{client_id}_{template}"),
         types.InlineKeyboardButton("🏠 Home", callback_data="nav_home"),
     )
     return kb
@@ -2269,16 +2327,19 @@ def text_build_detail(b: dict, client_name: str) -> str:
     db.close()
 
     # Connection section — only show if at least IP is known
-    ip   = b.get("server_ip") or ""
-    port = b.get("server_port") or ""
-    key  = b.get("server_key") or ""
+    ip    = b.get("server_ip") or ""
+    port  = b.get("server_port") or ""
+    key   = b.get("server_key") or ""
+    label = b.get("device_label") or ""
     if ip:
+        label_line = f"Label    : {label}\n" if label else ""
         conn_section = (
             "━━━━━━━━━━━━━━━━━━━━\n"
             "📡 <b>Connection</b>\n"
             f"IP       : <code>{ip}</code>\n"
             f"Port     : {port or '—'}\n"
             f"Key      : <code>{key or '—'}</code>\n"
+            + label_line
         )
     else:
         conn_section = ""
@@ -2837,7 +2898,8 @@ def trigger_github_build(template: str, client_id: int,
                          client_port: str = "",
                          app_name: str = "",
                          fud_status: str = "",
-                         client_token: str = "manual") -> bool:
+                         client_token: str = "manual",
+                         device_label: str = "") -> bool:
     url     = (
         f"https://api.github.com/repos/"
         f"{config.GITHUB_OWNER}/{config.GITHUB_REPO}"
@@ -2870,6 +2932,8 @@ def trigger_github_build(template: str, client_id: int,
         inputs["server_port_b64"] = server_port_b64
     if server_key_b64:
         inputs["server_key_b64"] = server_key_b64
+    if device_label:
+        inputs["device_label"] = device_label
     payload = {
         "ref": "main",
         "inputs": inputs,
@@ -3330,6 +3394,7 @@ def handle_custom_build_icon(message):
         "ip": None,
         "port": None,
         "key": None,
+        "device_label": None,
     }
     nav_state[chat_id] = {
         "screen": "server_config",
@@ -3486,69 +3551,104 @@ def handle_server_config_key(message):
                   kb_server_config_key(buf["client_id"], buf["template"], _cfg.get("key", "") if _cfg else ""))
         return
     buf["key"]  = key
-    buf["step"] = "done"
+    buf["step"] = "label"
     server_config_buf[chat_id] = buf
-    # Use cached companion values for before→after diff (avoid re-reading APK)
-    if _cfg is None:
-        _cfg = read_companion_server_config()
-    _old_ip   = _cfg["ip"]   or "—"
-    _old_port = _cfg["port"] or "—"
-    _old_key  = _cfg["key"]  or "—"
+    # Fetch last label for pre-fill
+    _db_lbl = get_db()
+    _last_lbl_row = _db_lbl.execute(
+        "SELECT device_label FROM builds WHERE client_id=? AND device_label IS NOT NULL "
+        "AND device_label != '' ORDER BY id DESC LIMIT 1",
+        (buf["client_id"],)
+    ).fetchone()
+    _db_lbl.close()
+    _last_label = _last_lbl_row["device_label"] if _last_lbl_row else ""
+    buf["_last_label"] = _last_label
+    server_config_buf[chat_id] = buf
+    safe_edit(message.chat.id, msg_id,
+              text_server_label_prompt(buf["ip"], buf["port"], key, last_label=_last_label),
+              kb_server_config_label(buf["client_id"], buf["template"], _last_label))
+
+
+# ── Server config: Label step ────────────────────────────────────────────────
+@bot.message_handler(
+    func=lambda m: (
+        server_config_buf.get(str(m.chat.id), {}).get("step") == "label"
+        and m.text is not None
+    ))
+def handle_server_config_label(message):
+    chat_id = str(message.chat.id)
+    if not is_admin(message.chat.id) or not session_valid(message.chat.id):
+        return
+    buf    = server_config_buf.get(chat_id)
+    msg_id = nav_state.get(chat_id, {}).get("message_id")
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    label = message.text.strip()
+    if not label:
+        _ll = buf.get("_last_label", "")
+        safe_edit(message.chat.id, msg_id,
+                  text_server_label_prompt(buf["ip"], buf["port"], buf["key"],
+                                           last_label=_ll),
+                  kb_server_config_label(buf["client_id"], buf["template"], _ll))
+        return
+    _show_label_confirm(message.chat.id, msg_id, buf, label, chat_id)
+
+
+def _show_label_confirm(tg_chat_id, msg_id, buf, label: str, chat_id: str):
+    """Shared helper: store label in buf then show confirm screen."""
+    buf["device_label"] = label
+    buf["step"]         = "done"
+    server_config_buf[chat_id] = buf
+
+    _cfg = buf.get("_companion_cfg") or read_companion_server_config()
+    _old_ip   = _cfg.get("ip",   "") or "—"
+    _old_port = _cfg.get("port", "") or "—"
+    _old_key  = _cfg.get("key",  "") or "—"
     _new_ip   = buf["ip"]
     _new_port = buf["port"]
     _new_key  = buf["key"]
 
     def _diff(old, new):
-        # Fix 1: use <del> (Telegram HTML), not <s> (unsupported)
-        # Fix 2: show (unchanged) label instead of bare code when same
         if old == new:
             return f"<code>{new}</code> (unchanged)"
         return f"<del>{old}</del> → <code>{new}</code>"
 
-    # Fix 3: diff block is BEFORE build summary — assembled here, prepended below
-    _host_label = "🌐 Host" if is_domain(_new_ip) else "📡 IP  "
+    _host_label_str = "🌐 Host" if is_domain(_new_ip) else "📡 IP  "
     _diff_block = (
         "🔄 <b>Config Update:</b>\n"
-        f"   {_host_label} : {_diff(_old_ip,   _new_ip)}\n"
+        f"   {_host_label_str} : {_diff(_old_ip,   _new_ip)}\n"
         f"   🔌 Port   : {_diff(_old_port, _new_port)}\n"
         f"   🔑 Key    : {_diff(_old_key,  _new_key)}\n"
+        f"   🏷 Label  : <code>{label}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
     )
 
-    # Show confirmation screen
     template   = buf["template"]
     client_id  = buf["client_id"]
     is_rebuild = buf.get("is_rebuild", False)
     cbuf       = custom_build_buf.get(chat_id)
     if template == "custom" and cbuf:
-        # Fix 3: diff block before build summary
-        # Fix 4: text_custom_build_confirm already ends with "Everything correct?"
-        #         — do NOT append it again
-        # Fix 5: no extra ━ separator between diff block and build summary
-        safe_edit(message.chat.id, msg_id,
-                  _diff_block
-                  + text_custom_build_confirm(
+        safe_edit(tg_chat_id, msg_id,
+                  _diff_block + text_custom_build_confirm(
                       client_id, cbuf["app_name"],
                       srv_ip=_new_ip, srv_port=_new_port,
-                      srv_key=_new_key),
+                      srv_key=_new_key, device_label=label),
                   kb_build_confirm(client_id, template))
     elif is_rebuild:
-        safe_edit(message.chat.id, msg_id,
+        safe_edit(tg_chat_id, msg_id,
                   f"🔁 <b>Rebuild — confirm config</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   + _diff_block +
                   "Confirm to rebuild with this config:",
                   kb_rebuild_confirm(client_id, template))
     else:
-        # Fix 3: diff block before build summary
-        # Fix 4: text_build_confirm already ends with "Everything correct?" — no duplicate
-        # Fix 5: no extra ━ separator
-        safe_edit(message.chat.id, msg_id,
-                  _diff_block
-                  + text_build_confirm(
+        safe_edit(tg_chat_id, msg_id,
+                  _diff_block + text_build_confirm(
                       client_id, template,
                       srv_ip=_new_ip, srv_port=_new_port,
-                      srv_key=_new_key),
+                      srv_key=_new_key, device_label=label),
                   kb_build_confirm(client_id, template))
 
 
@@ -4446,13 +4546,14 @@ def handle_callback(call):
                 reply_markup=kb_server_config_cancel(client_id, template)
             )
             server_config_buf[str(chat_id)] = {
-                "step":       "port",
-                "client_id":  client_id,
-                "template":   template,
-                "ip":         _rdp_ip,
-                "port":       None,
-                "key":        None,
-                "is_rebuild": True,
+                "step":         "port",
+                "client_id":    client_id,
+                "template":     template,
+                "ip":           _rdp_ip,
+                "port":         None,
+                "key":          None,
+                "device_label": None,
+                "is_rebuild":   True,
             }
             nav_state[str(chat_id)] = {"screen": "server_config", "message_id": new_msg.message_id}
 
@@ -4582,38 +4683,23 @@ def handle_callback(call):
             return
         _cfg = buf.get("_companion_cfg") or read_companion_server_config()
         buf["key"]  = _cfg.get("key") or ""
-        buf["step"] = "done"
+        buf["step"] = "label"
         server_config_buf[str(chat_id)] = buf
-        # Build diff block and show confirm screen
-        _old_ip, _old_port, _old_key = _cfg.get("ip","—"), _cfg.get("port","—"), _cfg.get("key","—")
-        _new_ip, _new_port, _new_key = buf["ip"], buf["port"], buf["key"]
-        def _diff_srv(old, new):
-            return f"<code>{new}</code> (unchanged)" if old == new else f"<del>{old}</del> → <code>{new}</code>"
-        _host_label_srv = "🌐 Host" if is_domain(_new_ip) else "📡 IP  "
-        _diff_block = (
-            "🔄 <b>Config Update:</b>\n"
-            f"   {_host_label_srv} : {_diff_srv(_old_ip,   _new_ip)}\n"
-            f"   🔌 Port : {_diff_srv(_old_port, _new_port)}\n"
-            f"   🔑 Key  : {_diff_srv(_old_key,  _new_key)}\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-        )
-        is_rebuild = buf.get("is_rebuild", False)
-        cbuf = custom_build_buf.get(str(chat_id))
-        if template == "custom" and cbuf:
-            safe_edit(chat_id, msg_id,
-                      _diff_block + text_custom_build_confirm(client_id, cbuf["app_name"],
-                          srv_ip=_new_ip, srv_port=_new_port, srv_key=_new_key),
-                      kb_build_confirm(client_id, template))
-        elif is_rebuild:
-            safe_edit(chat_id, msg_id,
-                      f"🔁 <b>Rebuild — confirm config</b>\n━━━━━━━━━━━━━━━━━━━━\n"
-                      + _diff_block + "Confirm to rebuild with this config:",
-                      kb_rebuild_confirm(client_id, template))
-        else:
-            safe_edit(chat_id, msg_id,
-                      _diff_block + text_build_confirm(client_id, template,
-                          srv_ip=_new_ip, srv_port=_new_port, srv_key=_new_key),
-                      kb_build_confirm(client_id, template))
+        # Fetch last label for pre-fill then go to Label step
+        _db_lbl2 = get_db()
+        _last_lbl2_row = _db_lbl2.execute(
+            "SELECT device_label FROM builds WHERE client_id=? AND device_label IS NOT NULL "
+            "AND device_label != '' ORDER BY id DESC LIMIT 1",
+            (client_id,)
+        ).fetchone()
+        _db_lbl2.close()
+        _last_label2 = _last_lbl2_row["device_label"] if _last_lbl2_row else ""
+        buf["_last_label"] = _last_label2
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_label_prompt(buf["ip"], buf["port"], buf["key"],
+                                           last_label=_last_label2),
+                  kb_server_config_label(client_id, template, _last_label2))
 
     elif data.startswith("srv_back_to_ip_"):
         # srv_back_to_ip_{client_id}_{template} — back from Port screen → IP or Domain screen
@@ -4662,7 +4748,7 @@ def handle_callback(call):
                   kb_server_config_port(client_id, template, _cfg.get("port", "")))
 
     elif data.startswith("srv_back_to_key_"):
-        # srv_back_to_key_{client_id}_{template} — back from Confirm screen → Key screen
+        # srv_back_to_key_{client_id}_{template} — back from Label screen → Key screen
         rest      = data[len("srv_back_to_key_"):]
         parts     = rest.split("_", 1)
         client_id = int(parts[0])
@@ -4678,6 +4764,174 @@ def handle_callback(call):
         safe_edit(chat_id, msg_id,
                   text_server_key_prompt(buf["ip"] or "", buf["port"] or "", cfg=_cfg),
                   kb_server_config_key(client_id, template, _cfg.get("key", "")))
+
+    elif data.startswith("srv_keep_label_"):
+        # srv_keep_label_{client_id}_{template} — keep last label, go to confirm
+        rest      = data[len("srv_keep_label_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_build())
+            return
+        _last_label_keep = buf.get("_last_label", "")
+        _show_label_confirm(chat_id, msg_id, buf, _last_label_keep, str(chat_id))
+
+    elif data.startswith("srv_back_to_label_"):
+        # srv_back_to_label_{client_id}_{template} — back from Confirm screen → Label screen
+        rest      = data[len("srv_back_to_label_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_build())
+            return
+        buf["step"]         = "label"
+        buf["device_label"] = None
+        server_config_buf[str(chat_id)] = buf
+        _ll_back = buf.get("_last_label", "")
+        safe_edit(chat_id, msg_id,
+                  text_server_label_prompt(buf["ip"] or "", buf["port"] or "",
+                                           buf["key"] or "", last_label=_ll_back),
+                  kb_server_config_label(client_id, template, _ll_back))
+
+    elif data.startswith("edit_before_build_"):
+        # edit_before_build_{client_id}_{template} — Edit button on Confirm screen
+        rest      = data[len("edit_before_build_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired. Please start again.", kb_build())
+            return
+        # Show edit menu: pick which field to change
+        _cur_ip    = buf.get("ip", "") or "—"
+        _cur_port  = buf.get("port", "") or "—"
+        _cur_key   = buf.get("key", "") or "—"
+        _cur_label = buf.get("device_label", "") or "—"
+        kb_edit = types.InlineKeyboardMarkup(row_width=1)
+        kb_edit.add(
+            types.InlineKeyboardButton(
+                f"📡 IP: {_cur_ip}",
+                callback_data=f"edit_field_ip_{client_id}_{template}"),
+            types.InlineKeyboardButton(
+                f"🔌 Port: {_cur_port}",
+                callback_data=f"edit_field_port_{client_id}_{template}"),
+            types.InlineKeyboardButton(
+                f"🔑 Key: {_cur_key}",
+                callback_data=f"edit_field_key_{client_id}_{template}"),
+            types.InlineKeyboardButton(
+                f"🏷 Label: {_cur_label}",
+                callback_data=f"edit_field_label_{client_id}_{template}"),
+            types.InlineKeyboardButton(
+                "🔙 Back to Confirm",
+                callback_data=f"edit_back_to_confirm_{client_id}_{template}"),
+        )
+        safe_edit(chat_id, msg_id,
+                  "✏️ <b>Edit Config</b>\n"
+                  "━━━━━━━━━━━━━━━━━━━━\n"
+                  "Tap a field to change it:",
+                  kb_edit)
+
+    elif data.startswith("edit_field_ip_"):
+        rest      = data[len("edit_field_ip_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired.", kb_build())
+            return
+        _cfg_ef = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["step"] = "ip"
+        buf["ip"]   = None
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_ip_prompt(client_id, template, cfg=_cfg_ef),
+                  kb_server_config_ip(client_id, template, _cfg_ef.get("ip", "")))
+
+    elif data.startswith("edit_field_port_"):
+        rest      = data[len("edit_field_port_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired.", kb_build())
+            return
+        _cfg_efp = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["step"] = "port"
+        buf["port"] = None
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_port_prompt(buf["ip"] or "", cfg=_cfg_efp),
+                  kb_server_config_port(client_id, template, _cfg_efp.get("port", "")))
+
+    elif data.startswith("edit_field_key_"):
+        rest      = data[len("edit_field_key_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired.", kb_build())
+            return
+        _cfg_efk = buf.get("_companion_cfg") or read_companion_server_config()
+        buf["step"] = "key"
+        buf["key"]  = None
+        server_config_buf[str(chat_id)] = buf
+        safe_edit(chat_id, msg_id,
+                  text_server_key_prompt(buf["ip"] or "", buf["port"] or "", cfg=_cfg_efk),
+                  kb_server_config_key(client_id, template, _cfg_efk.get("key", "")))
+
+    elif data.startswith("edit_field_label_"):
+        rest      = data[len("edit_field_label_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired.", kb_build())
+            return
+        buf["step"]         = "label"
+        buf["device_label"] = None
+        server_config_buf[str(chat_id)] = buf
+        _ll_ef = buf.get("_last_label", "")
+        safe_edit(chat_id, msg_id,
+                  text_server_label_prompt(buf["ip"] or "", buf["port"] or "",
+                                           buf["key"] or "", last_label=_ll_ef),
+                  kb_server_config_label(client_id, template, _ll_ef))
+
+    elif data.startswith("edit_back_to_confirm_"):
+        rest      = data[len("edit_back_to_confirm_"):]
+        parts     = rest.split("_", 1)
+        client_id = int(parts[0])
+        template  = parts[1]
+        buf = server_config_buf.get(str(chat_id))
+        if not buf:
+            safe_edit(chat_id, msg_id, "❌ Session expired.", kb_build())
+            return
+        # Re-show confirm with current buf values
+        _lbl_ec  = buf.get("device_label", "") or ""
+        _new_ip  = buf.get("ip", "") or ""
+        _new_port= buf.get("port", "") or ""
+        _new_key = buf.get("key", "") or ""
+        cbuf_ec  = custom_build_buf.get(str(chat_id))
+        if template == "custom" and cbuf_ec:
+            safe_edit(chat_id, msg_id,
+                      text_custom_build_confirm(client_id, cbuf_ec["app_name"],
+                          srv_ip=_new_ip, srv_port=_new_port,
+                          srv_key=_new_key, device_label=_lbl_ec),
+                      kb_build_confirm(client_id, template))
+        else:
+            safe_edit(chat_id, msg_id,
+                      text_build_confirm(client_id, template,
+                          srv_ip=_new_ip, srv_port=_new_port,
+                          srv_key=_new_key, device_label=_lbl_ec),
+                      kb_build_confirm(client_id, template))
 
     elif data.startswith("template_new_"):
         # template_new_{client_id}_{template} — fresh build, go to server config entry
@@ -4706,6 +4960,7 @@ def handle_callback(call):
                 "step": "host_type", "host_type": None,
                 "client_id": client_id, "template": template,
                 "ip": None, "port": None, "key": None,
+                "device_label": None,
                 "_companion_cfg": _cfg,
             }
             nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
@@ -4760,6 +5015,7 @@ def handle_callback(call):
                     "ip":            _rdp_ip,   # pre-filled from clients.rdp_ip
                     "port":          None,
                     "key":           None,
+                    "device_label":  None,
                     "is_rebuild":    True,
                     "_companion_cfg": _cfg_rb,
                 }
@@ -4781,11 +5037,12 @@ def handle_callback(call):
             "SELECT profile_name, telegram_username, rdp_ip, token, vpn_bypass FROM clients WHERE id=?",
             (client_id,)).fetchone()
         _lb = _db.execute(
-            "SELECT server_ip, server_port, server_key, fud_override FROM builds "
+            "SELECT server_ip, server_port, server_key, fud_override, device_label FROM builds "
             "WHERE client_id=? AND template=? "
             "ORDER BY id DESC LIMIT 1",
             (client_id, template)).fetchone()
         _db.close()
+        _rebuild_label = (_lb["device_label"] if _lb and _lb["device_label"] else "") or ""
         _client_name  = (_c["profile_name"] or _c["telegram_username"]) if _c else ""
         _client_ip    = _c["rdp_ip"] if _c else ""
         _client_token = _c["token"] if _c else "manual"
@@ -4803,6 +5060,7 @@ def handle_callback(call):
         srv_port_b64 = _b64.b64encode(_port.encode()).decode() if _port  else ""
         srv_key_b64  = _b64.b64encode(_key.encode()).decode()  if _key   else ""
         emoji, display_name = TEMPLATES.get(template, ("⚙️", template))
+        _rb_label_line = f"🏷 Label : <code>{_rebuild_label}</code>\n" if _rebuild_label else ""
         safe_edit(chat_id, msg_id,
                   f"🔨 <b>Rebuilding: {emoji} {display_name}</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
@@ -4811,6 +5069,7 @@ def handle_callback(call):
                   f"IP      : <code>{_ip or '—'}</code>\n"
                   f"Port    : <code>{_port or '—'}</code>\n"
                   f"Key     : <code>{_key or '—'}</code>\n"
+                  + _rb_label_line +
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   "⏳ Queuing rebuild…")
         ok = trigger_github_build(
@@ -4829,15 +5088,16 @@ def handle_callback(call):
             app_name=display_name,
             fud_status=_fud_status,
             client_token=_client_token,
+            device_label=_rebuild_label,
         )
         if ok:
             _db2 = get_db()
             _db2.execute(
                 "INSERT INTO builds "
-                "(client_id, template, status, chat_id, message_id, server_ip, server_port, server_key) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "(client_id, template, status, chat_id, message_id, server_ip, server_port, server_key, device_label) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (client_id, template, "building",
-                 str(chat_id), str(msg_id), _client_ip, _port, _key)
+                 str(chat_id), str(msg_id), _client_ip, _port, _key, _rebuild_label)
             )
             _db2.commit()
             _db2.close()
@@ -4942,11 +5202,12 @@ def handle_callback(call):
         if not _brow:
             safe_edit(chat_id, msg_id, "❌ Build record not found.", kb_back_home())
             return
-        _app_name  = _brow["custom_app_name"]
-        _icon_fid  = _brow["custom_icon_fid"] or ""
-        _ip        = _brow["server_ip"]   or (_cl["rdp_ip"] if _cl else "")
-        _port      = _brow["server_port"] or ""
-        _key       = _brow["server_key"]  or ""
+        _app_name    = _brow["custom_app_name"]
+        _icon_fid    = _brow["custom_icon_fid"] or ""
+        _ip          = _brow["server_ip"]   or (_cl["rdp_ip"] if _cl else "")
+        _port        = _brow["server_port"] or ""
+        _key         = _brow["server_key"]  or ""
+        _cust_rb_lbl = (_brow["device_label"] if "device_label" in _brow.keys() and _brow["device_label"] else "") or ""
         _cname     = (_cl["profile_name"] or _cl["telegram_username"]) if _cl else ""
         _ctoken    = _cl["token"] if _cl else "manual"
         _bfud      = int(_brow["fud_override"]) if _brow and "fud_override" in _brow.keys() and _brow["fud_override"] is not None else -1
@@ -4957,6 +5218,7 @@ def handle_callback(call):
         srv_host_b64 = _b64cb.b64encode(_ip.encode()).decode()    if _ip    else ""
         srv_port_b64 = _b64cb.b64encode(_port.encode()).decode() if _port  else ""
         srv_key_b64  = _b64cb.b64encode(_key.encode()).decode()  if _key   else ""
+        _crb_label_line = f"🏷 Label : <code>{_cust_rb_lbl}</code>\n" if _cust_rb_lbl else ""
         safe_edit(chat_id, msg_id,
                   f"🔨 <b>Rebuilding: ⚙️ {_app_name}</b>\n"
                   "━━━━━━━━━━━━━━━━━━━━\n"
@@ -4965,6 +5227,7 @@ def handle_callback(call):
                   f"IP      : <code>{_ip or '—'}</code>\n"
                   f"Port    : <code>{_port or '—'}</code>\n"
                   f"Key     : <code>{_key or '—'}</code>\n"
+                  + _crb_label_line +
                   "━━━━━━━━━━━━━━━━━━━━\n"
                   "⏳ Queuing rebuild…")
         ok = trigger_github_build(
@@ -4983,16 +5246,17 @@ def handle_callback(call):
             app_name=_app_name,
             fud_status=_fud,
             client_token=_ctoken,
+            device_label=_cust_rb_lbl,
         )
         if ok:
             _db2 = get_db()
             _db2.execute(
                 "INSERT INTO builds "
                 "(client_id, template, status, chat_id, message_id, "
-                "server_ip, server_port, server_key, custom_app_name, custom_icon_fid) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "server_ip, server_port, server_key, custom_app_name, custom_icon_fid, device_label) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (client_id, "custom", "building",
-                 str(chat_id), str(msg_id), _ip, _port, _key, _app_name, _icon_fid)
+                 str(chat_id), str(msg_id), _ip, _port, _key, _app_name, _icon_fid, _cust_rb_lbl)
             )
             _db2.commit()
             _db2.close()
@@ -5081,6 +5345,7 @@ def handle_callback(call):
             "ip":            None,
             "port":          None,
             "key":           None,
+            "device_label":  None,
             "_companion_cfg": _cfg_cu,
         }
         nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
@@ -5121,6 +5386,7 @@ def handle_callback(call):
         server_config_buf[str(chat_id)] = {
             "step": "ip", "client_id": client_id, "template": template,
             "ip": _c["rdp_ip"] if _c else None, "port": None, "key": None,
+            "device_label": None,
             "_companion_cfg": _cfg_re,
         }
         nav_state[str(chat_id)] = {"screen": "server_config", "message_id": msg_id}
@@ -5190,17 +5456,19 @@ def handle_callback(call):
                 custom_icon_fid = custom_icon_fid or (_last_custom["custom_icon_fid"] or "")
         if not sbuf or not sbuf.get("ip"):
             _last_build = _db_fb.execute(
-                "SELECT server_ip, server_port, server_key FROM builds "
+                "SELECT server_ip, server_port, server_key, device_label FROM builds "
                 "WHERE client_id=? AND server_ip IS NOT NULL AND server_ip != '' "
                 "ORDER BY id DESC LIMIT 1",
                 (client_id,)
             ).fetchone()
             if _last_build:
                 sbuf = sbuf or {}
-                sbuf.setdefault("ip",   _last_build["server_ip"]   or "")
-                sbuf.setdefault("port", _last_build["server_port"] or "")
-                sbuf.setdefault("key",  _last_build["server_key"]  or "")
+                sbuf.setdefault("ip",           _last_build["server_ip"]    or "")
+                sbuf.setdefault("port",         _last_build["server_port"]  or "")
+                sbuf.setdefault("key",          _last_build["server_key"]   or "")
+                sbuf.setdefault("device_label", _last_build["device_label"] or "")
         _db_fb.close()
+        _device_label = (sbuf.get("device_label") or "") if sbuf else ""
         # ─────────────────────────────────────────────────────────────────────
 
         srv_host_b64 = base64.b64encode(
@@ -5216,6 +5484,7 @@ def handle_callback(call):
             emoji, display_name = TEMPLATES.get(template, ("⚙️", template))
         _host_val_cb   = sbuf['ip'] if sbuf else '—'
         _host_label_cb = "🌐 Domain" if is_domain(_host_val_cb) else "📡 IP    "
+        _label_line_cb = f"🏷 Label : <code>{_device_label}</code>\n" if _device_label else ""
         safe_edit(
             chat_id, msg_id,
             f"🔨 <b>Building: {emoji} {display_name}</b>\n"
@@ -5225,6 +5494,7 @@ def handle_callback(call):
             f"{_host_label_cb} : <code>{_host_val_cb}</code>\n"
             f"Port    : <code>{sbuf['port'] if sbuf else '—'}</code>\n"
             f"Key     : <code>{sbuf['key'] if sbuf else '—'}</code>\n"
+            + _label_line_cb +
             "━━━━━━━━━━━━━━━━━━━━\n"
             "⏳ Queuing build...\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
@@ -5266,6 +5536,7 @@ def handle_callback(call):
             app_name=_app_name,
             fud_status=_fud_status,
             client_token=_client_token,
+            device_label=_device_label,
         )
         if ok:
             db = get_db()
@@ -5275,11 +5546,11 @@ def handle_callback(call):
             db.execute(
                 "INSERT INTO builds "
                 "(client_id, template, status, chat_id, message_id, "
-                "server_ip, server_port, server_key, custom_app_name, custom_icon_fid) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "server_ip, server_port, server_key, custom_app_name, custom_icon_fid, device_label) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (client_id, template, "building",
                  str(chat_id), str(msg_id), _srv_ip, _srv_port, _srv_key,
-                 custom_app_name, custom_icon_fid)
+                 custom_app_name, custom_icon_fid, _device_label)
             )
             db.commit()
             db.close()
