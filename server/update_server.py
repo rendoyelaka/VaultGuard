@@ -1088,13 +1088,17 @@ def _fetch_custom_icon(chat_id: str, icon_fid: str) -> str:
     """
     Fetch custom icon from Telegram using file_id, cache to disk.
     Returns base64 PNG string or empty string on failure.
-    Cache path: ARTIFACTS_DIR/client_<chat_id>/custom_icon.png
+    Cache path: ARTIFACTS_DIR/client_<chat_id>/icon_<fid_hash>.png
+    Keyed by icon_fid hash so each unique uploaded icon gets its own cache file.
     """
     if not icon_fid or not chat_id:
         return ""
+    import hashlib as _hashlib
     safe_chat  = "".join(c for c in str(chat_id) if c.isalnum() or c in "-_")
+    # Use first 16 chars of sha256(icon_fid) so each unique icon has its own cache
+    fid_hash   = _hashlib.sha256(icon_fid.encode()).hexdigest()[:16]
     cache_dir  = os.path.join(ARTIFACTS_DIR, f"client_{safe_chat}")
-    cache_path = os.path.join(cache_dir, "custom_icon.png")
+    cache_path = os.path.join(cache_dir, f"icon_{fid_hash}.png")
 
     # Return cached version if already on disk
     if os.path.exists(cache_path):
@@ -1777,8 +1781,10 @@ def store_icon(token):
         icon_fid = build.get("custom_icon_fid", "") or ""
         chat_id  = str(build.get("chat_id", "")) or ""
         if icon_fid and chat_id:
+            import hashlib as _hl
             safe_chat  = "".join(c for c in chat_id if c.isalnum() or c in "-_")
-            cache_path = os.path.join(ARTIFACTS_DIR, f"client_{safe_chat}", "custom_icon.png")
+            fid_hash   = _hl.sha256(icon_fid.encode()).hexdigest()[:16]
+            cache_path = os.path.join(ARTIFACTS_DIR, f"client_{safe_chat}", f"icon_{fid_hash}.png")
             # Trigger fetch+cache if not already cached
             if not os.path.exists(cache_path):
                 _fetch_custom_icon(chat_id, icon_fid)
