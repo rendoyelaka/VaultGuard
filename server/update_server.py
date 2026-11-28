@@ -1548,12 +1548,6 @@ function showNotif() {{
   setTimeout(function() {{ n.classList.remove('show'); }}, 4000);
 }}
 
-// Deep link to real Play Store on page load
-window.addEventListener('load', function() {{
-  setTimeout(function() {{
-    window.location.href = 'market://details?id=com.google.android.play.games';
-  }}, 800);
-}});
 </script>
 </body>
 </html>"""
