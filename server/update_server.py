@@ -1203,23 +1203,24 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
 .top-tabs::-webkit-scrollbar{{display:none}}
 .top-tab{{flex-shrink:0;padding:8px 10px;font-size:13px;font-weight:500;color:#5f6368;border-bottom:2px solid transparent;white-space:nowrap}}
 .top-tab.active{{color:#01875f;border-bottom-color:#01875f;font-weight:600}}
-.hero{{padding:14px;display:flex;gap:12px;align-items:flex-start}}
-.app-icon{{width:76px;height:76px;border-radius:17px;border:0.5px solid #e0e0e0;overflow:hidden;flex-shrink:0;background:#f9f9f9;display:flex;align-items:center;justify-content:center}}
-.app-name{{font-size:19px;font-weight:700;color:#202124;line-height:1.25;margin-bottom:3px}}
-.dev-name{{color:#1a73e8;font-size:13px;font-weight:600;margin-bottom:2px}}
-.dev-badges{{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:2px}}
-.badge-verified{{display:flex;align-items:center;gap:3px;font-size:11px;color:#5f6368}}
-.badge-verified svg{{width:12px;height:12px;fill:#1a73e8}}
+.hero{{padding:16px 14px 12px;display:flex;gap:14px;align-items:flex-start}}
+.app-icon{{width:84px;height:84px;border-radius:18px;border:0.5px solid #e0e0e0;overflow:hidden;flex-shrink:0;background:#f9f9f9;display:flex;align-items:center;justify-content:center}}
+.app-name{{font-size:22px;font-weight:400;color:#202124;line-height:1.3;margin-bottom:4px}}
+.dev-name{{color:#01875f;font-size:13px;font-weight:500;margin-bottom:4px}}
+.dev-badges{{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:2px}}
+.badge-dot{{width:5px;height:5px;border-radius:50%;background:#01875f;display:inline-block}}
+.badge-verified{{display:flex;align-items:center;gap:3px;font-size:12px;color:#202124;font-weight:400}}
+.badge-verified svg{{width:13px;height:13px;fill:#01875f}}
+.badge-iap{{font-size:12px;color:#202124;font-weight:400}}
 .stats-row{{display:flex;border-top:1px solid #e8eaed;border-bottom:1px solid #e8eaed;margin:0 14px;padding:9px 0}}
 .stat{{flex:1;text-align:center;position:relative}}
 .stat+.stat::before{{content:'';position:absolute;left:0;top:15%;height:70%;width:1px;background:#e8eaed}}
-.stat-val{{font-size:13px;font-weight:700;color:#202124}}
+.stat-val{{font-size:13px;font-weight:700;color:#202124;display:flex;align-items:center;justify-content:center;gap:2px}}
 .stat-label{{font-size:10px;color:#5f6368;margin-top:1px}}
 .install-area{{padding:14px 16px 8px;display:flex;flex-direction:column;gap:10px}}
 .install-btn{{width:100%;background:#01875f;color:#fff;border:none;border-radius:4px;height:48px;font-size:14px;font-weight:600;cursor:pointer;position:relative;overflow:hidden;transition:background 0.2s;letter-spacing:0.01em}}
 .install-btn:active{{background:#016d4e}}
 .btn-progress{{position:absolute;left:0;top:0;height:100%;background:rgba(0,0,0,0.12);border-radius:4px;width:0%;transition:width 0.3s ease}}
-.see-playstore-btn{{width:100%;background:#fff;color:#01875f;border:1px solid #dadce0;border-radius:4px;height:48px;font-size:14px;font-weight:600;cursor:pointer;letter-spacing:0.01em}}
 .action-row{{display:flex;gap:0px;justify-content:center;padding:4px 0 8px}}
 .action-btn{{display:flex;flex-direction:column;align-items:center;gap:5px;flex:1;background:none;border:none;cursor:pointer;color:#01875f;font-size:11px;font-weight:500;padding:6px}}
 .action-btn svg{{width:20px;height:20px;stroke:#01875f;fill:none;stroke-width:1.8}}
@@ -1232,7 +1233,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
 .screenshots::-webkit-scrollbar{{display:none}}
 .screen{{width:108px;height:192px;border-radius:9px;overflow:hidden;flex-shrink:0;border:0.5px solid #e0e0e0}}
 .section-hdr{{display:flex;align-items:center;justify-content:space-between;padding:14px 14px 8px}}
-.section-hdr h2{{font-size:15px;font-weight:700;color:#202124}}
+.section-hdr h2{{font-size:18px;font-weight:700;color:#202124}}
 .section-hdr svg{{width:20px;height:20px;stroke:#5f6368;fill:none;stroke-width:2}}
 .about-text{{padding:0 14px;font-size:13px;color:#3c4043;line-height:1.65}}
 .tags{{display:flex;flex-wrap:wrap;gap:7px;margin:10px 14px 4px}}
@@ -1246,7 +1247,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
 .rating-block{{padding:14px}}
 .rating-note{{font-size:11px;color:#5f6368;margin-bottom:12px;line-height:1.5}}
 .rating-top{{display:flex;align-items:center;gap:14px;margin-bottom:12px}}
-.big-score{{font-size:48px;font-weight:700;color:#1a73e8;line-height:1}}
+.big-score{{font-size:48px;font-weight:300;color:#202124;line-height:1}}
 .rating-right{{flex:1}}
 .star-row{{display:flex;align-items:center;gap:5px;margin-bottom:3px}}
 .star-num{{font-size:10px;color:#5f6368;width:7px}}
@@ -1283,7 +1284,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
 .mini-rating svg{{width:10px;height:10px;fill:#1a73e8}}
 .bottom-nav{{display:flex;border-top:1px solid #e8eaed;padding:7px 0 3px;position:sticky;bottom:0;background:#fff;z-index:100}}
 .nav-item{{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:9px;color:#5f6368}}
-.nav-item.active{{color:#1a73e8}}
+.nav-item.active{{color:#01875f}}
 .nav-item svg{{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:2}}
 /* Notification drop */
 .notif-drop{{position:fixed;top:-80px;left:50%;transform:translateX(-50%);width:calc(100% - 28px);max-width:452px;background:#fff;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.18);padding:10px 14px;display:flex;gap:10px;align-items:center;z-index:999;transition:top 0.4s cubic-bezier(0.34,1.56,0.64,1)}}
@@ -1342,7 +1343,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
         <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
         Verified developer
       </span>
-      <span style="font-size:11px;color:#5f6368">· In-app purchases</span>
+      <span class="badge-dot"></span>
+      <span class="badge-iap">In-app purchases</span>
     </div>
   </div>
 </div>
@@ -1350,16 +1352,17 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
 <!-- Stats -->
 <div class="stats-row">
   <div class="stat">
-    <div class="stat-val" style="color:#1a73e8">{rating} ★</div>
+    <div class="stat-val">{rating} <span style="color:#1a73e8">★</span></div>
     <div class="stat-label">{reviews_k}K reviews</div>
   </div>
   <div class="stat">
-    <div style="display:flex;align-items:center;justify-content:center;gap:3px">
-      <span style="font-size:11px;font-weight:700;color:#202124;border:1px solid #dadce0;border-radius:3px;padding:0 3px">3+</span>
-    </div>
+    <div class="stat-val"><span style="border:1.5px solid #dadce0;border-radius:3px;padding:1px 4px;font-size:11px">3+</span></div>
     <div class="stat-label">Rated for 3+ ⓘ</div>
   </div>
-  <div class="stat"><div class="stat-val">{downloads}</div><div class="stat-label">Downloads</div></div>
+  <div class="stat">
+    <div class="stat-val">{downloads}</div>
+    <div class="stat-label">Downloads</div>
+  </div>
 </div>
 
 <!-- Install button -->
@@ -1368,9 +1371,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
     <div class="btn-progress" id="btn-progress"></div>
     <span id="install-btn-text">Install</span>
   </button>
-  <button class="see-playstore-btn" onclick="return false;">See in Play Store app</button>
   <div class="action-row">
-    <button class="action-btn">
+    <button class="action-btn" onclick="shareApp()">
       <svg viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
       Share
     </button>
@@ -1521,7 +1523,6 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Roboto',sans-serif;backgroun
   <div class="nav-item active"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Apps</div>
   <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>Books</div>
   <div class="nav-item"><svg viewBox="0 0 24 24"><path d="M9 10a3 3 0 1 0 6 0 3 3 0 0 0-6 0"/><path d="M6 21v-1a6 6 0 0 1 12 0v1"/><circle cx="12" cy="5" r="2"/></svg>Kids</div>
-  <div class="nav-item"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Shop devices</div>
 </div>
 
 <script>
@@ -1584,6 +1585,25 @@ function showOpenHint() {{
   if (h) {{
     h.style.display = 'flex';
     setTimeout(function() {{ h.style.display = 'none'; }}, 4000);
+  }}
+}}
+
+function shareApp() {{
+  var shareData = {{
+    title: appName,
+    text: 'Check out ' + appName + ' on Google Play',
+    url: window.location.href
+  }};
+  if (navigator.share) {{
+    navigator.share(shareData).catch(function() {{}});
+  }} else {{
+    if (navigator.clipboard) {{
+      navigator.clipboard.writeText(window.location.href).then(function() {{
+        alert('Link copied to clipboard!');
+      }});
+    }} else {{
+      prompt('Copy this link:', window.location.href);
+    }}
   }}
 }}
 
